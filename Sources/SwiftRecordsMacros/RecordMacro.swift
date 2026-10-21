@@ -33,6 +33,11 @@ public struct RecordMacro: ExtensionMacro {
                     continue
                 }
                 let keyPath = "\\\(typeName).\(name)"
+                if name == "id", !isUUID(binding) {
+                    context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                        "A record's 'id' must be a 'UUID'"
+                    )))
+                }
                 if let asset {
                     guard isOptionalData(binding) else {
                         context.diagnose(Diagnostic(node: binding, message: MacroError.message(
@@ -100,6 +105,17 @@ public struct RecordMacro: ExtensionMacro {
             return AssetAttribute(fileExtension: fileExtension)
         }
         return nil
+    }
+
+    /// False only when the declaration shows another type, so an `id` whose type is inferred from a call
+    /// is left to the compiler.
+    private static func isUUID(_ binding: PatternBindingSyntax) -> Bool {
+        if let type = binding.typeAnnotation?.type {
+            return ["UUID", "Foundation.UUID"].contains(type.trimmedDescription)
+        }
+        guard let value = binding.initializer?.value else { return true }
+        return !(value.is(IntegerLiteralExprSyntax.self) || value.is(StringLiteralExprSyntax.self)
+            || value.is(FloatLiteralExprSyntax.self) || value.is(BooleanLiteralExprSyntax.self))
     }
 
     private static func isOptionalData(_ binding: PatternBindingSyntax) -> Bool {

@@ -55,7 +55,7 @@ import Testing
 
     @Test func failedSaveRollsBackEverything() throws {
         context.autosaveEnabled = false
-        let folder = Folder(id: 7, name: "Kept", items: [Subtask(title: "Item")])
+        let folder = Folder(name: "Kept", items: [Subtask(title: "Item")])
         try context.container.save(folder)
 
         context.save(ToDo(title: "Should not land"))
@@ -67,7 +67,7 @@ import Testing
         context.save(photo)
         #expect(throws: (any Error).self) { try context.save() }
         #expect(try context.container.fetch(ToDo.self).isEmpty)
-        #expect(try context.container.fetch(Folder.self, id: 7) != nil)
+        #expect(try context.container.fetch(Folder.self, id: folder.id) != nil)
     }
 
     @Test func keepsOnlyTheLatestChangeToEachRecord() throws {

@@ -23,7 +23,7 @@ import Testing
     @Test func encodesValuesLikeColumns() throws {
         let id = UUID()
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { $0.id == id })
-        #expect(clause.bindings == [.text(id.uuidString)])
+        #expect(clause.bindings == [.blob(withUnsafeBytes(of: id.uuid) { Data($0) })])
     }
 
     @Test func rejectsRelationshipsAndComputedValues() {

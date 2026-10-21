@@ -24,6 +24,9 @@ struct Note {
 }
 ```
 
+Every record's `id` is a `UUID`, so records created on different devices never collide. IDs are
+stored as 16-byte blobs, which keeps primary keys and join tables compact.
+
 ## Storing and querying
 
 ```swift

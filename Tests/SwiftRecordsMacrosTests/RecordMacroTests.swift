@@ -46,13 +46,13 @@ final class RecordMacroTests: XCTestCase {
             """
             @Record
             struct Note {
-                let id: Int
+                let id: UUID
                 @Reference(from: \\ToDo.notes) var todos: [ToDo.ID] = []
             }
             """,
             expandedSource: """
             struct Note {
-                let id: Int
+                let id: UUID
                 var todos: [ToDo.ID] = []
             }
 
@@ -83,6 +83,35 @@ final class RecordMacroTests: XCTestCase {
             }
             """,
             diagnostics: [DiagnosticSpec(message: "@Record can only be applied to a struct", line: 1, column: 1)],
+            macros: macros
+        )
+    }
+
+    func testRejectsNonUUIDIDs() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Counter {
+                var id: Int
+                var count = 0
+            }
+            """,
+            expandedSource: """
+            struct Counter {
+                var id: Int
+                var count = 0
+            }
+
+            extension Counter: Record {
+                static var schema: RecordSchema<Counter> {
+                    RecordSchema(table: "Counter", fields: [
+                        .field("id", \\Counter.id),
+                        .field("count", \\Counter.count)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [DiagnosticSpec(message: "A record's 'id' must be a 'UUID'", line: 3, column: 9)],
             macros: macros
         )
     }

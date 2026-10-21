@@ -2,6 +2,9 @@ import Foundation
 
 /// A struct stored in its own SQLite table. Adopt it with the `@Record` macro rather than directly.
 ///
+/// A record's `id` is a `UUID`, so records created on different devices never collide, which a sync
+/// layer depends on.
+///
 /// ```swift
 /// @Record
 /// struct ToDo {
@@ -10,7 +13,7 @@ import Foundation
 ///     @Reference(deleteRule: .none) var notes: [Note] = []
 /// }
 /// ```
-public protocol Record: Identifiable, Codable, Sendable where ID: Codable & Sendable {
+public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
     static var schema: RecordSchema<Self> { get }
 }
 
