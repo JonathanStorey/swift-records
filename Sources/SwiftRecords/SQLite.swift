@@ -23,7 +23,7 @@ public struct SQLiteError: Error, CustomStringConvertible {
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-/// A thin wrapper over one SQLite connection. Not thread-safe; `RecordStore` serializes access.
+/// A thin wrapper over one SQLite connection. Not thread-safe; `RecordContainer` serializes access.
 final class SQLiteDatabase {
     private var handle: OpaquePointer?
     private var savepointDepth = 0

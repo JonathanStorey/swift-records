@@ -5,14 +5,14 @@ import Foundation
 /// Supported: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, comparisons with `nil`,
 /// `String.contains` (iOS 18 and macOS 15), `localizedStandardContains`, and `[values].contains(\.property)` on a record's own
 /// stored properties, plus `$0.relationship.contains { ... }` over a to-many relationship, which becomes an
-/// `EXISTS` subquery. `RecordStore` evaluates anything else in memory.
+/// `EXISTS` subquery. `RecordContainer` evaluates anything else in memory.
 enum PredicateTranslator {
     struct Clause {
         var sql: String
         var bindings: [SQLiteValue]
-        /// Columns the clause reads, by table, so the store can add any that do not exist yet.
+        /// Columns the clause reads, by table, so the container can add any that do not exist yet.
         var columns: [(table: String, column: String)]
-        /// Join tables the clause reads. If one does not exist, the store filters in memory instead.
+        /// Join tables the clause reads. If one does not exist, the container filters in memory instead.
         var relations: [String]
     }
 

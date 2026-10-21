@@ -1,6 +1,6 @@
 import Foundation
 
-public enum RecordStoreError: Error, Equatable {
+public enum RecordContainerError: Error, Equatable {
     /// A `.deny` relationship still has records, so its owner cannot be deleted.
     case deleteDenied(table: String, field: String)
     /// Records refer to each other through forward properties. Use `@Reference(from:)` for back-pointers.
@@ -16,7 +16,7 @@ public enum RecordStoreError: Error, Equatable {
 ///
 /// Each record type gets its own table. Each relationship property gets a join table named
 /// `Owner.property` that keeps the order of both sides.
-public final class RecordStore: @unchecked Sendable {
+public final class RecordContainer: @unchecked Sendable {
     private let db: SQLiteDatabase
     private let lock = NSRecursiveLock()
     private var columns: [String: Set<String>] = [:]
@@ -31,10 +31,10 @@ public final class RecordStore: @unchecked Sendable {
         var table: String { ownerTable + "." + field }
     }
 
-    /// The zone this store was opened with, or `nil` when opened by URL.
+    /// The zone this container was opened with, or `nil` when opened by URL.
     public let zone: Zone?
 
-    /// The database file, or `nil` for an in-memory store.
+    /// The database file, or `nil` for an in-memory container.
     public let url: URL?
 
     /// Opens or creates the zone's file. With no arguments this is `default.sqlite` in
@@ -225,7 +225,7 @@ public final class RecordStore: @unchecked Sendable {
 
         for info in owned where info.deleteRule == .deny {
             if try count(in: info.table, where: "owner", is: id) > 0 {
-                throw RecordStoreError.deleteDenied(table: table, field: info.field)
+                throw RecordContainerError.deleteDenied(table: table, field: info.field)
             }
         }
         for info in owned {
@@ -262,7 +262,7 @@ public final class RecordStore: @unchecked Sendable {
     }
 
     /// Fetches records by ID in the order given, skipping any that no longer exist. Use it to load an
-    /// inverse relationship: `store.fetch(ToDo.self, ids: note.todos)`.
+    /// inverse relationship: `container.fetch(ToDo.self, ids: note.todos)`.
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try locked {
             try ids.compactMap { try fetchRow(R.self, id: ValueCoding.encode($0)) }
@@ -320,7 +320,7 @@ public final class RecordStore: @unchecked Sendable {
 
     private func decodeRow<R: Record>(_ type: R.Type, row: [String: SQLiteValue]) throws -> R {
         let key = "\(R.table)|\(row["id"] ?? .null)"
-        guard decoding.insert(key).inserted else { throw RecordStoreError.cycle(table: R.table) }
+        guard decoding.insert(key).inserted else { throw RecordContainerError.cycle(table: R.table) }
         defer { decoding.remove(key) }
         return try R(from: RecordDecoder<R>(row: row, loader: self))
     }
@@ -387,7 +387,7 @@ public final class RecordStore: @unchecked Sendable {
     private func inverseRelation(_ keyPath: AnyKeyPath) throws -> RelationInfo? {
         guard let ownerType = type(of: keyPath).rootType as? any Record.Type,
               let field = fieldName(ownerType, keyPath) else {
-            throw RecordStoreError.unknownInverse("\(keyPath)")
+            throw RecordContainerError.unknownInverse("\(keyPath)")
         }
         return relations().first { $0.ownerTable == ownerType.table && $0.field == field }
     }
@@ -397,7 +397,7 @@ public final class RecordStore: @unchecked Sendable {
     }
 }
 
-extension RecordStore: RelationLoader {
+extension RecordContainer: RelationLoader {
     func loadRelation(owner table: String, ownerID: SQLiteValue, field: String, targetType: any Record.Type) throws -> [any Record] {
         let relation = quoted(table + "." + field)
         guard hasRelation(owner: table, field: field) else { return [] }

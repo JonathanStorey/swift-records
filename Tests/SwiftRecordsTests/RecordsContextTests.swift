@@ -11,12 +11,12 @@ import Testing
         context.save(ToDo(title: "One"))
         context.save(ToDo(title: "Two"))
         #expect(context.hasChanges)
-        #expect(try context.store.fetch(ToDo.self).isEmpty)
+        #expect(try context.container.fetch(ToDo.self).isEmpty)
 
         try context.save()
         #expect(!context.hasChanges)
         #expect(context.changeCount == 1)
-        #expect(try context.store.fetch(ToDo.self).count == 2)
+        #expect(try context.container.fetch(ToDo.self).count == 2)
     }
 
     @Test func fetchIncludesPendingChanges() throws {
@@ -32,7 +32,7 @@ import Testing
             await Task.yield()
         }
         #expect(context.changeCount == 1)
-        #expect(try context.store.fetch(ToDo.self).map(\.title) == ["Auto"])
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Auto"])
     }
 
     @Test func applyInsertsUpdatesDeletesAndOrders() throws {
@@ -49,18 +49,18 @@ import Testing
         context.apply(todos, replacing: previous, keepOrder: true)
         try context.save()
 
-        #expect(try context.store.fetch(ToDo.self).map(\.title) == ["C", "A2", "D"])
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["C", "A2", "D"])
     }
 
     @Test func failedSaveRollsBackEverything() throws {
         context.autosaveEnabled = false
         let folder = Folder(id: 7, name: "Locked", items: [Subtask(title: "Item")])
-        try context.store.save(folder)
+        try context.container.save(folder)
 
         context.save(ToDo(title: "Should not land"))
         context.delete(folder)
-        #expect(throws: RecordStoreError.self) { try context.save() }
-        #expect(try context.store.fetch(ToDo.self).isEmpty)
-        #expect(try context.store.fetch(Folder.self, id: 7) != nil)
+        #expect(throws: RecordContainerError.self) { try context.save() }
+        #expect(try context.container.fetch(ToDo.self).isEmpty)
+        #expect(try context.container.fetch(Folder.self, id: 7) != nil)
     }
 }

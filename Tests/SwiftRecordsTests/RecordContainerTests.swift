@@ -41,8 +41,8 @@ struct Folder {
     @Reference(deleteRule: .deny) var items: [Subtask] = []
 }
 
-@Suite struct RecordStoreTests {
-    let store = try! RecordStore(zone: .inMemory)
+@Suite struct RecordContainerTests {
+    let store = try! RecordContainer(zone: .inMemory)
 
     @Test func roundTripsScalarsAndJSON() throws {
         let due = Date(timeIntervalSince1970: 1_000_000)
@@ -133,7 +133,7 @@ struct Folder {
     @Test func denyBlocksDelete() throws {
         let folder = Folder(id: 1, name: "Inbox", items: [Subtask(title: "Item")])
         try store.save(folder)
-        #expect(throws: RecordStoreError.deleteDenied(table: "Folder", field: "items")) {
+        #expect(throws: RecordContainerError.deleteDenied(table: "Folder", field: "items")) {
             try store.delete(folder)
         }
         #expect(try store.fetch(Folder.self, id: 1) != nil)
@@ -222,10 +222,10 @@ struct Folder {
         defer { try? FileManager.default.removeItem(at: url) }
         let todo = ToDo(title: "Saved", notes: [Note(text: "On disk")])
         do {
-            let store = try RecordStore(url: url)
+            let store = try RecordContainer(url: url)
             try store.save(todo)
         }
-        let reopened = try RecordStore(url: url)
+        let reopened = try RecordContainer(url: url)
         let fetched = try #require(try reopened.fetch(ToDo.self, id: todo.id))
         #expect(fetched.notes.map(\.text) == ["On disk"])
         // Delete rules survive a relaunch because they are stored with the schema.

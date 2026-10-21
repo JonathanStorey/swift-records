@@ -11,7 +11,7 @@ import Foundation
 ///     static let drafts: Zone = "drafts"
 /// }
 ///
-/// let store = try RecordStore(zone: .drafts)
+/// let container = try RecordContainer(zone: .drafts)
 /// ```
 public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomStringConvertible {
     /// The file name without extension, or `nil` for an in-memory zone.
@@ -32,7 +32,7 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     /// The zone used when none is given: `default.sqlite`.
     public static let `default`: Zone = "default"
 
-    /// A database that lives only as long as its store. Useful for tests and previews.
+    /// A database that lives only as long as its container. Useful for tests and previews.
     public static let inMemory = Zone(inMemory: ())
 
     public var description: String { name ?? "in-memory" }
@@ -41,7 +41,7 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     public func url(in directory: URL) throws -> URL? {
         guard let name else { return nil }
         guard !name.isEmpty, !name.hasPrefix("."), name.rangeOfCharacter(from: Self.disallowed) == nil else {
-            throw RecordStoreError.invalidZoneName(name)
+            throw RecordContainerError.invalidZoneName(name)
         }
         return directory.appendingPathComponent(name + ".sqlite")
     }
