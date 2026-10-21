@@ -20,15 +20,12 @@ import Testing
         #expect(try container.fetch(ToDo.self, limit: 5, offset: 20).isEmpty)
     }
 
-    @Test func pagesFilterAndSort() throws {
+    @Test func pagesFilter() throws {
         let sql = try container.fetch(ToDo.self, where: #Predicate { $0.priority == 0 }, limit: 2, offset: 1)
         #expect(sql.map(\.title) == ["Item 3", "Item 6"])
 
         let inMemory = try container.fetch(ToDo.self, where: #Predicate { $0.title.count > 0 && $0.priority == 0 }, limit: 2, offset: 1)
         #expect(inMemory.map(\.title) == ["Item 3", "Item 6"])
-
-        let sorted = try container.fetch(ToDo.self, sortBy: [SortDescriptor(\.title, order: .reverse)], limit: 2)
-        #expect(sorted.map(\.title) == ["Item 9", "Item 8"])
     }
 
     @Test func countsInSQLOrMemory() throws {

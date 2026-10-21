@@ -9,8 +9,11 @@ public enum RecordContainerError: Error, Equatable {
     case invalidZoneName(String)
 }
 
-/// The SQLite database behind your records. Thread-safe, and every method is synchronous, so it can be
-/// used from the main actor (as `RecordsContext` does) or from any background task.
+/// A zone's database file, its asset files and the schema of the records stored in it, in the role
+/// SwiftData gives `ModelContainer`.
+///
+/// You read and write records through a context: `mainContext` on the main actor, or the context that
+/// `performBackgroundTask(_:)` hands you for work off the main actor.
 ///
 /// Each record type gets its own table. Each relationship property gets a join table named
 /// `Owner.property` that keeps the order of both sides.
@@ -36,6 +39,8 @@ public final class RecordContainer: @unchecked Sendable {
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
+    /// Created on first use by `mainContext`, on the main actor.
+    private nonisolated(unsafe) var mainContextStorage: RecordsContext?
 
     var structureVersion: Int { locked { structuralChanges } }
 
@@ -61,17 +66,85 @@ public final class RecordContainer: @unchecked Sendable {
     /// Opens or creates the zone's file. With no arguments this is `default.sqlite` in
     /// `Zone.defaultDirectory`. Pass `directory` to keep zone files somewhere else, such as in tests.
     public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
+        try self.init(zone: zone, directory: directory, registering: true)
+    }
+
+    /// Opens or creates a database file at an exact location.
+    public convenience init(url: URL) throws {
+        try self.init(zone: nil, url: url)
+        Self.register(self)
+    }
+
+    private convenience init(zone: Zone, directory: URL?, registering: Bool) throws {
         let directory = directory ?? Zone.defaultDirectory
         let url = try zone.url(in: directory)
         if url != nil {
             try Zone.prepare(directory)
         }
         try self.init(zone: zone, url: url)
+        if registering {
+            Self.register(self)
+        }
     }
 
-    /// Opens or creates a database file at an exact location.
-    public convenience init(url: URL) throws {
-        try self.init(zone: nil, url: url)
+    // MARK: Contexts
+
+    /// The container's main-actor context, which views and app code use to read and write records. The
+    /// container keeps it while the container is open, so every caller shares its pending changes.
+    @MainActor
+    public var mainContext: RecordsContext {
+        if let context = mainContextStorage {
+            return context
+        }
+        let context = RecordsContext(container: self)
+        mainContextStorage = context
+        return context
+    }
+
+    /// Runs `body` off the main actor with a context of its own, for work such as an import. Each save
+    /// or delete commits right away unless it is inside the context's `transaction(_:)`, and the main
+    /// context refreshes after each commit.
+    public func performBackgroundTask<T: Sendable>(
+        _ body: @escaping @Sendable (BackgroundContext) throws -> T
+    ) async throws -> T {
+        try await Task.detached { try body(BackgroundContext(container: self)) }.value
+    }
+
+    // MARK: Shared containers
+
+    private struct Registration {
+        weak var container: RecordContainer?
+        /// Set for containers that `shared(_:)` opened, which nothing else keeps alive.
+        var retained: RecordContainer?
+    }
+
+    private nonisolated(unsafe) static var registry: [String: Registration] = [:]
+    private static let registryLock = NSLock()
+
+    /// The container for a zone's file in `Zone.defaultDirectory`: the most recently opened one that is
+    /// still alive, or a new one that stays open for the rest of the process. `@Records` uses it for a
+    /// zone that isn't in the environment.
+    public static func shared(_ zone: Zone = .default) throws -> RecordContainer {
+        let key = key(for: try zone.url(in: Zone.defaultDirectory))
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let container = registry[key]?.container {
+            return container
+        }
+        let container = try RecordContainer(zone: zone, directory: nil, registering: false)
+        registry[key] = Registration(container: container, retained: container)
+        return container
+    }
+
+    private static func key(for url: URL?) -> String {
+        url?.standardizedFileURL.path ?? "in-memory"
+    }
+
+    /// Makes a newly opened container the one `shared(_:)` returns for its file.
+    private static func register(_ container: RecordContainer) {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        registry[key(for: container.url)] = Registration(container: container)
     }
 
     private init(zone: Zone?, url: URL?) throws {
@@ -104,7 +177,7 @@ public final class RecordContainer: @unchecked Sendable {
     // MARK: Transactions
 
     /// Runs `body` atomically. Nested calls join the outer transaction.
-    public func transaction<T>(_ body: () throws -> T) throws -> T {
+    package func transaction<T>(_ body: () throws -> T) throws -> T {
         try locked {
             fileChanges.append(([], []))
             logged.append([:])
@@ -152,11 +225,11 @@ public final class RecordContainer: @unchecked Sendable {
     // MARK: Saving
 
     /// Inserts or updates a record, every record nested inside it, and its relationships.
-    public func save<R: Record>(_ record: R) throws {
+    package func save<R: Record>(_ record: R) throws {
         try save([record])
     }
 
-    public func save<R: Record>(_ records: [R]) throws {
+    package func save<R: Record>(_ records: [R]) throws {
         try transaction {
             var visited: Set<RowKey> = []
             for record in records {
@@ -360,7 +433,7 @@ public final class RecordContainer: @unchecked Sendable {
     }
 
     /// Stores the manual order of records of one type, used when a fetch has no sort descriptors.
-    public func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
+    package func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
         try transaction {
             guard tableExists(R.table) else { return }
             var current: [SQLiteValue: SQLiteValue] = [:]
@@ -380,11 +453,11 @@ public final class RecordContainer: @unchecked Sendable {
     // MARK: Deleting
 
     /// Deletes a record and applies each relationship's delete rule.
-    public func delete<R: Record>(_ record: R) throws {
+    package func delete<R: Record>(_ record: R) throws {
         try delete(R.self, id: record.id)
     }
 
-    public func delete<R: Record>(_ type: R.Type, id: R.ID) throws {
+    package func delete<R: Record>(_ type: R.Type, id: R.ID) throws {
         let id = try ValueCoding.encode(id)
         try transaction { try deleteRow(R.table, id: id) }
     }
@@ -437,13 +510,13 @@ public final class RecordContainer: @unchecked Sendable {
 
     // MARK: Fetching
 
-    public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
+    package func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
         try fetch(type, ids: [id]).first
     }
 
     /// Fetches records by ID in the order given, skipping any that no longer exist. Use it to load an
     /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbooks)`.
-    public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
+    package func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try locked {
             guard tableExists(R.table) else { return [] }
             try prepare(R.self)
@@ -461,47 +534,30 @@ public final class RecordContainer: @unchecked Sendable {
         }
     }
 
-    /// Fetches records matching a predicate, sorted by the descriptors or else by their stored order.
+    /// Fetches records matching a predicate in their stored order.
     ///
     /// Simple predicates on a record's own properties run as SQL. Anything else is evaluated in memory.
-    public func fetch<R: Record>(
-        _ type: R.Type = R.self,
-        where predicate: Predicate<R>? = nil,
-        sortBy sortDescriptors: [SortDescriptor<R>] = []
-    ) throws -> [R] {
-        try locked {
-            var records = try fetchRecords(R.self, where: predicate, page: nil)
-            if !sortDescriptors.isEmpty {
-                records.sort(using: sortDescriptors)
-            }
-            return records
-        }
+    package func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
+        try locked { try fetchRecords(R.self, where: predicate, page: nil) }
     }
 
     /// Fetches one page of records: at most `limit` of them, starting `offset` records into the results.
     ///
     /// The slice's indices are the records' positions in the full results, so a page fetched with an
-    /// offset of 40 starts at index 40. Without sort descriptors the page is read straight from SQL when
-    /// the predicate translates. With sort descriptors, every match is loaded and sorted first.
-    public func fetch<R: Record>(
+    /// offset of 40 starts at index 40. The page is read straight from SQL when the predicate translates.
+    package func fetch<R: Record>(
         _ type: R.Type = R.self,
         where predicate: Predicate<R>? = nil,
-        sortBy sortDescriptors: [SortDescriptor<R>] = [],
         limit: Int,
         offset: Int = 0
     ) throws -> RecordSlice<R> {
         precondition(limit >= 0 && offset >= 0, "limit and offset must not be negative")
         return try locked {
-            if sortDescriptors.isEmpty {
-                return RecordSlice(try fetchRecords(R.self, where: predicate, page: (limit, offset)), startIndex: offset)
-            }
-            let all = try fetchRecords(R.self, where: predicate, page: nil).sorted(using: sortDescriptors)
-            let start = min(offset, all.count)
-            return RecordSlice(Array(all[start..<min(start + limit, all.count)]), startIndex: offset)
+            RecordSlice(try fetchRecords(R.self, where: predicate, page: (limit, offset)), startIndex: offset)
         }
     }
 
-    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
+    package func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
         try locked {
             guard tableExists(R.table) else { return 0 }
             try prepare(R.self)
@@ -873,7 +929,7 @@ extension RecordContainer {
     }
 
     /// The token of the latest change, to store before you start reading changes.
-    public var changeToken: ChangeToken {
+    package var changeToken: ChangeToken {
         get throws {
             try locked {
                 let row = try db.run("SELECT seq FROM sqlite_sequence WHERE name = '_records_changes'").first
@@ -885,7 +941,7 @@ extension RecordContainer {
 
     /// Each record's latest change after `token`, oldest first. Store the last change's token and pass it
     /// next time.
-    public func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
+    package func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
         try locked {
             try db.run(
                 "SELECT * FROM \"_records_changes\" WHERE seq > ? ORDER BY seq", [.integer(token.rawValue)]
@@ -903,14 +959,14 @@ extension RecordContainer {
 
     /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
     /// because there is only one per record. A sync layer calls this once the server has the deletes.
-    public func pruneChanges(before token: ChangeToken) throws {
+    package func pruneChanges(before token: ChangeToken) throws {
         try transaction {
             _ = try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete' AND seq < ?", [.integer(token.rawValue)])
         }
     }
 
     /// A record's version, last change and tag, or `nil` if it isn't stored.
-    public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
+    package func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
         try locked {
             guard tableExists(R.table), columns[R.table, default: []].contains("_version") else {
                 return try fetch(type, id: id) == nil ? nil : RecordMetadata(version: 0, modified: nil, tag: nil)
@@ -929,7 +985,7 @@ extension RecordContainer {
     }
 
     /// Stores opaque sync data with a record without changing its version or logging a change.
-    public func setTag<R: Record>(_ tag: Data?, for type: R.Type, id: R.ID) throws {
+    package func setTag<R: Record>(_ tag: Data?, for type: R.Type, id: R.ID) throws {
         try transaction {
             guard tableExists(R.table) else { return }
             try ensureTable(R.table)

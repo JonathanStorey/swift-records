@@ -27,17 +27,35 @@ struct Note {
 Every record's `id` is a `UUID`, so records created on different devices never collide. IDs are
 stored as 16-byte blobs, which keeps primary keys and join tables compact.
 
-## Storing and querying
+## Containers and contexts
+
+The shape follows SwiftData. A `RecordContainer` owns a zone's file, its assets and the schema. You
+read and write through a context.
 
 ```swift
 let container = try RecordContainer()                // the default zone
+let context = container.mainContext                  // one per container, on the main actor
 
-try container.save(todo)                             // saves the ToDo, its Person and every Note
-let open = try container.fetch(ToDo.self,
-                           where: #Predicate { !$0.done },
-                           sortBy: [SortDescriptor(\.title)])
-let parents = try container.fetch(ToDo.self, ids: note.todos)
-try container.delete(todo)
+context.save(todo)                                   // the ToDo, its Person and every Note
+let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
+let parents = try context.fetch(ToDo.self, ids: note.todos)
+context.delete(todo)
+try context.save()                                   // or let autosave commit once edits pause
+```
+
+The main context collects changes and commits them together, either when you call `save()` or
+automatically once edits pause for `autosaveDelay`. Every fetch saves first, so results include your
+own edits. Records come back in their stored order. To show them in another order, sort a copy.
+
+For work off the main actor, such as an import, use a background context. Its saves commit right away,
+`transaction(_:)` groups several into one commit, and the main context refreshes after each commit.
+
+```swift
+try await container.performBackgroundTask { context in
+    try context.transaction {
+        for item in downloaded { try context.save(item) }
+    }
+}
 ```
 
 ## Zones
@@ -66,7 +84,7 @@ Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`
 `localizedStandardContains`. Searching inside a to-many relationship also runs as SQL:
 
 ```swift
-let greeted = try container.fetch(ToDo.self, where: #Predicate { todo in
+let greeted = try context.fetch(ToDo.self, where: #Predicate { todo in
     todo.notes.contains { $0.text == "hello world" }
 })
 ```
@@ -91,7 +109,7 @@ Anything else is evaluated in memory, so every predicate works.
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
 - An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
-  recurse forever with value types, so fetch them with `container.fetch(_:ids:)`. Reordering the IDs and
+  recurse forever with value types, so fetch them with `context.fetch(_:ids:)`. Reordering the IDs and
   saving persists the new order.
 
 ## Assets
@@ -106,8 +124,8 @@ struct Photo {
     @Asset(fileExtension: "jpg") var image: Data? = nil
 }
 
-try container.save(Photo(image: jpeg))
-let photo = try container.fetch(Photo.self).first
+context.save(Photo(image: jpeg))
+let photo = try context.fetch(Photo.self).first
 let url = photo?.$image.url      // the stored file, for AsyncImage, QuickLook or AVPlayer
 let bytes = photo?.image         // read from disk on first access, then cached
 ```
@@ -124,25 +142,25 @@ let bytes = photo?.image         // read from disk on first access, then cached
 ## Paging and counting
 
 ```swift
-let page = try container.fetch(ToDo.self, where: #Predicate { !$0.done }, limit: 20, offset: 40)
+let page = try context.fetch(ToDo.self, where: #Predicate { !$0.done }, limit: 20, offset: 40)
 page.indices            // 40..<60, the records' positions in the full results
-try container.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(*) when it translates
+try context.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(*) when it translates
 ```
 
-A page is a read-only `RecordSlice`. Without sort descriptors it is read straight from SQL.
+A page is a read-only `RecordSlice`, read straight from SQL when the predicate translates.
 
 ## Change tracking
 
 Every save keeps a record's bookkeeping beside it, out of the record's own properties:
 
 ```swift
-let meta = try container.metadata(ToDo.self, id: todo.id)
+let meta = try context.metadata(ToDo.self, id: todo.id)
 meta?.version     // goes up once per save that changes the record's values, links or order
 meta?.modified    // when that save happened
 
-let token = try container.changeToken
+let token = try context.changeToken
 // …later
-for change in try container.changes(since: token) {
+for change in try context.changes(since: token) {
     change.recordType, change.id, change.kind   // "ToDo", its UUID, .save or .delete
 }
 ```
@@ -150,26 +168,27 @@ for change in try container.changes(since: token) {
 - The log keeps one entry per record, so editing a record moves its entry rather than adding one. It
   grows only with the number of records, plus one entry per deleted record.
 - `pruneChanges(before:)` removes deleted records' entries older than a token.
-- `setTag(_:for:id:)` stores opaque data with a record, such as a `CKRecord`'s archived system fields,
-  without changing its version. `metadata(_:id:)?.tag` reads it back. Fetches never load tags.
+- Each record also has a tag, opaque data such as a `CKRecord`'s archived system fields, which
+  `metadata(_:id:)?.tag` reads. Storing a tag never changes the version, and fetches never load tags.
+- Reading changes or metadata saves the context's pending edits first.
 
 These are the pieces a sync layer such as `CKSyncEngine` needs: what changed, what was deleted, and the
-server's change tag for each record. Within this package, a sync layer also gets
+server's change tag for each record. Within this package, a sync layer also gets `setTag(_:for:id:)`,
 `applyingSyncedChanges(_:)`, whose writes are never logged and so never sent back, and a small key-value
 store (`syncValue(forKey:)`) for its engine state and change token.
 
-A `RecordsContext` refreshes its views after any change committed to its container, including ones
-written by a background task or a sync layer.
+The main context refreshes its views after any change committed to its container, including ones
+written by a background context or a sync layer.
 
 ## SwiftUI
 
 ```swift
 @main
 struct ToDoApp: App {
-    @State private var context = try! RecordsContext()   // the default zone
+    let container = try! RecordContainer()   // the default zone
 
     var body: some Scene {
-        WindowGroup { ContentView().recordsContext(context) }
+        WindowGroup { ContentView().recordContainer(container) }
     }
 }
 
@@ -184,15 +203,15 @@ struct ContentView: View {
 }
 ```
 
-Without a context in the environment, `@Records` uses the default zone's shared context.
-`@Records("drafts")` reads another zone, through the environment's context if it belongs to that zone
-and otherwise through `RecordsContext.shared(_:)`.
+Without a container in the environment, `@Records` uses the default zone's shared container.
+`@Records("drafts")` reads another zone, through the environment's container if it belongs to that
+zone and otherwise through `RecordContainer.shared(_:)`, which returns the most recently opened
+container for a zone's file. Either way it reads and writes through that container's `mainContext`.
 
-`$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through `RecordsContext`,
+`$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
-default). The array's order is stored, so moves persist. `@Records` and `RecordsContext` return
-records in stored order. Sort with `RecordContainer.fetch(_:where:sortBy:)`, or sort a copy for
-display.
+default). The array's order is stored, so moves persist, and records always come back in that order.
+Sort a copy to display them another way.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows, links and positions that actually changed, and a `@Records`

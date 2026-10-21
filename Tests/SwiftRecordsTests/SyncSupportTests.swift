@@ -64,7 +64,7 @@ import Testing
 
 @MainActor
 @Suite struct OutsideChangeTests {
-    let context = try! RecordsContext(zone: .inMemory)
+    let context = try! RecordContainer(zone: .inMemory).mainContext
 
     private func settle() async {
         for _ in 0..<5 { await Task.yield() }
@@ -90,9 +90,16 @@ import Testing
 
     @Test func backgroundWritesRefreshToo() async throws {
         let before = context.changeCount
-        let container = context.container
-        await Task.detached { try? container.save(Person(name: "Imported")) }.value
+        let count = try await context.container.performBackgroundTask { background in
+            try background.transaction {
+                try background.save(Person(name: "Imported"))
+                try background.save(Person(name: "Also imported"))
+            }
+            return try background.count(Person.self)
+        }
         await settle()
+        #expect(count == 2)
         #expect(context.changeCount == before + 1)
+        #expect(try context.fetch(Person.self).map(\.name) == ["Imported", "Also imported"])
     }
 }

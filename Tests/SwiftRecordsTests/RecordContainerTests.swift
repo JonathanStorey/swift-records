@@ -190,13 +190,11 @@ struct Folder {
         #expect(long.map(\.title) == ["A much longer title"])
     }
 
-    @Test func sortsWithDescriptorsOrStoredOrder() throws {
+    @Test func fetchesInStoredOrder() throws {
         let todos = [ToDo(title: "B", priority: 2), ToDo(title: "C", priority: 1), ToDo(title: "A", priority: 3)]
         try store.save(todos)
 
         #expect(try store.fetch(ToDo.self).map(\.title) == ["B", "C", "A"])
-        #expect(try store.fetch(ToDo.self, sortBy: [SortDescriptor(\.title)]).map(\.title) == ["A", "B", "C"])
-        #expect(try store.fetch(ToDo.self, sortBy: [SortDescriptor(\.priority, order: .reverse)]).map(\.title) == ["A", "B", "C"])
 
         try store.setOrder([todos[2].id, todos[0].id, todos[1].id], for: ToDo.self)
         #expect(try store.fetch(ToDo.self).map(\.title) == ["A", "B", "C"])

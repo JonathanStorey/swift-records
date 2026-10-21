@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 @Suite struct RecordsContextTests {
-    let context = try! RecordsContext(zone: .inMemory)
+    let context = try! RecordContainer(zone: .inMemory).mainContext
 
     @Test func batchesChangesUntilSave() throws {
         context.autosaveEnabled = false
