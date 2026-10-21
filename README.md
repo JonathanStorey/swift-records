@@ -48,6 +48,15 @@ The main context collects changes and commits them together, either when you cal
 automatically once edits pause for `autosaveDelay`. Every fetch saves first, so results include your
 own edits. Records come back in their stored order. To show them in another order, sort a copy.
 
+Saving and fetching also come in `async` versions, which do the database work off the main actor and
+suspend instead of blocking while a background import holds the file. Autosave always uses them. In
+async code the compiler picks them, so add `await`. The synchronous versions stay for everything else.
+
+```swift
+try await context.save()
+let open = try await context.fetch(ToDo.self, where: #Predicate { !$0.done })
+```
+
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. A failed autosave sets `lastSaveError` and rolls back, since nothing could retry it.
 
@@ -95,7 +104,9 @@ let directory = Zone.directory(appGroup: "group.com.example.todo")!
 let container = try RecordContainer(directory: directory)
 ```
 
-Files use SQLite's write-ahead log, so the app and an extension can read while the other writes.
+Files use SQLite's write-ahead log, so the app and an extension can read while the other writes. Every
+save and fetch sees the other process's latest commits. Views refresh for them when the app becomes
+active, or right away when you call `context.refresh()`.
 Containers opened on the same file within one process share a connection, so each sees the other's
 changes and their main contexts refresh together.
 

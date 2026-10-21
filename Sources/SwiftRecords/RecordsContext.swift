@@ -13,7 +13,10 @@ import AppKit
 /// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
 /// change to each record is kept, so rapid edits such as typing cost one write. Views using `@Records`
 /// refresh after each save, and after changes written to the container some other way, such as by a
-/// background import or a sync engine.
+/// background import, a sync engine or an app extension.
+///
+/// Saving and fetching have `async` versions, which do the database work off the main actor. Use them in
+/// async code so the interface keeps running while a background import holds the file.
 @MainActor
 @Observable
 public final class RecordsContext {
@@ -35,12 +38,25 @@ public final class RecordsContext {
     /// The error from the most recent autosave, if it failed. A failed autosave discards its changes.
     public private(set) var lastSaveError: Error?
 
-    private struct Change {
+    private struct Change: Sendable {
         let sequence: Int
         let source: ObjectIdentifier?
         /// Stored orders run after every record change, so records inserted in the same save take their places.
         var isOrder = false
-        let run: (RecordContainer) throws -> Void
+        let run: @Sendable (RecordContainer) throws -> Void
+    }
+
+    /// The changes one save commits, and what it took from `pending`.
+    private struct Batch: Sendable {
+        let taken: [String: Change]
+        let changes: [Change]
+    }
+
+    /// What a committed batch reports back to the main actor.
+    private struct Commit: Sendable {
+        /// The container's commit count just before this batch committed.
+        let base: Int
+        let changedStructure: Bool
     }
 
     private struct ChangeHandler {
@@ -60,13 +76,19 @@ public final class RecordsContext {
     @ObservationIgnored private var knownCommits: Int
     @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
     @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
+    /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
+    @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordsContext")
+    /// Async saves committing now. Their commits are accounted for when they finish.
+    @ObservationIgnored private var savesInFlight = 0
 
     init(container: RecordContainer) {
         self.container = container
         knownCommits = container.commitCount
-        lifecycle = LifecycleObserver { [weak self] in
+        lifecycle = LifecycleObserver(resignActive: { [weak self] in
             self?.autosave()
-        }
+        }, becomeActive: { [weak self] in
+            self?.refresh()
+        })
         commitObserver = container.observeCommits { [weak self] in
             Task { @MainActor in self?.containerDidCommit() }
         }
@@ -80,6 +102,7 @@ public final class RecordsContext {
 
     /// Refreshes views after commits this context didn't make. Its own saves are already counted.
     private func containerDidCommit() {
+        guard savesInFlight == 0 else { return }
         let commits = container.commitCount
         guard commits != knownCommits else { return }
         knownCommits = commits
@@ -131,32 +154,23 @@ public final class RecordsContext {
     /// Commits every pending change in one transaction. If the save fails, the changes stay pending so
     /// you can fix the cause and save again, or discard them with `rollback()`.
     public func save() throws {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        guard !pending.isEmpty else { return }
-        let saving = pending
-        let changes = pending.values.sorted { ($0.isOrder ? 1 : 0, $0.sequence) < ($1.isOrder ? 1 : 0, $1.sequence) }
-        pending = [:]
-        let structure = container.structureVersion
-        var base = 0
-        do {
-            try container.transaction {
-                base = container.commitCount
-                for change in changes {
-                    try change.run(container)
-                }
-            }
-        } catch {
-            pending = saving.merging(pending) { _, newer in newer }
-            throw error
+        guard let batch = takePending() else {
+            waitForSaves()
+            return
         }
-        // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
-        let commits = container.commitCount
-        let outside = base != knownCommits || commits > base + 1
-        knownCommits = commits
-        let sources = Set(changes.map(\.source))
-        lastSaveSource = !outside && sources.count == 1 && container.structureVersion == structure ? sources.first! : nil
-        didChange()
+        let container = container
+        let result = writer.sync { Result { try Self.commit(batch.changes, to: container) } }
+        try finish(batch, result, keepingFailures: true)
+    }
+
+    /// Commits every pending change in one transaction off the main actor, so the interface keeps running
+    /// while it waits for the file. If the save fails, the changes stay pending, as with `save()`.
+    public func save() async throws {
+        guard let batch = takePending() else {
+            try await read { _ in }
+            return
+        }
+        try await commit(batch, keepingFailures: true)
     }
 
     /// Drops pending changes that have not been saved. Views refresh, so edits made through a `@Records`
@@ -168,6 +182,86 @@ public final class RecordsContext {
         pending = [:]
         lastSaveSource = nil
         didChange()
+    }
+
+    /// Picks up changes another process, such as a widget or app extension, wrote to the zone's file, and
+    /// refreshes views if there are any. The context also checks when the app becomes active, and every
+    /// save and fetch reads the latest data whether or not you call this.
+    public func refresh() {
+        container.checkForExternalChanges()
+    }
+
+    /// Blocks until async saves already started have committed.
+    func waitForSaves() {
+        writer.sync {}
+    }
+
+    private func takePending() -> Batch? {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        guard !pending.isEmpty else { return nil }
+        let taken = pending
+        pending = [:]
+        let changes = taken.values.sorted { ($0.isOrder ? 1 : 0, $0.sequence) < ($1.isOrder ? 1 : 0, $1.sequence) }
+        return Batch(taken: taken, changes: changes)
+    }
+
+    private func commit(_ batch: Batch, keepingFailures: Bool) async throws {
+        savesInFlight += 1
+        let container = container
+        let changes = batch.changes
+        let result = await withCheckedContinuation { continuation in
+            writer.async {
+                continuation.resume(returning: Result { try Self.commit(changes, to: container) })
+            }
+        }
+        savesInFlight -= 1
+        try finish(batch, result, keepingFailures: keepingFailures)
+    }
+
+    private nonisolated static func commit(_ changes: [Change], to container: RecordContainer) throws -> Commit {
+        let structure = container.structureVersion
+        var base = 0
+        try container.transaction {
+            base = container.commitCount
+            for change in changes {
+                try change.run(container)
+            }
+        }
+        return Commit(base: base, changedStructure: container.structureVersion != structure)
+    }
+
+    private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: Bool) throws {
+        let commit: Commit
+        do {
+            commit = try result.get()
+        } catch {
+            if keepingFailures {
+                pending = batch.taken.merging(pending) { _, newer in newer }
+            } else {
+                // Views may show edits that were never stored.
+                lastSaveSource = nil
+                didChange()
+            }
+            throw error
+        }
+        // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
+        let commits = container.commitCount
+        let outside = commit.base != knownCommits || commits > commit.base + 1
+        knownCommits = commits
+        let sources = Set(batch.changes.map(\.source))
+        lastSaveSource = !outside && sources.count == 1 && !commit.changedStructure ? sources.first! : nil
+        didChange()
+    }
+
+    /// Runs `body` after every save already started, off the main actor.
+    private func read<T: Sendable>(_ body: @escaping @Sendable (RecordContainer) throws -> T) async throws -> T {
+        let container = container
+        return try await withCheckedThrowingContinuation { continuation in
+            writer.async {
+                continuation.resume(with: Result { try body(container) })
+            }
+        }
     }
 
     // MARK: Fetching
@@ -209,6 +303,40 @@ public final class RecordsContext {
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try save()
         return try container.fetch(type, ids: ids)
+    }
+
+    // MARK: Fetching off the main actor
+
+    /// Saves pending changes, then fetches records off the main actor. See `fetch(_:where:)`.
+    public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) async throws -> [R] {
+        try await save()
+        return try await read { try $0.fetch(type, where: predicate) }
+    }
+
+    /// Saves pending changes, then fetches one page off the main actor. See `fetch(_:where:limit:offset:)`.
+    public func fetch<R: Record>(
+        _ type: R.Type = R.self,
+        where predicate: Predicate<R>? = nil,
+        limit: Int,
+        offset: Int = 0
+    ) async throws -> RecordSlice<R> {
+        try await save()
+        return try await read { try $0.fetch(type, where: predicate, limit: limit, offset: offset) }
+    }
+
+    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) async throws -> Int {
+        try await save()
+        return try await read { try $0.count(type, where: predicate) }
+    }
+
+    public func fetch<R: Record>(_ type: R.Type, id: R.ID) async throws -> R? {
+        try await save()
+        return try await read { try $0.fetch(type, id: id) }
+    }
+
+    public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) async throws -> [R] {
+        try await save()
+        return try await read { try $0.fetch(type, ids: ids) }
     }
 
     // MARK: Change tracking
@@ -268,7 +396,7 @@ public final class RecordsContext {
     }
 
     private func enqueue(
-        key: String, source: ObjectIdentifier?, isOrder: Bool = false, _ run: @escaping (RecordContainer) throws -> Void
+        key: String, source: ObjectIdentifier?, isOrder: Bool = false, _ run: @escaping @Sendable (RecordContainer) throws -> Void
     ) {
         sequence += 1
         pending[key] = Change(sequence: sequence, source: source, isOrder: isOrder, run: run)
@@ -282,20 +410,33 @@ public final class RecordsContext {
                 await Task.yield()
             }
             guard !Task.isCancelled else { return }
-            self?.autosave()
+            await self?.autosaveInBackground()
         }
     }
 
+    // Nobody can fix and retry an autosave, and a change that always fails would block every later save,
+    // so a failed autosave discards its changes and views show what is stored.
+
+    /// Saves before the app leaves the foreground, which can't wait for an async save.
     private func autosave() {
-        guard autosaveEnabled, !pending.isEmpty else { return }
+        guard autosaveEnabled, let batch = takePending() else { return }
+        let container = container
+        let result = writer.sync { Result { try Self.commit(batch.changes, to: container) } }
         do {
-            try save()
+            try finish(batch, result, keepingFailures: false)
             lastSaveError = nil
         } catch {
-            // Nobody can fix and retry an autosave, and a change that always fails would block every later
-            // save, so the failed changes are discarded and views show what is stored.
             lastSaveError = error
-            rollback()
+        }
+    }
+
+    private func autosaveInBackground() async {
+        guard autosaveEnabled, let batch = takePending() else { return }
+        do {
+            try await commit(batch, keepingFailures: false)
+            lastSaveError = nil
+        } catch {
+            lastSaveError = error
         }
     }
 }
@@ -305,19 +446,25 @@ private final class LifecycleObserver {
     private var tokens: [NSObjectProtocol] = []
 
     @MainActor
-    init(_ handler: @escaping @MainActor @Sendable () -> Void) {
+    init(resignActive: @escaping @MainActor @Sendable () -> Void, becomeActive: @escaping @MainActor @Sendable () -> Void) {
         #if canImport(UIKit) && !os(watchOS)
-        let names = [UIApplication.willResignActiveNotification, UIApplication.willTerminateNotification]
+        let leaving = [UIApplication.willResignActiveNotification, UIApplication.willTerminateNotification]
+        let returning = [UIApplication.didBecomeActiveNotification]
         #elseif canImport(AppKit)
-        let names = [NSApplication.willResignActiveNotification, NSApplication.willTerminateNotification]
+        let leaving = [NSApplication.willResignActiveNotification, NSApplication.willTerminateNotification]
+        let returning = [NSApplication.didBecomeActiveNotification]
         #else
-        let names: [Notification.Name] = []
+        let leaving: [Notification.Name] = []
+        let returning: [Notification.Name] = []
         #endif
-        tokens = names.map { name in
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { handler() }
+        let observe = { (names: [Notification.Name], handler: @escaping @MainActor @Sendable () -> Void) in
+            names.map { name in
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated { handler() }
+                }
             }
         }
+        tokens = observe(leaving, resignActive) + observe(returning, becomeActive)
     }
 
     deinit {

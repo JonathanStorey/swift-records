@@ -28,6 +28,10 @@ final class RecordStore: @unchecked Sendable {
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
+    /// How deeply the current thread holds the lock, so other processes' changes are checked once per access.
+    private var lockDepth = 0
+    /// SQLite's count of commits by other connections, such as an app extension's, as last seen.
+    private var dataVersion: Int64?
 
     var structureVersion: Int { locked { structuralChanges } }
 
@@ -144,8 +148,36 @@ final class RecordStore: @unchecked Sendable {
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
-        defer { lock.unlock() }
+        lockDepth += 1
+        defer {
+            lockDepth -= 1
+            lock.unlock()
+        }
+        if lockDepth == 1 {
+            noticeExternalChanges()
+        }
         return try body()
+    }
+
+    /// Picks up commits another process made to the file, such as a widget's. Its schema may differ from
+    /// what this store cached, and every context must refresh, as after a commit of its own.
+    private func noticeExternalChanges() {
+        guard url != nil, case .integer(let version)? = (try? db.run("PRAGMA data_version"))?.first?["data_version"] else {
+            return
+        }
+        defer { dataVersion = version }
+        guard let dataVersion, dataVersion != version else { return }
+        columns = [:]
+        relationInfo = nil
+        prepared = []
+        structuralChanges += 1
+        commits += 1
+        commitObservers.values.forEach { $0() }
+    }
+
+    /// Checks for changes other processes made to the file. Every access to the store also does this.
+    func checkForExternalChanges() {
+        locked {}
     }
 
     // MARK: Saving
