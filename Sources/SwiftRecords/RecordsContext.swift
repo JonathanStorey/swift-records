@@ -66,7 +66,14 @@ public final class RecordsContext {
         let source: ObjectIdentifier?
         /// Stored orders run after every record change, so records inserted in the same save take their places.
         var isOrder = false
+        /// What the change leaves a single record as, so `hasChanges(in:)` can see it before it commits.
+        var latest: Latest? = nil
         let run: @Sendable (RecordContainer) throws -> Void
+    }
+
+    enum Latest: Sendable {
+        case saved(any Record)
+        case deleted
     }
 
     /// The changes one save commits, and what it took from `pending`.
@@ -188,15 +195,15 @@ public final class RecordsContext {
 
     /// Inserts the record, or updates it if one with the same ID exists.
     public func save<R: Record>(_ record: R) {
-        enqueue(key: Self.key(record), source: nil) { try $0.save(record) }
+        enqueue(key: Self.key(record), source: nil, latest: .saved(record)) { try $0.save(record) }
     }
 
     public func delete<R: Record>(_ record: R) {
-        enqueue(key: Self.key(record), source: nil) { try $0.delete(record) }
+        enqueue(key: Self.key(record), source: nil, latest: .deleted) { try $0.delete(record) }
     }
 
     public func delete<R: Record>(_ type: R.Type, id: R.ID) {
-        enqueue(key: Self.key(type, id: id), source: nil) { try $0.delete(type, id: id) }
+        enqueue(key: Self.key(type, id: id), source: nil, latest: .deleted) { try $0.delete(type, id: id) }
     }
 
     /// Deletes every record that matches the predicate when the context saves, applying each one's
@@ -364,6 +371,15 @@ public final class RecordsContext {
         return try container.count(type, where: predicate)
     }
 
+    /// The record as this context holds it: its pending change if it has one, otherwise the stored copy.
+    /// Unlike a fetch, it doesn't save, so a view can call it while it updates.
+    func current<R: Record>(_ type: R.Type, id: R.ID) throws -> Latest? {
+        if let latest = pending[Self.key(type, id: id)]?.latest {
+            return latest
+        }
+        return try container.fetch(type, id: id).map { .saved($0) }
+    }
+
     public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
         try save()
         return try container.fetch(type, id: id)
@@ -443,10 +459,10 @@ public final class RecordsContext {
     func apply<R: Record>(_ records: [R], replacing previous: [R], source: ObjectIdentifier? = nil) {
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
-            enqueue(key: Self.key(record), source: source) { try $0.delete(record) }
+            enqueue(key: Self.key(record), source: source, latest: .deleted) { try $0.delete(record) }
         }
         for record in records {
-            enqueue(key: Self.key(record), source: source) { try $0.save(record) }
+            enqueue(key: Self.key(record), source: source, latest: .saved(record)) { try $0.save(record) }
         }
         let ids = records.map(\.id)
         enqueue(key: "order|\(R.table)|\(source.map { "\($0)" } ?? "")", source: source, isOrder: true) { try $0.setOrder(ids, for: R.self) }
@@ -461,10 +477,11 @@ public final class RecordsContext {
     }
 
     private func enqueue(
-        key: String, source: ObjectIdentifier?, isOrder: Bool = false, _ run: @escaping @Sendable (RecordContainer) throws -> Void
+        key: String, source: ObjectIdentifier?, isOrder: Bool = false, latest: Latest? = nil,
+        _ run: @escaping @Sendable (RecordContainer) throws -> Void
     ) {
         sequence += 1
-        pending[key] = Change(sequence: sequence, source: source, isOrder: isOrder, run: run)
+        pending[key] = Change(sequence: sequence, source: source, isOrder: isOrder, latest: latest, run: run)
         guard autosaveEnabled else { return }
         autosaveTask?.cancel()
         let delay = autosaveDelay

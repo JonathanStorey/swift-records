@@ -14,8 +14,25 @@ enum CanonicalJSON {
         return encoder
     }()
 
+    /// True while comparing records for `hasChanges(_:)`, which skips what the container sets itself, such
+    /// as timestamps and inverses, and compares assets by file rather than by contents.
+    @TaskLocal static var comparing = false
+
     /// Captures what a value encodes as a tree, marking the parts whose order carries no meaning.
     static func capture(_ value: some Encodable) throws -> Node {
+        if comparing {
+            if let asset = value as? Asset {
+                // A save may add the file's extension to its name.
+                return asset.name.map { .leaf(($0 as NSString).deletingPathExtension) } ?? .null
+            }
+            if let record = value as? any Record {
+                let skipped = type(of: record).containerManagedFields
+                let encoder = TreeEncoder()
+                try value.encode(to: encoder)
+                guard case .keyed(let children) = encoder.root.node else { return encoder.root.node }
+                return .keyed(children.filter { !skipped.contains($0.key) })
+            }
+        }
         // Values `JSONEncoder` writes in its own way, such as `Date` and `Data`, stay whole.
         switch value {
         case is String, is Bool, is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16,
