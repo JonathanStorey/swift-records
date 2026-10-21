@@ -186,7 +186,9 @@ final class RecordEncoder: Encoder {
         func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
             let name = key.stringValue
             encoder.property = name
-            if encoder.inverseFields.contains(name) {
+            if value is Timestamp {
+                // The container stamps timestamps itself.
+            } else if encoder.inverseFields.contains(name) {
                 let ids = (value as? [any Encodable]) ?? []
                 encoder.output.inverseOrders[name] = try ids.map { try ValueCoding.encode($0) }
             } else if let asset = value as? Asset {
@@ -231,6 +233,7 @@ protocol RelationLoader {
     func hasRelation(owner table: String, field: String) -> Bool
     func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int
     func assetURL(named name: String) -> URL
+    func syncedDate(table: String, id: SQLiteValue) throws -> Date?
 }
 
 /// Decodes a record from its row, loading related records through a `RelationLoader`.
@@ -271,12 +274,14 @@ struct RecordDecoder<R: Record>: Decoder {
         func contains(_ key: Key) -> Bool {
             let name = key.stringValue
             return stored(name) != nil
+                || R.schema.field(named: name)?.timestamp == .synced
                 || R.schema.field(named: name)?.inverse != nil
                 || decoder.loader.hasRelation(owner: R.table, field: name)
         }
 
         func decodeNil(forKey key: Key) throws -> Bool {
             let name = key.stringValue
+            if R.schema.field(named: name)?.timestamp == .synced { return false }
             if let value = stored(name) { return value == .null }
             if R.schema.field(named: name)?.inverse != nil { return false }
             // An optional relation with no linked record decodes as nil.
@@ -286,6 +291,13 @@ struct RecordDecoder<R: Record>: Decoder {
 
         func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
             let name = key.stringValue
+            if T.self == Timestamp.self {
+                if R.schema.field(named: name)?.timestamp == .synced {
+                    return Timestamp(date: try decoder.loader.syncedDate(table: R.table, id: id)) as! T
+                }
+                guard let value = stored(name), value != .null else { return Timestamp(date: nil) as! T }
+                return Timestamp(date: try ValueCoding.decode(Date.self, from: value)) as! T
+            }
             if let inverse = R.schema.field(named: name)?.inverse {
                 let ids = try decoder.loader.loadInverse(targetID: id, inverse: inverse)
                 return try ValueCoding.decode(T.self, fromArray: ids)

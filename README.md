@@ -211,6 +211,27 @@ try context.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(*)
 
 A page is a read-only `RecordSlice`, read straight from SQL when the predicate translates.
 
+## Timestamps
+
+`@Timestamp` marks a `Date?` property that the container sets and your code can only read:
+
+```swift
+@Record
+struct Journal {
+    var id = UUID()
+    var text: String
+    @Timestamp(.created) var created: Date?    // stamped on the first save
+    @Timestamp(.modified) var modified: Date?  // stamped on each save that changes the record
+    @Timestamp(.synced) var synced: Date?      // nil while the server lacks this version
+}
+```
+
+`.created` and `.modified` are stored and synced like other properties, so they work in predicates
+and every device agrees on them. A save that changes nothing leaves `modified` alone. `.synced` is this
+device's view of the server: when it acknowledged the record as it is now, or `nil` while there are
+changes it doesn't have, so a list can show which rows are still waiting. It isn't stored or sent, and
+a predicate on it runs in memory. A bare `@Timestamp` means `.modified`.
+
 ## Change tracking
 
 Every save keeps a record's bookkeeping beside it, out of the record's own properties:

@@ -19,12 +19,14 @@ final class RecordStore: @unchecked Sendable {
     /// Above zero while applying changes from a sync server, which are never logged.
     private(set) var applyingSynced = 0
     /// True once the open transaction has written something a fetch could see.
-    private var changedData = false
+    var changedData = false
     /// Goes up with each committed transaction that changed data.
     private var commits = 0
     private var commitObservers: [UUID: @Sendable () -> Void] = [:]
     /// Record types whose renames and indexes have been applied.
     private var prepared: Set<ObjectIdentifier> = []
+    /// Each table's `@Timestamp(.created)` and `@Timestamp(.modified)` columns, which a local change stamps.
+    private var stampColumns: [String: (created: [String], modified: [String])] = [:]
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
@@ -111,12 +113,16 @@ final class RecordStore: @unchecked Sendable {
                 UNIQUE (record_table, record_id));
             CREATE TABLE IF NOT EXISTS "_records_sync" (
                 record_table TEXT NOT NULL, record_id NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
-                known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB,
+                known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB, synced_at REAL,
                 PRIMARY KEY (record_table, record_id));
             CREATE TABLE IF NOT EXISTS "_records_parked" (
                 record_table TEXT NOT NULL, record_id NOT NULL, record BLOB NOT NULL,
                 PRIMARY KEY (record_table, record_id));
             """)
+        // Files from before synced timestamps.
+        if try !db.run("PRAGMA table_info(\"_records_sync\")").contains(where: { $0["name"] == .text("synced_at") }) {
+            try db.execute("ALTER TABLE \"_records_sync\" ADD COLUMN synced_at REAL")
+        }
     }
 
     deinit {
@@ -230,7 +236,8 @@ final class RecordStore: @unchecked Sendable {
         try ensureTable(R.table)
         try prepare(R.self)
         try ensureColumns(encoded.columns.map(\.name), in: R.table)
-        try upsert(encoded.columns, id: id, into: R.table)
+        // Timestamps are the container's to set, so a save keeps the stored ones.
+        try upsert(encoded.columns, id: id, into: R.table, preserving: Set(R.schema.fields.filter { $0.timestamp != nil }.map(\.name)))
 
         var linked: Set<String> = []
         for relation in encoded.relations {
@@ -335,13 +342,15 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    func upsert(_ values: [(name: String, value: SQLiteValue)], id: SQLiteValue, into table: String) throws {
+    func upsert(
+        _ values: [(name: String, value: SQLiteValue)], id: SQLiteValue, into table: String, preserving kept: Set<String> = []
+    ) throws {
         var row: [String: SQLiteValue] = [:]
         for (name, value) in values where name != "id" {
             row[name] = value
         }
         // Columns missing from the encoding (nil optionals) are cleared.
-        for column in columns[table, default: []] where !Self.internalColumns.contains(column) && row[column] == nil {
+        for column in columns[table, default: []] where !Self.internalColumns.contains(column) && !kept.contains(column) && row[column] == nil {
             row[column] = .null
         }
         let names = row.keys.sorted()
@@ -634,6 +643,11 @@ final class RecordStore: @unchecked Sendable {
         guard let clause = try? PredicateTranslator.translate(predicate), clause.relations.allSatisfy(tableExists) else {
             return nil
         }
+        // A synced timestamp isn't a column, so a predicate on it runs in memory.
+        let synced = Set(R.schema.fields.filter { $0.timestamp == .synced }.map(\.name))
+        if clause.columns.contains(where: { $0.table == R.table && synced.contains($0.column) }) {
+            return nil
+        }
         for (table, column) in clause.columns {
             try ensureColumns([column], in: table)
         }
@@ -797,6 +811,9 @@ final class RecordStore: @unchecked Sendable {
             for old in field.previousNames {
                 try rename(field: old, to: field.name, in: R.table)
             }
+            if field.timestamp == .created || field.timestamp == .modified {
+                try ensureColumns([field.name], in: R.table)
+            }
             if field.isIndexed {
                 try ensureColumns([field.name], in: R.table)
                 try db.execute(
@@ -804,6 +821,9 @@ final class RecordStore: @unchecked Sendable {
                 )
             }
         }
+        stampColumns[R.table] = (
+            R.schema.fields.filter { $0.timestamp == .created }.map(\.name), R.schema.fields.filter { $0.timestamp == .modified }.map(\.name)
+        )
         prepared.insert(ObjectIdentifier(R.self))
     }
 
@@ -931,6 +951,19 @@ extension RecordStore: RelationLoader {
     func assetURL(named name: String) -> URL {
         assetsDirectory.appendingPathComponent(name)
     }
+
+    /// When the server acknowledged the record as it is now, or `nil` while it has unsent changes or has
+    /// never synced.
+    func syncedDate(table: String, id: SQLiteValue) throws -> Date? {
+        let row = try db.run("""
+            SELECT s.synced_at, s.acked, c.version FROM "_records_sync" s
+            LEFT JOIN "_records_changes" c ON c.record_table = s.record_table AND c.record_id = s.record_id
+            WHERE s.record_table = ? AND s.record_id = ? AND s.known = 1
+            """, [.text(table), id]).first
+        guard let row, case .real(let time) = row["synced_at"],
+              (row["version"]?.integerValue ?? 0) <= (row["acked"]?.integerValue ?? 0) else { return nil }
+        return Date(timeIntervalSince1970: time)
+    }
 }
 
 /// One page of fetched records. Its indices are the records' positions in the full results, so a page
@@ -988,6 +1021,12 @@ extension RecordStore {
         let now = SQLiteValue.real(Date().timeIntervalSince1970)
         if kind == .save {
             try db.run("UPDATE \(quoted(table)) SET \"_version\" = ?, \"_modified\" = ? WHERE id = ?", [version, now, id])
+            if let stamps = stampColumns[table] {
+                let sets = stamps.created.map { "\(quoted($0)) = COALESCE(\(quoted($0)), ?1)" } + stamps.modified.map { "\(quoted($0)) = ?1" }
+                if !sets.isEmpty {
+                    try db.run("UPDATE \(quoted(table)) SET \(sets.joined(separator: ", ")) WHERE id = ?2", [now, id])
+                }
+            }
         }
         // Replacing the entry gives it a new sequence number at the end of the log.
         try db.run(
