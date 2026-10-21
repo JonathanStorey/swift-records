@@ -64,10 +64,11 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     static func prepare(_ directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         #if canImport(Darwin)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = false
-        var directory = directory
-        try directory.setResourceValues(values)
+        // `isExcludedFromBackup` is stored as this attribute. Removing it directly avoids
+        // `setResourceValues`, which can skip the write when a cached value already reads false.
+        if removexattr(directory.path, "com.apple.metadata:com_apple_backup_excludeItem", 0) != 0, errno != ENOATTR {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSURLErrorKey: directory])
+        }
         #endif
     }
 }

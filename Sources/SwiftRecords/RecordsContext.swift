@@ -172,25 +172,20 @@ public final class RecordsContext {
     // MARK: Fetching
 
     /// Saves pending changes, then fetches, so results always include your own edits.
-    public func fetch<R: Record>(
-        _ type: R.Type = R.self,
-        where predicate: Predicate<R>? = nil,
-        sortBy sortDescriptors: [SortDescriptor<R>] = []
-    ) throws -> [R] {
+    public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
         try save()
-        return try container.fetch(type, where: predicate, sortBy: sortDescriptors)
+        return try container.fetch(type, where: predicate)
     }
 
     /// Saves pending changes, then fetches one page. See `RecordContainer.fetch(_:where:sortBy:limit:offset:)`.
     public func fetch<R: Record>(
         _ type: R.Type = R.self,
         where predicate: Predicate<R>? = nil,
-        sortBy sortDescriptors: [SortDescriptor<R>] = [],
         limit: Int,
         offset: Int = 0
     ) throws -> RecordSlice<R> {
         try save()
-        return try container.fetch(type, where: predicate, sortBy: sortDescriptors, limit: limit, offset: offset)
+        return try container.fetch(type, where: predicate, limit: limit, offset: offset)
     }
 
     /// Saves pending changes, then counts in SQL when the predicate translates.

@@ -73,6 +73,16 @@ let greeted = try container.fetch(ToDo.self, where: #Predicate { todo in
 
 Anything else is evaluated in memory, so every predicate works.
 
+## Changing a record type
+
+- **New properties** read their declared default from rows saved before they existed, such as
+  `var servings = 2`. Optionals read as `nil`. A new non-optional property needs a default.
+- **Renamed properties** keep their values with `@Renamed(from: "minutes") var duration = 0`. The
+  column (or a relationship's join table) is renamed the first time the container uses the type.
+- **Renamed types** keep their data with `@Record(name: "Recipe")`, which fixes the stored name.
+- `@Indexed` adds an index to a property that predicates compare, and changes nothing about encoding.
+- Generic structs can't be records, since each specialization would need its own fixed name.
+
 ## Relationships
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
@@ -180,7 +190,9 @@ and otherwise through `RecordsContext.shared(_:)`.
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through `RecordsContext`,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
-default). Without sort descriptors, the array's order is stored, so moves persist.
+default). The array's order is stored, so moves persist. `@Records` and `RecordsContext` return
+records in stored order. Sort with `RecordContainer.fetch(_:where:sortBy:)`, or sort a copy for
+display.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows, links and positions that actually changed, and a `@Records`

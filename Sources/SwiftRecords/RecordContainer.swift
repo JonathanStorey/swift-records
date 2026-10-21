@@ -31,6 +31,8 @@ public final class RecordContainer: @unchecked Sendable {
     /// Goes up with each committed transaction that changed data.
     private var commits = 0
     private var commitObservers: [UUID: @Sendable () -> Void] = [:]
+    /// Record types whose renames and indexes have been applied.
+    private var prepared: Set<ObjectIdentifier> = []
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
@@ -135,6 +137,7 @@ public final class RecordContainer: @unchecked Sendable {
                 // DDL rolls back with the transaction, so forget anything we cached about the schema.
                 columns = [:]
                 relationInfo = nil
+                prepared = []
                 throw error
             }
         }
@@ -169,6 +172,7 @@ public final class RecordContainer: @unchecked Sendable {
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
 
         try ensureTable(R.table)
+        try prepare(R.self)
         try ensureColumns(encoded.columns.map(\.name), in: R.table)
         try upsert(encoded.columns, id: id, into: R.table)
 
@@ -442,6 +446,7 @@ public final class RecordContainer: @unchecked Sendable {
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try locked {
             guard tableExists(R.table) else { return [] }
+            try prepare(R.self)
             let ids = try ids.map { try ValueCoding.encode($0) }
             var rows: [SQLiteValue: [String: SQLiteValue]] = [:]
             for chunk in ids.chunked(into: Self.batchSize) {
@@ -499,6 +504,7 @@ public final class RecordContainer: @unchecked Sendable {
     public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
         try locked {
             guard tableExists(R.table) else { return 0 }
+            try prepare(R.self)
             guard let (clause, bindings) = try whereClause(predicate) else {
                 return try fetchRecords(R.self, where: predicate, page: nil).count
             }
@@ -524,6 +530,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// Loads matching records in stored order, optionally one page of them.
     private func fetchRecords<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [R] {
         guard tableExists(R.table) else { return [] }
+        try prepare(R.self)
         let translated = try whereClause(predicate)
         var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", rowid"
         var bindings = translated?.1 ?? []
@@ -547,6 +554,7 @@ public final class RecordContainer: @unchecked Sendable {
 
     private func fetchRow<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> R? {
         guard tableExists(R.table) else { return nil }
+        try prepare(R.self)
         if let row = prefetched?.rows[R.table]?[id] {
             return try decodeRow(R.self, row: row)
         }
@@ -662,6 +670,41 @@ public final class RecordContainer: @unchecked Sendable {
             try db.execute("ALTER TABLE \(quoted(table)) ADD COLUMN \(quoted(column))\(definition)")
             columns[table, default: []].insert(column)
         }
+    }
+
+    /// Applies `@Renamed` and `@Indexed` to a table the first time this container uses its type: old
+    /// columns, join tables and asset entries take the new name, and indexed columns get an index.
+    private func prepare<R: Record>(_ type: R.Type) throws {
+        guard !prepared.contains(ObjectIdentifier(R.self)), tableExists(R.table) else { return }
+        for field in R.schema.fields {
+            for old in field.previousNames {
+                try rename(field: old, to: field.name, in: R.table)
+            }
+            if field.isIndexed {
+                try ensureColumns([field.name], in: R.table)
+                try db.execute(
+                    "CREATE INDEX IF NOT EXISTS \(quoted(R.table + "." + field.name + ".index")) ON \(quoted(R.table)) (\(quoted(field.name)))"
+                )
+            }
+        }
+        prepared.insert(ObjectIdentifier(R.self))
+    }
+
+    private func rename(field old: String, to new: String, in table: String) throws {
+        let existing = columns[table, default: []]
+        if existing.contains(old), !existing.contains(new) {
+            try db.execute("ALTER TABLE \(quoted(table)) RENAME COLUMN \(quoted(old)) TO \(quoted(new))")
+            columns[table]?.remove(old)
+            columns[table]?.insert(new)
+        }
+        let relations = relations()
+        if relations.contains(where: { $0.ownerTable == table && $0.field == old }),
+           !relations.contains(where: { $0.ownerTable == table && $0.field == new }) {
+            try db.execute("ALTER TABLE \(quoted(table + "." + old)) RENAME TO \(quoted(table + "." + new))")
+            try db.run("UPDATE \"_records_relations\" SET field = ? WHERE owner_table = ? AND field = ?", [.text(new), .text(table), .text(old)])
+            relationInfo = nil
+        }
+        try db.run("UPDATE \"_records_assets\" SET field = ? WHERE owner_table = ? AND field = ?", [.text(new), .text(table), .text(old)])
     }
 
     /// Columns records never see: their version, last change and sync tag.

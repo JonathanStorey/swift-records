@@ -4,7 +4,10 @@ import SwiftSyntaxMacrosTestSupport
 import XCTest
 
 final class RecordMacroTests: XCTestCase {
-    let macros: [String: Macro.Type] = ["Record": RecordMacro.self, "Reference": ReferenceMacro.self]
+    let macros: [String: Macro.Type] = [
+        "Record": RecordMacro.self, "Reference": ReferenceMacro.self,
+        "Renamed": MarkerMacro.self, "Indexed": MarkerMacro.self,
+    ]
 
     func testGeneratesSchema() {
         assertMacroExpansion(
@@ -32,7 +35,7 @@ final class RecordMacroTests: XCTestCase {
                     RecordSchema(table: "ToDo", fields: [
                         .field("id", \\ToDo.id),
                         .field("title", \\ToDo.title),
-                        .field("notes", \\ToDo.notes, deleteRule: .none)
+                        .field("notes", \\ToDo.notes, deleteRule: .none).defaulting(([]) as [Note])
                     ])
                 }
             }
@@ -106,12 +109,72 @@ final class RecordMacroTests: XCTestCase {
                 static var schema: RecordSchema<Counter> {
                     RecordSchema(table: "Counter", fields: [
                         .field("id", \\Counter.id),
-                        .field("count", \\Counter.count)
+                        .field("count", \\Counter.count).defaulting(0)
                     ])
                 }
             }
             """,
             diagnostics: [DiagnosticSpec(message: "A record's 'id' must be a 'UUID'", line: 3, column: 9)],
+            macros: macros
+        )
+    }
+
+    func testGeneratesDefaultsNamesRenamesAndIndexes() {
+        assertMacroExpansion(
+            """
+            @Record(name: "Recipe")
+            struct Dish {
+                var id = UUID()
+                @Renamed(from: "minutes", "time") var duration: Double = 5
+                @Indexed var name = ""
+                var due: Date? = nil
+                var status: Status = .draft
+            }
+            """,
+            expandedSource: """
+            struct Dish {
+                var id = UUID()
+                var duration: Double = 5
+                var name = ""
+                var due: Date? = nil
+                var status: Status = .draft
+            }
+
+            extension Dish: Record {
+                static var schema: RecordSchema<Dish> {
+                    RecordSchema(table: "Recipe", fields: [
+                        .field("id", \\Dish.id),
+                        .field("duration", \\Dish.duration).defaulting((5) as Double).renamed(from: "minutes", "time"),
+                        .field("name", \\Dish.name).defaulting("").indexed(),
+                        .field("due", \\Dish.due),
+                        .field("status", \\Dish.status).defaulting((.draft) as Status)
+                    ])
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func testRejectsGenericStructs() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Box<T: Codable & Sendable> {
+                var id = UUID()
+                var value: T
+            }
+            """,
+            expandedSource: """
+            struct Box<T: Codable & Sendable> {
+                var id = UUID()
+                var value: T
+            }
+            """,
+            diagnostics: [DiagnosticSpec(
+                message: "@Record can't be applied to a generic struct, because each specialization would need its own fixed table name. Use a concrete struct, or store the generic value in a Codable property of one",
+                line: 1, column: 1
+            )],
             macros: macros
         )
     }

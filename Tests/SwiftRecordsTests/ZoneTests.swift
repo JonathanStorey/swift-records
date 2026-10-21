@@ -49,16 +49,16 @@ import Testing
     @Test func directoryIsIncludedInBackup() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var excluded = URLResourceValues()
-        excluded.isExcludedFromBackup = true
-        var marked = directory
-        try marked.setResourceValues(excluded)
+        // Mark the folder the way earlier versions did, by writing the attribute behind
+        // `isExcludedFromBackup` directly. Setting it through URL resource values can land late and
+        // race the container clearing it.
+        let value = Array("com.apple.backupd".utf8)
+        #expect(setxattr(directory.path, excludeAttribute, value, value.count, 0, 0) == 0)
 
         _ = try RecordContainer(zone: "local", directory: directory)
-        var reread = directory
-        reread.removeAllCachedResourceValues()
-        let values = try reread.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        #expect(values.isExcludedFromBackup == false)
+        #expect(getxattr(directory.path, excludeAttribute, nil, 0, 0, 0) < 0)
     }
+
+    private let excludeAttribute = "com.apple.metadata:com_apple_backup_excludeItem"
     #endif
 }

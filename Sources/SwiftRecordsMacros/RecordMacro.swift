@@ -19,6 +19,12 @@ public struct RecordMacro: ExtensionMacro {
             throw MacroError.message("@Record can only be applied to a struct")
         }
 
+        if structDecl.genericParameterClause != nil {
+            throw MacroError.message(
+                "@Record can't be applied to a generic struct, because each specialization would need its own fixed table name. Use a concrete struct, or store the generic value in a Codable property of one"
+            )
+        }
+
         let typeName = structDecl.name.trimmedDescription
         let access = structDecl.modifiers.contains { ["public", "open", "package"].contains($0.name.text) }
             ? "public " : ""
@@ -28,6 +34,12 @@ public struct RecordMacro: ExtensionMacro {
             guard let variable = member.decl.as(VariableDeclSyntax.self), isStored(variable) else { continue }
             let reference = referenceArguments(variable.attributes)
             let asset = assetArguments(variable.attributes)
+            let modifiers = fieldModifiers(variable.attributes)
+            // Another attribute may be a property wrapper, whose initial value isn't the stored value.
+            let wrapped = variable.attributes.contains { element in
+                guard let name = element.as(AttributeSyntax.self)?.attributeName.trimmedDescription else { return false }
+                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset"].contains(name)
+            }
             for binding in variable.bindings {
                 guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription else {
                     continue
@@ -46,24 +58,34 @@ public struct RecordMacro: ExtensionMacro {
                         continue
                     }
                     let fileExtension = asset.fileExtension.map { ", fileExtension: \($0)" } ?? ""
-                    fields.append(".asset(\"\(name)\", \(keyPath)\(fileExtension))")
+                    fields.append(".asset(\"\(name)\", \(keyPath)\(fileExtension))" + modifiers)
                     continue
                 }
                 if let inverse = reference?.from {
-                    fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))")
-                } else if let rule = reference?.deleteRule {
-                    fields.append(".field(\"\(name)\", \(keyPath), deleteRule: \(rule))")
-                } else {
-                    fields.append(".field(\"\(name)\", \(keyPath))")
+                    fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))" + modifiers)
+                    continue
                 }
+                var field = reference?.deleteRule.map { ".field(\"\(name)\", \(keyPath), deleteRule: \($0))" }
+                    ?? ".field(\"\(name)\", \(keyPath))"
+                if name != "id", !wrapped, let value = defaultValue(binding) {
+                    field += ".defaulting(\(value))"
+                }
+                fields.append(field + modifiers)
             }
+        }
+
+        // `@Record(name:)` fixes the stored name, so renaming the struct keeps its data.
+        var table = "\"\(typeName)\""
+        if case .argumentList(let arguments) = node.arguments,
+           let name = arguments.first(where: { $0.label?.text == "name" })?.expression {
+            table = name.trimmedDescription
         }
 
         let fieldList = fields.isEmpty ? "[]" : "[\n            " + fields.joined(separator: ",\n            ") + "\n        ]"
         let decl: DeclSyntax = """
             extension \(type.trimmed): Record {
                 \(raw: access)static var schema: RecordSchema<\(raw: typeName)> {
-                    RecordSchema(table: "\(raw: typeName)", fields: \(raw: fieldList))
+                    RecordSchema(table: \(raw: table), fields: \(raw: fieldList))
                 }
             }
             """
@@ -118,6 +140,38 @@ public struct RecordMacro: ExtensionMacro {
             || value.is(FloatLiteralExprSyntax.self) || value.is(BooleanLiteralExprSyntax.self))
     }
 
+    /// The property's initial value, typed by its annotation, for decoding rows that lack it. Optionals
+    /// already decode a missing value as nil, so they have none.
+    private static func defaultValue(_ binding: PatternBindingSyntax) -> String? {
+        guard let value = binding.initializer?.value.trimmedDescription else { return nil }
+        guard let type = binding.typeAnnotation?.type else { return value }
+        if type.is(OptionalTypeSyntax.self) || type.is(ImplicitlyUnwrappedOptionalTypeSyntax.self)
+            || type.trimmedDescription.hasPrefix("Optional<") {
+            return nil
+        }
+        return "(\(value)) as \(type.trimmedDescription)"
+    }
+
+    /// The `.renamed(from:)` and `.indexed()` calls for a property's `@Renamed` and `@Indexed`.
+    private static func fieldModifiers(_ attributes: AttributeListSyntax) -> String {
+        var modifiers = ""
+        for element in attributes {
+            guard let attribute = element.as(AttributeSyntax.self) else { continue }
+            switch attribute.attributeName.trimmedDescription {
+            case "Renamed":
+                if case .argumentList(let arguments) = attribute.arguments {
+                    let names = arguments.map(\.expression.trimmedDescription).joined(separator: ", ")
+                    modifiers += ".renamed(from: \(names))"
+                }
+            case "Indexed":
+                modifiers += ".indexed()"
+            default:
+                break
+            }
+        }
+        return modifiers
+    }
+
     private static func isOptionalData(_ binding: PatternBindingSyntax) -> Bool {
         guard let type = binding.typeAnnotation?.type else { return false }
         let text = type.trimmedDescription.filter { !$0.isWhitespace }
@@ -142,6 +196,17 @@ public struct RecordMacro: ExtensionMacro {
             return (deleteRule, from)
         }
         return nil
+    }
+}
+
+/// `@Renamed` and `@Indexed` are markers read by `@Record`. They generate no code themselves.
+public struct MarkerMacro: PeerMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingPeersOf declaration: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        []
     }
 }
 
@@ -172,5 +237,5 @@ enum MacroError: Error, CustomStringConvertible, DiagnosticMessage {
 
 @main
 struct SwiftRecordsMacrosPlugin: CompilerPlugin {
-    let providingMacros: [Macro.Type] = [RecordMacro.self, ReferenceMacro.self]
+    let providingMacros: [Macro.Type] = [RecordMacro.self, ReferenceMacro.self, MarkerMacro.self]
 }

@@ -17,9 +17,28 @@ public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
     static var schema: RecordSchema<Self> { get }
 }
 
-/// Generates `Record` conformance and the type's `schema`.
+/// Generates `Record` conformance and the type's `schema`. The table is named after the struct.
 @attached(extension, conformances: Record, names: named(schema))
 public macro Record() = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
+
+/// Generates `Record` conformance and stores the type under a fixed name, so renaming the struct keeps
+/// its data. Use letters, digits and underscores, which a CloudKit record type also allows.
+@attached(extension, conformances: Record, names: named(schema))
+public macro Record(name: String) = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
+
+/// Reads a property's earlier names, so renaming it in Swift keeps its stored values. The column is
+/// renamed the first time the container uses the type.
+///
+/// ```swift
+/// @Renamed(from: "minutes") var duration = 0
+/// ```
+@attached(peer)
+public macro Renamed(from names: String...) = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
+
+/// Adds a database index on a property, so predicates that compare it stay fast on large tables. It
+/// changes nothing about how the record encodes.
+@attached(peer)
+public macro Indexed() = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
 /// Marks a relationship with the default rule, `.cascade`. Writing it is optional.
 @attached(peer)
@@ -69,6 +88,41 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         public let isAsset: Bool
         /// The extension for an asset's new files.
         public let fileExtension: String
+        /// The property's declared default, used when a stored row has no value for it, such as a row
+        /// saved before the property existed.
+        public private(set) var defaultValue: (@Sendable () -> Any)?
+        /// Names the property was stored under before, from `@Renamed(from:)`.
+        public private(set) var previousNames: [String] = []
+        /// True for an `@Indexed` property.
+        public private(set) var isIndexed = false
+
+        init(name: String, keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule?, inverse: AnyKeyPath?, isAsset: Bool, fileExtension: String) {
+            self.name = name
+            self.keyPath = keyPath
+            self.deleteRule = deleteRule
+            self.inverse = inverse
+            self.isAsset = isAsset
+            self.fileExtension = fileExtension
+        }
+
+        /// The value to decode when a row has none.
+        public func defaulting<Value>(_ value: @autoclosure @escaping @Sendable () -> Value) -> Field {
+            var field = self
+            field.defaultValue = { value() }
+            return field
+        }
+
+        public func renamed(from names: String...) -> Field {
+            var field = self
+            field.previousNames = names
+            return field
+        }
+
+        public func indexed() -> Field {
+            var field = self
+            field.isIndexed = true
+            return field
+        }
 
         public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = .cascade) -> Field {
             Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false, fileExtension: "")

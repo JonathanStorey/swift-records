@@ -251,16 +251,25 @@ struct RecordDecoder<R: Record>: Decoder {
 
         private var id: SQLiteValue { decoder.row["id"] ?? .null }
 
+        /// A column's value, read under the property's earlier names when a row predates `@Renamed`.
+        private func stored(_ name: String) -> SQLiteValue? {
+            if let value = decoder.row[name], value != .null { return value }
+            for previous in R.schema.field(named: name)?.previousNames ?? [] {
+                if let value = decoder.row[previous], value != .null { return value }
+            }
+            return decoder.row[name]
+        }
+
         func contains(_ key: Key) -> Bool {
             let name = key.stringValue
-            return decoder.row[name] != nil
+            return stored(name) != nil
                 || R.schema.field(named: name)?.inverse != nil
                 || decoder.loader.hasRelation(owner: R.table, field: name)
         }
 
         func decodeNil(forKey key: Key) throws -> Bool {
             let name = key.stringValue
-            if let value = decoder.row[name] { return value == .null }
+            if let value = stored(name) { return value == .null }
             if R.schema.field(named: name)?.inverse != nil { return false }
             // An optional relation with no linked record decodes as nil.
             guard decoder.loader.hasRelation(owner: R.table, field: name) else { return true }
@@ -286,8 +295,15 @@ struct RecordDecoder<R: Record>: Decoder {
                 )
                 return collectionType.make(from: records) as! T
             }
-            guard let value = decoder.row[name] else {
-                throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(name)"))
+            guard let value = stored(name), value != .null else {
+                // A row saved before the property existed takes the property's declared default.
+                if let fallback = R.schema.field(named: name)?.defaultValue?() as? T {
+                    return fallback
+                }
+                guard let value = stored(name) else {
+                    throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(name)"))
+                }
+                return try ValueCoding.decode(T.self, from: value)
             }
             if T.self == Asset.self, case .text(let fileName) = value {
                 return Asset(storedName: fileName, url: decoder.loader.assetURL(named: fileName)) as! T
@@ -304,7 +320,7 @@ struct RecordDecoder<R: Record>: Decoder {
         }
 
         private func column(_ key: Key) throws -> SQLiteValue {
-            guard let value = decoder.row[key.stringValue] else {
+            guard let value = stored(key.stringValue) else {
                 throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(key.stringValue)"))
             }
             return value
