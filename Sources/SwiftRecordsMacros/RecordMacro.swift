@@ -27,22 +27,22 @@ public struct RecordMacro: ExtensionMacro {
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self), isStored(variable) else { continue }
             let reference = referenceArguments(variable.attributes)
+            let asset = assetArguments(variable.attributes)
             for binding in variable.bindings {
                 guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription else {
                     continue
                 }
                 let keyPath = "\\\(typeName).\(name)"
-                switch assetKind(binding) {
-                case .optional:
-                    fields.append(".asset(\"\(name)\", \(keyPath))")
+                if let asset {
+                    guard isOptionalData(binding) else {
+                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                            "An @Asset property must be declared as 'Data?'"
+                        )))
+                        continue
+                    }
+                    let fileExtension = asset.fileExtension.map { ", fileExtension: \($0)" } ?? ""
+                    fields.append(".asset(\"\(name)\", \(keyPath)\(fileExtension))")
                     continue
-                case .invalid:
-                    context.diagnose(Diagnostic(node: binding, message: MacroError.message(
-                        "An Asset property must be optional: declare it as 'Asset?'"
-                    )))
-                    continue
-                case nil:
-                    break
                 }
                 if let inverse = reference?.from {
                     fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))")
@@ -84,28 +84,28 @@ public struct RecordMacro: ExtensionMacro {
         return true
     }
 
-    private enum AssetKind { case optional, invalid }
-
-    /// Recognizes `Asset?`. Any other use of `Asset` as a property type, such as `Asset` or `[Asset]`, is invalid.
-    private static func assetKind(_ binding: PatternBindingSyntax) -> AssetKind? {
-        guard let type = binding.typeAnnotation?.type else {
-            // `var photo = Asset(...)` infers a non-optional Asset.
-            let call = binding.initializer?.value.as(FunctionCallExprSyntax.self)?.calledExpression.trimmedDescription
-            return call.map(isAssetName) == true ? .invalid : nil
-        }
-        if let optional = type.as(OptionalTypeSyntax.self), isAssetName(optional.wrappedType.trimmedDescription) {
-            return .optional
-        }
-        let text = type.trimmedDescription.filter { !$0.isWhitespace }
-        if text == "Optional<Asset>" || text == "Optional<SwiftRecords.Asset>" {
-            return .optional
-        }
-        let words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "." }).map(String.init)
-        return words.contains(where: isAssetName) ? .invalid : nil
+    private struct AssetAttribute {
+        var fileExtension: String?
     }
 
-    private static func isAssetName(_ name: String) -> Bool {
-        name == "Asset" || name == "SwiftRecords.Asset"
+    /// Reads a property's `@Asset` attribute, or returns nil when it has none.
+    private static func assetArguments(_ attributes: AttributeListSyntax) -> AssetAttribute? {
+        for element in attributes {
+            guard let attribute = element.as(AttributeSyntax.self),
+                  ["Asset", "SwiftRecords.Asset"].contains(attribute.attributeName.trimmedDescription) else { continue }
+            var fileExtension: String?
+            if case .argumentList(let arguments) = attribute.arguments {
+                fileExtension = arguments.first { $0.label?.text == "fileExtension" }?.expression.trimmedDescription
+            }
+            return AssetAttribute(fileExtension: fileExtension)
+        }
+        return nil
+    }
+
+    private static func isOptionalData(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type else { return false }
+        let text = type.trimmedDescription.filter { !$0.isWhitespace }
+        return ["Data?", "Foundation.Data?", "Optional<Data>", "Optional<Foundation.Data>"].contains(text)
     }
 
     private static func referenceArguments(_ attributes: AttributeListSyntax) -> (deleteRule: String?, from: String?)? {

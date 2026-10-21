@@ -32,7 +32,8 @@ public final class RecordContainer: @unchecked Sendable {
         let ownerTable: String
         let field: String
         let targetTable: String
-        var deleteRule: DeleteRule
+        /// `nil` keeps related records.
+        var deleteRule: DeleteRule?
         var table: String { ownerTable + "." + field }
     }
 
@@ -150,7 +151,7 @@ public final class RecordContainer: @unchecked Sendable {
             linked.insert(relation.name)
             let info = try ensureRelation(
                 owner: R.table, field: relation.name, target: relation.targetType.table,
-                deleteRule: R.schema.field(named: relation.name)?.deleteRule ?? .cascade
+                deleteRule: R.schema.field(named: relation.name).map(\.deleteRule) ?? .cascade
             )
             for target in relation.targets {
                 try saveRecord(target, visited: &visited)
@@ -171,7 +172,8 @@ public final class RecordContainer: @unchecked Sendable {
 
     /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
     private func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
-        let fields = Set(R.schema.fields.filter(\.isAsset).map(\.name)).union(assets.keys)
+        let assetFields = R.schema.fields.filter(\.isAsset)
+        let fields = Set(assetFields.map(\.name)).union(assets.keys)
         var columns: [(name: String, value: SQLiteValue)] = []
         for field in fields.sorted() {
             let previous = try db.run(
@@ -179,8 +181,9 @@ public final class RecordContainer: @unchecked Sendable {
                 [.text(R.table), id, .text(field)]
             ).first?["name"]
             var stored: SQLiteValue?
-            if let asset = assets[field] {
-                stored = .text(try storeAsset(asset, owner: R.table, id: id, field: field))
+            if let asset = assets[field], let storage = asset.storage {
+                let fileExtension = assetFields.first { $0.name == field }?.fileExtension ?? ""
+                stored = .text(try storeAsset(storage, fileExtension: fileExtension, owner: R.table, id: id, field: field))
                 columns.append((field, stored!))
             }
             if let previous, case .text(let name) = previous, previous != stored {
@@ -190,19 +193,24 @@ public final class RecordContainer: @unchecked Sendable {
         return columns
     }
 
-    private func storeAsset(_ asset: Asset, owner table: String, id: SQLiteValue, field: String) throws -> String {
+    private func storeAsset(
+        _ asset: Asset.Storage, fileExtension: String, owner table: String, id: SQLiteValue, field: String
+    ) throws -> String {
+        // A new asset's name gets the extension from `@Asset(fileExtension:)` if it has none of its own.
+        let hasExtension = !(asset.name as NSString).pathExtension.isEmpty
+        let fileName = hasExtension || fileExtension.isEmpty ? asset.name : asset.name + "." + fileExtension
         let owner = try db.run(
-            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(asset.name)]
+            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(fileName)]
         ).first
         if let owner, owner["owner_table"] == .text(table), owner["owner_id"] == id, owner["field"] == .text(field) {
-            return asset.name
+            return fileName
         }
         // An asset already held by another record gets its own copy, so deleting one leaves the other.
-        let name = owner == nil ? asset.name : Asset.makeName(fileExtension: asset.fileExtension)
+        let name = owner == nil ? fileName : Asset.makeName(fileExtension: (fileName as NSString).pathExtension)
         let destination = assetURL(named: name)
         structuralChanges += 1
-        try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
         let manager = FileManager.default
+        try manager.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
         switch asset.source {
         case .data(let data):
             try data.write(to: destination, options: .atomic)
@@ -211,11 +219,9 @@ public final class RecordContainer: @unchecked Sendable {
             try? manager.removeItem(at: destination)
             try manager.copyItem(at: source, to: destination)
             fileChanges[fileChanges.count - 1].created.append(destination)
-        case nil:
+        case .stored(let source):
             // A fetched asset: copy its file unless it is already here, such as one released earlier in this transaction.
-            let source = owner == nil ? asset.fileURL : assetURL(named: asset.name)
             if !(owner == nil && manager.fileExists(atPath: destination.path)) {
-                guard let source else { throw CocoaError(.fileNoSuchFile) }
                 try manager.copyItem(at: source, to: destination)
                 fileChanges[fileChanges.count - 1].created.append(destination)
             }
@@ -387,10 +393,21 @@ public final class RecordContainer: @unchecked Sendable {
     }
 
     /// Fetches records by ID in the order given, skipping any that no longer exist. Use it to load an
-    /// inverse relationship: `container.fetch(ToDo.self, ids: note.todos)`.
+    /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbooks)`.
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try locked {
-            try ids.compactMap { try fetchRow(R.self, id: ValueCoding.encode($0)) }
+            guard tableExists(R.table) else { return [] }
+            let ids = try ids.map { try ValueCoding.encode($0) }
+            var rows: [SQLiteValue: [String: SQLiteValue]] = [:]
+            for chunk in ids.chunked(into: Self.batchSize) {
+                for row in try db.run("SELECT * FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
+                    rows[row["id"]!] = row
+                }
+            }
+            let found = ids.compactMap { rows[$0] }
+            return try prefetching(R.table, rows: found) {
+                try found.map { try decodeRow(R.self, row: $0) }
+            }
         }
     }
 
@@ -403,29 +420,7 @@ public final class RecordContainer: @unchecked Sendable {
         sortBy sortDescriptors: [SortDescriptor<R>] = []
     ) throws -> [R] {
         try locked {
-            guard tableExists(R.table) else { return [] }
-            var sql = "SELECT * FROM \(quoted(R.table))"
-            var bindings: [SQLiteValue] = []
-            var filterInMemory = false
-            if let predicate {
-                // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
-                if let clause = try? PredicateTranslator.translate(predicate),
-                   clause.relations.allSatisfy(tableExists) {
-                    for (table, column) in clause.columns {
-                        try ensureColumns([column], in: table)
-                    }
-                    sql += " WHERE " + clause.sql
-                    bindings = clause.bindings
-                } else {
-                    filterInMemory = true
-                }
-            }
-            sql += " ORDER BY \"_position\", rowid"
-
-            var records = try db.run(sql, bindings).map { try decodeRow(R.self, row: $0) }
-            if filterInMemory, let predicate {
-                records = try records.filter { try predicate.evaluate($0) }
-            }
+            var records = try fetchRecords(R.self, where: predicate, page: nil)
             if !sortDescriptors.isEmpty {
                 records.sort(using: sortDescriptors)
             }
@@ -433,14 +428,162 @@ public final class RecordContainer: @unchecked Sendable {
         }
     }
 
+    /// Fetches one page of records: at most `limit` of them, starting `offset` records into the results.
+    ///
+    /// The slice's indices are the records' positions in the full results, so a page fetched with an
+    /// offset of 40 starts at index 40. Without sort descriptors the page is read straight from SQL when
+    /// the predicate translates. With sort descriptors, every match is loaded and sorted first.
+    public func fetch<R: Record>(
+        _ type: R.Type = R.self,
+        where predicate: Predicate<R>? = nil,
+        sortBy sortDescriptors: [SortDescriptor<R>] = [],
+        limit: Int,
+        offset: Int = 0
+    ) throws -> RecordSlice<R> {
+        precondition(limit >= 0 && offset >= 0, "limit and offset must not be negative")
+        return try locked {
+            if sortDescriptors.isEmpty {
+                return RecordSlice(try fetchRecords(R.self, where: predicate, page: (limit, offset)), startIndex: offset)
+            }
+            let all = try fetchRecords(R.self, where: predicate, page: nil).sorted(using: sortDescriptors)
+            let start = min(offset, all.count)
+            return RecordSlice(Array(all[start..<min(start + limit, all.count)]), startIndex: offset)
+        }
+    }
+
     public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
-        try fetch(type, where: predicate).count
+        try locked {
+            guard tableExists(R.table) else { return 0 }
+            guard let (clause, bindings) = try whereClause(predicate) else {
+                return try fetchRecords(R.self, where: predicate, page: nil).count
+            }
+            let rows = try db.run("SELECT COUNT(*) AS n FROM \(quoted(R.table))\(clause)", bindings)
+            guard case .integer(let n) = rows.first?["n"] else { return 0 }
+            return Int(n)
+        }
+    }
+
+    /// The SQL `WHERE` clause for a predicate: empty for none, or nil when it must run in memory.
+    private func whereClause<R: Record>(_ predicate: Predicate<R>?) throws -> (String, [SQLiteValue])? {
+        guard let predicate else { return ("", []) }
+        // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
+        guard let clause = try? PredicateTranslator.translate(predicate), clause.relations.allSatisfy(tableExists) else {
+            return nil
+        }
+        for (table, column) in clause.columns {
+            try ensureColumns([column], in: table)
+        }
+        return (" WHERE " + clause.sql, clause.bindings)
+    }
+
+    /// Loads matching records in stored order, optionally one page of them.
+    private func fetchRecords<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [R] {
+        guard tableExists(R.table) else { return [] }
+        let translated = try whereClause(predicate)
+        var sql = "SELECT * FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", rowid"
+        var bindings = translated?.1 ?? []
+        if let page, translated != nil {
+            sql += " LIMIT ? OFFSET ?"
+            bindings += [.integer(Int64(page.limit)), .integer(Int64(page.offset))]
+        }
+        let rows = try db.run(sql, bindings)
+        var records = try prefetching(R.table, rows: rows) {
+            try rows.map { try decodeRow(R.self, row: $0) }
+        }
+        if translated == nil, let predicate {
+            records = try records.filter { try predicate.evaluate($0) }
+            if let page {
+                let start = min(page.offset, records.count)
+                records = Array(records[start..<min(start + page.limit, records.count)])
+            }
+        }
+        return records
     }
 
     private func fetchRow<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> R? {
-        guard tableExists(R.table),
-              let row = try db.run("SELECT * FROM \(quoted(R.table)) WHERE id = ?", [id]).first else { return nil }
+        guard tableExists(R.table) else { return nil }
+        if let row = prefetched?.rows[R.table]?[id] {
+            return try decodeRow(R.self, row: row)
+        }
+        guard let row = try db.run("SELECT * FROM \(quoted(R.table)) WHERE id = ?", [id]).first else { return nil }
         return try decodeRow(R.self, row: row)
+    }
+
+    // MARK: Batch loading
+
+    /// Rows and links loaded ahead of decoding, so a fetch of many records runs one query per relationship
+    /// instead of one per record.
+    private final class Prefetch {
+        /// Rows by table, then ID.
+        var rows: [String: [SQLiteValue: [String: SQLiteValue]]] = [:]
+        /// Each owner's targets in order, by join table.
+        var links: [String: [SQLiteValue: [SQLiteValue]]] = [:]
+        /// Each target's owners in inverse order, by join table.
+        var owners: [String: [SQLiteValue: [SQLiteValue]]] = [:]
+        /// `table|id` pairs whose relationships are loaded.
+        var visited: Set<String> = []
+    }
+
+    private var prefetched: Prefetch?
+    private static let batchSize = 500
+
+    private func placeholders(_ count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
+    }
+
+    /// Loads every relationship reachable from `rows`, level by level, then runs `body` to decode them.
+    private func prefetching<T>(_ table: String, rows: [[String: SQLiteValue]], _ body: () throws -> T) throws -> T {
+        let owner = prefetched == nil
+        let cache = prefetched ?? Prefetch()
+        prefetched = cache
+        defer { if owner { prefetched = nil } }
+
+        for row in rows {
+            cache.rows[table, default: [:]][row["id"]!] = row
+        }
+        var frontier = [(table, rows.map { $0["id"]! })]
+        while let (table, ids) = frontier.popLast() {
+            let ids = ids.filter { cache.visited.insert("\(table)|\($0)").inserted }
+            guard !ids.isEmpty else { continue }
+            for info in relations() where tableExists(info.table) {
+                if info.ownerTable == table {
+                    var targets: [SQLiteValue] = []
+                    for id in ids { cache.links[info.table, default: [:]][id] = [] }
+                    for chunk in ids.chunked(into: Self.batchSize) {
+                        for link in try db.run(
+                            "SELECT owner, target FROM \(quoted(info.table)) WHERE owner IN (\(placeholders(chunk.count))) ORDER BY owner, position",
+                            Array(chunk)
+                        ) {
+                            cache.links[info.table]![link["owner"]!]!.append(link["target"]!)
+                            targets.append(link["target"]!)
+                        }
+                    }
+                    let missing = Array(Set(targets).filter { cache.rows[info.targetTable]?[$0] == nil })
+                    if tableExists(info.targetTable) {
+                        for chunk in missing.chunked(into: Self.batchSize) {
+                            for row in try db.run(
+                                "SELECT * FROM \(quoted(info.targetTable)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)
+                            ) {
+                                cache.rows[info.targetTable, default: [:]][row["id"]!] = row
+                            }
+                        }
+                    }
+                    frontier.append((info.targetTable, Array(Set(targets))))
+                }
+                if info.targetTable == table {
+                    for id in ids { cache.owners[info.table, default: [:]][id] = [] }
+                    for chunk in ids.chunked(into: Self.batchSize) {
+                        for link in try db.run(
+                            "SELECT owner, target FROM \(quoted(info.table)) WHERE target IN (\(placeholders(chunk.count))) ORDER BY target, inverse_position",
+                            Array(chunk)
+                        ) {
+                            cache.owners[info.table]![link["target"]!]!.append(link["owner"]!)
+                        }
+                    }
+                }
+            }
+        }
+        return try body()
     }
 
     private func decodeRow<R: Record>(_ type: R.Type, row: [String: SQLiteValue]) throws -> R {
@@ -484,19 +627,19 @@ public final class RecordContainer: @unchecked Sendable {
         let loaded = rows.compactMap { row -> RelationInfo? in
             guard case .text(let owner) = row["owner_table"], case .text(let field) = row["field"],
                   case .text(let target) = row["target_table"], case .text(let rule) = row["delete_rule"] else { return nil }
-            // A rule this version does not know, such as the removed `deny`, keeps records rather than deleting them.
-            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? .nullify)
+            // Any rule but cascade, including the earlier `nullify` and `deny`, keeps records rather than deleting them.
+            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule))
         }
         relationInfo = loaded
         return loaded
     }
 
-    private func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule) throws -> RelationInfo {
+    private func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule?) throws -> RelationInfo {
         let info = RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: deleteRule)
         if relations().contains(info) { return info }
         try db.run(
             "INSERT OR REPLACE INTO \"_records_relations\" (owner_table, field, target_table, delete_rule) VALUES (?, ?, ?, ?)",
-            [.text(owner), .text(field), .text(target), .text(deleteRule.rawValue)]
+            [.text(owner), .text(field), .text(target), .text(deleteRule?.rawValue ?? "none")]
         )
         let table = quoted(info.table)
         try db.execute("""
@@ -527,6 +670,9 @@ extension RecordContainer: RelationLoader {
     func loadRelation(owner table: String, ownerID: SQLiteValue, field: String, targetType: any Record.Type) throws -> [any Record] {
         let relation = quoted(table + "." + field)
         guard hasRelation(owner: table, field: field) else { return [] }
+        if let targets = prefetched?.links[table + "." + field]?[ownerID] {
+            return try targets.compactMap { try fetchRow(targetType, id: $0) }
+        }
         return try db.run("SELECT target FROM \(relation) WHERE owner = ? ORDER BY position", [ownerID]).compactMap {
             try fetchRow(targetType, id: $0["target"]!)
         }
@@ -534,6 +680,9 @@ extension RecordContainer: RelationLoader {
 
     func loadInverse(targetID: SQLiteValue, inverse: AnyKeyPath) throws -> [SQLiteValue] {
         guard let info = try inverseRelation(inverse), tableExists(info.table) else { return [] }
+        if let owners = prefetched?.owners[info.table]?[targetID] {
+            return owners
+        }
         return try db.run(
             "SELECT owner FROM \(quoted(info.table)) WHERE target = ? ORDER BY inverse_position", [targetID]
         ).map { $0["owner"]! }
@@ -544,10 +693,37 @@ extension RecordContainer: RelationLoader {
     }
 
     func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int {
-        try count(in: table + "." + field, where: "owner", is: ownerID)
+        if let targets = prefetched?.links[table + "." + field]?[ownerID] {
+            return targets.count
+        }
+        return try count(in: table + "." + field, where: "owner", is: ownerID)
     }
 
     func assetURL(named name: String) -> URL {
         assetsDirectory.appendingPathComponent(name)
+    }
+}
+
+/// One page of fetched records. Its indices are the records' positions in the full results, so a page
+/// fetched with an offset of 40 starts at index 40. It is read-only: edit a record and save it to change it.
+public struct RecordSlice<R: Record>: RandomAccessCollection, Sendable {
+    private let records: [R]
+    public let startIndex: Int
+
+    init(_ records: [R], startIndex: Int) {
+        self.records = records
+        self.startIndex = startIndex
+    }
+
+    public var endIndex: Int { startIndex + records.count }
+
+    public subscript(position: Int) -> R {
+        records[position - startIndex]
+    }
+}
+
+extension Array {
+    func chunked(into size: Int) -> [ArraySlice<Element>] {
+        stride(from: 0, to: count, by: size).map { self[$0..<Swift.min($0 + size, count)] }
     }
 }

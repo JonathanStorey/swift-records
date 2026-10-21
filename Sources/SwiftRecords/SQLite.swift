@@ -27,6 +27,10 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 final class SQLiteDatabase {
     private var handle: OpaquePointer?
     private var savepointDepth = 0
+    /// Prepared statements by SQL, reused so repeated queries skip parsing. Cleared when it grows past
+    /// `statementCacheLimit`, which batch queries with varying numbers of placeholders can cause.
+    private var statements: [String: OpaquePointer] = [:]
+    private let statementCacheLimit = 200
 
     init(url: URL?) throws {
         let path = url?.path ?? ":memory:"
@@ -39,7 +43,20 @@ final class SQLiteDatabase {
     }
 
     deinit {
+        statements.values.forEach { sqlite3_finalize($0) }
         sqlite3_close(handle)
+    }
+
+    private func prepare(_ sql: String) throws -> OpaquePointer? {
+        if let statement = statements[sql] { return statement }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError() }
+        if statements.count >= statementCacheLimit {
+            statements.values.forEach { sqlite3_finalize($0) }
+            statements.removeAll()
+        }
+        statements[sql] = statement
+        return statement
     }
 
     func execute(_ sql: String) throws {
@@ -48,9 +65,11 @@ final class SQLiteDatabase {
 
     @discardableResult
     func run(_ sql: String, _ bindings: [SQLiteValue] = []) throws -> [[String: SQLiteValue]] {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError() }
-        defer { sqlite3_finalize(statement) }
+        let statement = try prepare(sql)
+        defer {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
 
         for (index, value) in bindings.enumerated() {
             let position = Int32(index + 1)

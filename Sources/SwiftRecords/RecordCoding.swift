@@ -35,6 +35,102 @@ struct EncodedRecord {
     var assets: [String: Asset] = [:]
 }
 
+// MARK: - Nested containers
+
+/// What a record's own `encode(to:)` writes into a nested container. It is replayed into `JSONEncoder`
+/// afterwards, so the whole nested value is stored as one JSON column.
+final class NestedNode: Encodable {
+    enum Entry {
+        case value(any Encodable)
+        case null
+        case node(NestedNode)
+    }
+
+    let isKeyed: Bool
+    var keyed: [(key: String, entry: Entry)] = []
+    var unkeyed: [Entry] = []
+
+    init(keyed: Bool) {
+        isKeyed = keyed
+    }
+
+    func encode(to encoder: Encoder) throws {
+        if isKeyed {
+            var container = encoder.container(keyedBy: AnyCodingKey.self)
+            for (key, entry) in keyed {
+                let key = AnyCodingKey(stringValue: key)
+                switch entry {
+                case .value(let value): try container.encode(value, forKey: key)
+                case .null: try container.encodeNil(forKey: key)
+                case .node(let node): try node.encode(to: container.superEncoder(forKey: key))
+                }
+            }
+        } else {
+            var container = encoder.unkeyedContainer()
+            for entry in unkeyed {
+                switch entry {
+                case .value(let value): try container.encode(value)
+                case .null: try container.encodeNil()
+                case .node(let node): try node.encode(to: container.superEncoder())
+                }
+            }
+        }
+    }
+}
+
+struct AnyCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+    init(stringValue: String) { self.stringValue = stringValue; intValue = nil }
+    init(intValue: Int) { stringValue = String(intValue); self.intValue = intValue }
+}
+
+private struct NestedKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
+    let node: NestedNode
+    let codingPath: [CodingKey]
+
+    func encodeNil(forKey key: Key) throws { node.keyed.append((key.stringValue, .null)) }
+    func encode<T: Encodable>(_ value: T, forKey key: Key) throws { node.keyed.append((key.stringValue, .value(value))) }
+
+    func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type, forKey key: Key) -> KeyedEncodingContainer<NestedKey> {
+        let child = NestedNode(keyed: true)
+        node.keyed.append((key.stringValue, .node(child)))
+        return KeyedEncodingContainer(NestedKeyedContainer<NestedKey>(node: child, codingPath: codingPath + [key]))
+    }
+
+    func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
+        let child = NestedNode(keyed: false)
+        node.keyed.append((key.stringValue, .node(child)))
+        return NestedUnkeyedContainer(node: child, codingPath: codingPath + [key])
+    }
+
+    func superEncoder() -> Encoder { preconditionFailure("Records do not support superEncoder") }
+    func superEncoder(forKey key: Key) -> Encoder { preconditionFailure("Records do not support superEncoder") }
+}
+
+private struct NestedUnkeyedContainer: UnkeyedEncodingContainer {
+    let node: NestedNode
+    let codingPath: [CodingKey]
+    var count: Int { node.unkeyed.count }
+
+    func encodeNil() throws { node.unkeyed.append(.null) }
+    func encode<T: Encodable>(_ value: T) throws { node.unkeyed.append(.value(value)) }
+
+    func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
+        let child = NestedNode(keyed: true)
+        node.unkeyed.append(.node(child))
+        return KeyedEncodingContainer(NestedKeyedContainer<NestedKey>(node: child, codingPath: codingPath))
+    }
+
+    func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
+        let child = NestedNode(keyed: false)
+        node.unkeyed.append(.node(child))
+        return NestedUnkeyedContainer(node: child, codingPath: codingPath)
+    }
+
+    func superEncoder() -> Encoder { preconditionFailure("Records do not support superEncoder") }
+}
+
 // MARK: - Encoding
 
 /// Encodes a record's properties: primitives become columns, nested records become relations,
@@ -44,6 +140,8 @@ final class RecordEncoder: Encoder {
     var userInfo: [CodingUserInfoKey: Any] = [:]
     var output = EncodedRecord()
     let inverseFields: Set<String>
+    /// Nested containers opened by a record's own `encode(to:)`, stored as JSON once encoding finishes.
+    var nested: [(name: String, node: NestedNode)] = []
 
     init(inverseFields: Set<String>) {
         self.inverseFields = inverseFields
@@ -52,6 +150,9 @@ final class RecordEncoder: Encoder {
     static func encode<R: Record>(_ record: R) throws -> EncodedRecord {
         let encoder = RecordEncoder(inverseFields: Set(R.schema.fields.filter { $0.inverse != nil }.map(\.name)))
         try record.encode(to: encoder)
+        for (name, node) in encoder.nested {
+            encoder.output.columns.append((name, try ValueCoding.encode(node)))
+        }
         return encoder.output
     }
 
@@ -81,7 +182,9 @@ final class RecordEncoder: Encoder {
                 let ids = (value as? [any Encodable]) ?? []
                 encoder.output.inverseOrders[name] = try ids.map { try ValueCoding.encode($0) }
             } else if let asset = value as? Asset {
-                encoder.output.assets[name] = asset
+                if asset.storage != nil {
+                    encoder.output.assets[name] = asset
+                }
             } else if let record = value as? any Record {
                 encoder.output.relations.append(.init(name: name, targetType: type(of: record), targets: [record]))
             } else if let collection = value as? any RecordCollection {
@@ -93,12 +196,17 @@ final class RecordEncoder: Encoder {
             }
         }
 
+        // A nested container in a record's own encode(to:) becomes one JSON column.
         func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type, forKey key: Key) -> KeyedEncodingContainer<NestedKey> {
-            preconditionFailure("Records do not support nested containers; give the property its own Codable type instead")
+            let node = NestedNode(keyed: true)
+            encoder.nested.append((key.stringValue, node))
+            return KeyedEncodingContainer(NestedKeyedContainer<NestedKey>(node: node, codingPath: codingPath + [key]))
         }
 
         func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
-            preconditionFailure("Records do not support nested containers; give the property its own Codable type instead")
+            let node = NestedNode(keyed: false)
+            encoder.nested.append((key.stringValue, node))
+            return NestedUnkeyedContainer(node: node, codingPath: codingPath + [key])
         }
 
         func superEncoder() -> Encoder { preconditionFailure("Records do not support superEncoder") }
@@ -182,17 +290,24 @@ struct RecordDecoder<R: Record>: Decoder {
                 throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(name)"))
             }
             if T.self == Asset.self, case .text(let fileName) = value {
-                return Asset(name: fileName, fileURL: decoder.loader.assetURL(named: fileName)) as! T
+                return Asset(storedName: fileName, url: decoder.loader.assetURL(named: fileName)) as! T
             }
             return try ValueCoding.decode(T.self, from: value)
         }
 
         func nestedContainer<NestedKey: CodingKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> {
-            throw DecodingError.typeMismatch(R.self, .init(codingPath: codingPath, debugDescription: "Records do not support nested containers"))
+            try ValueCoding.jsonDecoder(for: column(key)).container(keyedBy: type)
         }
 
         func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-            throw DecodingError.typeMismatch(R.self, .init(codingPath: codingPath, debugDescription: "Records do not support nested containers"))
+            try ValueCoding.jsonDecoder(for: column(key)).unkeyedContainer()
+        }
+
+        private func column(_ key: Key) throws -> SQLiteValue {
+            guard let value = decoder.row[key.stringValue] else {
+                throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(key.stringValue)"))
+            }
+            return value
         }
 
         func superDecoder() throws -> Decoder { decoder }

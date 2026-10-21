@@ -12,7 +12,7 @@ struct ToDo {
     var title: String
     var done = false
     var owner: Person?                                   // to-one relationship
-    @Reference(deleteRule: .nullify) var notes: [Note] = []  // to-many, order kept
+    @Reference(deleteRule: .none) var notes: [Note] = []  // to-many, order kept
     var tags: [String] = []                              // plain Codable, stored as JSON
 }
 
@@ -74,7 +74,7 @@ Anything else is evaluated in memory, so every predicate works.
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
   It is stored in a join table named `Owner.property` that keeps the order of both sides.
-- Delete rules: `.cascade` (the default, like a nested struct) and `.nullify`. Cascade only
+- Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
 - An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
@@ -83,27 +83,40 @@ Anything else is evaluated in memory, so every predicate works.
 
 ## Assets
 
-Large data such as photos and audio belongs in an `Asset`, which is stored as a file beside the
-database instead of inside it. The property must be `Asset?`; `@Record` rejects any other use.
+Large data such as photos and audio belongs in an `@Asset` property, which stores its `Data?` as a
+file beside the database instead of inside it.
 
 ```swift
 @Record
 struct Photo {
     var id = UUID()
-    var image: Asset?
+    @Asset(fileExtension: "jpg") var image: Data? = nil
 }
 
-try container.save(Photo(image: Asset(data: jpeg, fileExtension: "jpg")))   // or Asset(contentsOf: url)
-let url = try container.fetch(Photo.self).first?.image?.fileURL             // hand to AVPlayer, QuickLook…
+try container.save(Photo(image: jpeg))
+let photo = try container.fetch(Photo.self).first
+let url = photo?.$image.url      // the stored file, for AsyncImage, QuickLook or AVPlayer
+let bytes = photo?.image         // read from disk on first access, then cached
 ```
 
+- Fetching never reads asset files. The bytes load the first time the property is read, so prefer
+  `$image.url` where a URL will do.
 - Files live in a folder named after the database file, such as `Records/default.assets/`, so they
   are included in device backups along with the zone.
-- An asset is immutable. Assigning a new one or `nil` removes the old file when the record is saved,
-  and deleting a record (directly or by cascade) removes its files. Rolled-back transactions leave no
-  files behind.
-- `fileURL` is `nil` until the asset has been saved and fetched back. `data()` reads the contents
-  either way.
+- Assigning new data or `nil` removes the old file when the record is saved, and deleting a record
+  (directly or by cascade) removes its files. Rolled-back transactions leave no files behind.
+- To copy a large file in without loading it, assign `photo.$image = Asset(contentsOf: url)`.
+- Outside a container, such as with `JSONEncoder`, the property encodes as plain `Data?`.
+
+## Paging and counting
+
+```swift
+let page = try container.fetch(ToDo.self, where: #Predicate { !$0.done }, limit: 20, offset: 40)
+page.indices            // 40..<60, the records' positions in the full results
+try container.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(*) when it translates
+```
+
+A page is a read-only `RecordSlice`. Without sort descriptors it is read straight from SQL.
 
 ## SwiftUI
 
@@ -127,6 +140,10 @@ struct ContentView: View {
     }
 }
 ```
+
+Without a context in the environment, `@Records` uses the default zone's shared context.
+`@Records("drafts")` reads another zone, through the environment's context if it belongs to that zone
+and otherwise through `RecordsContext.shared(_:)`.
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through `RecordsContext`,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by

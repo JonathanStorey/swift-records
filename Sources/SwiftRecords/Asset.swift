@@ -1,84 +1,132 @@
 import Foundation
 
-/// A file stored beside the database instead of inside it, like `CKAsset`. Use it for photos, audio
-/// and anything else too large to load with every fetch. The property must be optional:
+/// Stores a `Data?` property as a file beside the database instead of inside it, like `CKAsset`. Use it
+/// for photos, audio and anything else too large to load with every fetch.
 ///
 /// ```swift
 /// @Record
-/// struct Photo {
+/// struct Recipe {
 ///     var id = UUID()
-///     var image: Asset?
+///     @Asset(fileExtension: "jpg") var photo: Data?
 /// }
 ///
-/// try container.save(Photo(image: Asset(data: jpeg, fileExtension: "jpg")))
-/// let url = try container.fetch(Photo.self).first?.image?.fileURL
+/// recipe.photo = jpegData                 // written to disk when the record is saved
+/// let url = saved.$photo.url              // the stored file, for AsyncImage or QuickLook
+/// let bytes = saved.photo                 // read from disk on first access, then cached
 /// ```
 ///
-/// Files live in a folder named after the database file, such as `Records/default.assets/`. An asset
-/// is immutable: to change the file, assign a new `Asset`. The old file is removed when the record is
-/// saved, and a record's files are removed when it is deleted.
+/// A fetched record doesn't load its files. Reading the property loads the file once and keeps it with
+/// that copy of the record, so prefer `$photo.url` where a URL will do, such as for images in a list.
+///
+/// Outside a container, such as with `JSONEncoder`, the property encodes and decodes as plain `Data?`.
+@propertyWrapper
 public struct Asset: Hashable, Sendable, Codable {
     enum Source: Sendable {
         case data(Data)
+        /// A file to copy in when the record is saved.
         case file(URL)
+        /// The asset's file in a container's assets folder.
+        case stored(URL)
     }
 
-    /// The file's name in the assets folder. Unique for each asset.
-    public let name: String
+    final class Storage: @unchecked Sendable {
+        let name: String
+        let source: Source
+        private let lock = NSLock()
+        private var cached: Data?
 
-    /// The stored file. `nil` until the asset has been saved and fetched back.
-    public let fileURL: URL?
+        init(name: String, source: Source) {
+            self.name = name
+            self.source = source
+        }
 
-    let source: Source?
-
-    /// An asset holding `data`, written to disk when its record is saved.
-    public init(data: Data, fileExtension: String = "") {
-        name = Self.makeName(fileExtension: fileExtension)
-        fileURL = nil
-        source = .data(data)
-    }
-
-    /// An asset copied from the file at `url` when its record is saved. The file is not moved.
-    public init(contentsOf url: URL) {
-        name = Self.makeName(fileExtension: url.pathExtension)
-        fileURL = nil
-        source = .file(url)
-    }
-
-    init(name: String, fileURL: URL?) {
-        self.name = name
-        self.fileURL = fileURL
-        source = nil
-    }
-
-    /// The file's contents.
-    public func data() throws -> Data {
-        switch source {
-        case .data(let data): return data
-        case .file(let url): return try Data(contentsOf: url)
-        case nil:
-            guard let fileURL else { throw CocoaError(.fileNoSuchFile) }
-            return try Data(contentsOf: fileURL)
+        func data() -> Data? {
+            switch source {
+            case .data(let data):
+                return data
+            case .file(let url), .stored(let url):
+                lock.lock()
+                defer { lock.unlock() }
+                if cached == nil {
+                    cached = try? Data(contentsOf: url)
+                }
+                return cached
+            }
         }
     }
 
-    var fileExtension: String { (name as NSString).pathExtension }
+    var storage: Storage?
+
+    /// The extension given to new files, such as `"jpg"`.
+    public let fileExtension: String
+
+    public init(wrappedValue: Data? = nil, fileExtension: String = "") {
+        self.fileExtension = fileExtension
+        storage = wrappedValue.map { Storage(name: Self.makeName(fileExtension: fileExtension), source: .data($0)) }
+    }
+
+    /// An asset copied from the file at `url` when its record is saved, without reading it into memory.
+    /// Assign it through the projected value: `recipe.$photo = Asset(contentsOf: url)`.
+    public init(contentsOf url: URL) {
+        fileExtension = url.pathExtension
+        storage = Storage(name: Self.makeName(fileExtension: url.pathExtension), source: .file(url))
+    }
+
+    init(storedName name: String, url: URL) {
+        fileExtension = (name as NSString).pathExtension
+        storage = Storage(name: name, source: .stored(url))
+    }
+
+    /// The contents, read from disk the first time they're needed.
+    public var wrappedValue: Data? {
+        get { storage?.data() }
+        set { storage = newValue.map { Storage(name: Self.makeName(fileExtension: fileExtension), source: .data($0)) } }
+    }
+
+    /// The asset itself, for its file URL: `recipe.$photo.url`.
+    public var projectedValue: Asset {
+        get { self }
+        set { self = newValue }
+    }
+
+    /// The stored file. `nil` until the record has been saved and fetched back, and for an empty asset.
+    public var url: URL? {
+        if case .stored(let url)? = storage?.source { return url }
+        return nil
+    }
+
+    /// The file's unique name in the assets folder, or `nil` for an empty asset.
+    public var name: String? { storage?.name }
 
     static func makeName(fileExtension: String) -> String {
         fileExtension.isEmpty ? UUID().uuidString : UUID().uuidString + "." + fileExtension
     }
 
-    // An asset's identity is its name, because the file behind a name never changes.
+    // Identity is the file name, because the contents behind a name never change. Comparing names keeps
+    // `==` on a record from reading files.
     public static func == (lhs: Asset, rhs: Asset) -> Bool { lhs.name == rhs.name }
     public func hash(into hasher: inout Hasher) { hasher.combine(name) }
 
-    // Outside a container an asset encodes as its name only.
     public init(from decoder: Decoder) throws {
-        self.init(name: try decoder.singleValueContainer().decode(String.self), fileURL: nil)
+        self.init(wrappedValue: try decoder.singleValueContainer().decode(Data?.self))
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        try container.encode(name)
+        try container.encode(wrappedValue)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// Lets a record decode without its asset key, as a plain optional property would.
+    public func decode(_ type: Asset.Type, forKey key: Key) throws -> Asset {
+        try decodeIfPresent(type, forKey: key) ?? Asset()
+    }
+}
+
+extension KeyedEncodingContainer {
+    /// Leaves an empty asset's key out, as a plain optional property would.
+    public mutating func encode(_ value: Asset, forKey key: Key) throws {
+        try encodeIfPresent(value.storage == nil ? nil : value, forKey: key)
     }
 }

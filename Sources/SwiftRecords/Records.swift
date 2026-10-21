@@ -11,30 +11,61 @@ import SwiftUI
 /// }
 /// ```
 ///
-/// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through
-/// the environment's `RecordsContext`. Without sort descriptors, the array's order is saved too, so
-/// moves persist.
+/// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through a
+/// `RecordsContext`. Without sort descriptors, the array's order is saved too, so moves persist.
+///
+/// Without a zone, the wrapper uses the environment's context, or the default zone's shared context
+/// when there is none. With a zone, such as `@Records("pantry")`, it uses the environment's context if
+/// that context belongs to the zone, and otherwise the zone's shared context.
 @MainActor
 @propertyWrapper
 public struct Records<R: Record>: DynamicProperty {
     @Environment(\.recordsContext) private var context
     @State private var cache = Cache()
 
+    private let zone: Zone?
     private let predicate: Predicate<R>?
     private let sortDescriptors: [SortDescriptor<R>]
 
+    /// Records from the environment's context, or from the default zone when there is none.
     public init(filter predicate: Predicate<R>? = nil, sort sortDescriptors: [SortDescriptor<R>] = []) {
+        zone = nil
         self.predicate = predicate
         self.sortDescriptors = sortDescriptors
     }
 
+    /// Records from a zone, such as `@Records(.pantry)`.
+    public init(_ zone: Zone, filter predicate: Predicate<R>? = nil, sort sortDescriptors: [SortDescriptor<R>] = []) {
+        self.zone = zone
+        self.predicate = predicate
+        self.sortDescriptors = sortDescriptors
+    }
+
+    /// Records from a zone by name, such as `@Records("pantry")`.
+    public init(_ zone: String, filter predicate: Predicate<R>? = nil, sort sortDescriptors: [SortDescriptor<R>] = []) {
+        self.init(Zone(zone), filter: predicate, sort: sortDescriptors)
+    }
+
+    /// The environment's context when it fits the requested zone, otherwise the zone's shared context.
+    private var resolvedContext: RecordsContext? {
+        if let context, zone == nil || context.container.zone == zone {
+            return context
+        }
+        do {
+            return try RecordsContext.shared(zone ?? .default)
+        } catch {
+            assertionFailure("@Records could not open zone \(zone ?? .default): \(error)")
+            return nil
+        }
+    }
+
     public var wrappedValue: [R] {
-        Self.records(context: context, cache: cache, predicate: predicate, sort: sortDescriptors)
+        Self.records(context: resolvedContext, cache: cache, predicate: predicate, sort: sortDescriptors)
     }
 
     public var projectedValue: Binding<[R]> {
         // Capture only Sendable values so the binding works under strict concurrency.
-        let context = context
+        let context = resolvedContext
         let cache = cache
         let predicate = predicate
         let sortDescriptors = sortDescriptors
@@ -61,10 +92,7 @@ public struct Records<R: Record>: DynamicProperty {
     private static func records(
         context: RecordsContext?, cache: Cache, predicate: Predicate<R>?, sort: [SortDescriptor<R>]
     ) -> [R] {
-        guard let context else {
-            assertionFailure("@Records needs a RecordsContext. Add .recordsContext(_:) to a parent view.")
-            return []
-        }
+        guard let context else { return [] }
         // Reading changeCount registers the dependency, so the view updates after each save.
         let changeCount = context.changeCount
         if let records = cache.records, changeCount == cache.changeCount + 1,

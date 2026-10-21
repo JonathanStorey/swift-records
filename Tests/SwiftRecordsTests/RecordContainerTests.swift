@@ -16,7 +16,7 @@ struct ToDo {
     var priority = 0
     var due: Date?
     var owner: Person?
-    @Reference(deleteRule: .nullify) var notes: [Note] = []
+    @Reference(deleteRule: .none) var notes: [Note] = []
     var subtasks: [Subtask] = []
     var tags: [String] = []
 }
@@ -38,7 +38,7 @@ struct Subtask {
 struct Folder {
     var id: Int
     var name: String
-    var items: [Subtask] = []
+    @Reference var items: [Subtask] = []  // a bare @Reference is the default, .cascade
 }
 
 @Suite struct RecordContainerTests {
@@ -120,7 +120,7 @@ struct Folder {
         #expect(try store.fetch(Subtask.self).map(\.title) == ["Keep"])
     }
 
-    @Test func nullifyKeepsRelatedRecords() throws {
+    @Test func noneKeepsRelatedRecords() throws {
         let todo = ToDo(title: "With notes", notes: [Note(text: "Keep me")])
         try store.save(todo)
         try store.delete(todo)

@@ -51,6 +51,40 @@ public final class RecordsContext {
         lifecycle = LifecycleObserver { [weak self] in
             self?.autosave()
         }
+        Self.register(self)
+    }
+
+    // MARK: Shared contexts
+
+    private struct Registration {
+        weak var context: RecordsContext?
+        /// Set for contexts that `shared(_:)` created, which nothing else keeps alive.
+        var retained: RecordsContext?
+    }
+
+    private static var registry: [String: Registration] = [:]
+
+    private static func key(for url: URL?) -> String {
+        url?.standardizedFileURL.path ?? "in-memory"
+    }
+
+    /// Makes this context the one `shared(_:)` returns for its file, so every view of a zone sees the same
+    /// pending changes and refreshes together. The most recently created context for a file wins.
+    private static func register(_ context: RecordsContext) {
+        registry[key(for: context.container.url)] = Registration(context: context)
+    }
+
+    /// The context for a zone's file in `Zone.defaultDirectory`: the most recently created one that is
+    /// still alive, or a new one that lives for the rest of the process. `@Records` uses it for a zone
+    /// that isn't in the environment.
+    public static func shared(_ zone: Zone = .default) throws -> RecordsContext {
+        let key = key(for: try zone.url(in: Zone.defaultDirectory))
+        if let context = registry[key]?.context {
+            return context
+        }
+        let context = try RecordsContext(zone: zone)
+        registry[key] = Registration(context: context, retained: context)
+        return context
     }
 
     /// Opens the zone's container. With no arguments this is the default zone.
@@ -64,6 +98,10 @@ public final class RecordsContext {
     }
 
     public var hasChanges: Bool { !pending.isEmpty }
+
+    /// The number of unsaved changes. Repeated edits to one record count once, and storing an array's
+    /// order counts as one change.
+    public var pendingChangeCount: Int { pending.count }
 
     // MARK: Changes
 
@@ -111,6 +149,24 @@ public final class RecordsContext {
     ) throws -> [R] {
         try save()
         return try container.fetch(type, where: predicate, sortBy: sortDescriptors)
+    }
+
+    /// Saves pending changes, then fetches one page. See `RecordContainer.fetch(_:where:sortBy:limit:offset:)`.
+    public func fetch<R: Record>(
+        _ type: R.Type = R.self,
+        where predicate: Predicate<R>? = nil,
+        sortBy sortDescriptors: [SortDescriptor<R>] = [],
+        limit: Int,
+        offset: Int = 0
+    ) throws -> RecordSlice<R> {
+        try save()
+        return try container.fetch(type, where: predicate, sortBy: sortDescriptors, limit: limit, offset: offset)
+    }
+
+    /// Saves pending changes, then counts in SQL when the predicate translates.
+    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
+        try save()
+        return try container.count(type, where: predicate)
     }
 
     public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
