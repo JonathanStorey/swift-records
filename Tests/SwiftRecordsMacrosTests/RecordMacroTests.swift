@@ -6,7 +6,7 @@ import XCTest
 final class RecordMacroTests: XCTestCase {
     let macros: [String: Macro.Type] = [
         "Record": RecordMacro.self, "Reference": ReferenceMacro.self,
-        "Renamed": MarkerMacro.self, "Indexed": MarkerMacro.self,
+        "Renamed": MarkerMacro.self, "Indexed": MarkerMacro.self, "Timestamp": MarkerMacro.self,
     ]
 
     func testGeneratesSchema() {
@@ -218,17 +218,17 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 @Timestamp(.created) var created: Date?
                 @Timestamp var modified: Date?
-                @Timestamp(Timestamp.Kind.synced) var synced: Date?
+                @Timestamp(TimestampKind.synced) var synced: Date?
                 @Timestamp var wrong: Date
             }
             """,
             expandedSource: """
             struct Entry {
                 var id = UUID()
-                @Timestamp(.created) var created: Date?
-                @Timestamp var modified: Date?
-                @Timestamp(Timestamp.Kind.synced) var synced: Date?
-                @Timestamp var wrong: Date
+                @SwiftRecords.TimestampStorage var created: Date?
+                @SwiftRecords.TimestampStorage var modified: Date?
+                @SwiftRecords.TimestampStorage var synced: Date?
+                var wrong: Date
             }
 
             extension Entry: Record {
@@ -244,6 +244,31 @@ final class RecordMacroTests: XCTestCase {
             """,
             diagnostics: [
                 DiagnosticSpec(message: "A @Timestamp property must be declared as 'Date?'", line: 7, column: 20),
+            ],
+            macros: macros
+        )
+    }
+
+    func testMarkersWarnOutsideARecord() {
+        assertMacroExpansion(
+            """
+            struct Settings {
+                @Indexed var name = ""
+                @Timestamp var updated: Date?
+                @Reference var items: [Item] = []
+            }
+            """,
+            expandedSource: """
+            struct Settings {
+                var name = ""
+                var updated: Date?
+                var items: [Item] = []
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(message: "@Indexed has no effect outside a @Record struct", line: 2, column: 5, severity: .warning),
+                DiagnosticSpec(message: "@Timestamp has no effect outside a @Record struct", line: 3, column: 5, severity: .warning),
+                DiagnosticSpec(message: "@Reference has no effect outside a @Record struct", line: 4, column: 5, severity: .warning),
             ],
             macros: macros
         )

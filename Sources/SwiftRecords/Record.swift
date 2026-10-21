@@ -19,11 +19,13 @@ public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
 
 /// Generates `Record` conformance and the type's `schema`. The table is named after the struct.
 @attached(extension, conformances: Record, names: named(schema))
+@attached(memberAttribute)
 public macro Record() = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
 
 /// Generates `Record` conformance and stores the type under a fixed name, so renaming the struct keeps
 /// its data. Use letters, digits and underscores, which a CloudKit record type also allows.
 @attached(extension, conformances: Record, names: named(schema))
+@attached(memberAttribute)
 public macro Record(name: String) = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
 
 /// Reads a property's earlier names, so renaming it in Swift keeps its stored values. The column is
@@ -96,7 +98,7 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         /// True for an `@Indexed` property.
         private(set) var isIndexed = false
         /// What the container stamps into a `@Timestamp` property.
-        private(set) var timestamp: Timestamp.Kind?
+        private(set) var timestamp: TimestampKind?
 
         init(name: String, keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule?, inverse: AnyKeyPath?, isAsset: Bool, fileExtension: String) {
             self.name = name
@@ -130,7 +132,7 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
             Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false, fileExtension: "")
         }
 
-        public static func timestamp(_ name: String, _ keyPath: KeyPath<Root, Date?>, _ kind: Timestamp.Kind) -> Field {
+        public static func timestamp(_ name: String, _ keyPath: KeyPath<Root, Date?>, _ kind: TimestampKind) -> Field {
             var field = Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: false, fileExtension: "")
             field.timestamp = kind
             return field

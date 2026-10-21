@@ -6,8 +6,21 @@ import SwiftSyntaxMacros
 
 /// `@Record` adds `Record` conformance and generates `static var schema`, which maps every stored
 /// property to its key path so predicates, sort descriptors, delete rules and inverses can be
-/// resolved without an instance.
-public struct RecordMacro: ExtensionMacro {
+/// resolved without an instance. It also gives each `@Timestamp` property its storage wrapper.
+public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingAttributesFor member: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [AttributeSyntax] {
+        guard let variable = member.as(VariableDeclSyntax.self), timestampKind(variable.attributes) != nil,
+              variable.bindings.count == 1, let binding = variable.bindings.first, isOptionalDate(binding) else {
+            return []
+        }
+        return ["@SwiftRecords.TimestampStorage"]
+    }
+
     public static func expansion(
         of node: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -256,14 +269,16 @@ public struct RecordMacro: ExtensionMacro {
     }
 }
 
-/// `@Renamed` and `@Indexed` are markers read by `@Record`. They generate no code themselves.
+/// `@Renamed`, `@Indexed` and `@Timestamp` are markers read by `@Record`. They generate no code
+/// themselves, and warn when they're used outside a `@Record` struct, where nothing reads them.
 public struct MarkerMacro: PeerMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingPeersOf declaration: some DeclSyntaxProtocol,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        []
+        warnOutsideRecord(node, in: context)
+        return []
     }
 }
 
@@ -274,8 +289,22 @@ public struct ReferenceMacro: PeerMacro {
         providingPeersOf declaration: some DeclSyntaxProtocol,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        []
+        warnOutsideRecord(node, in: context)
+        return []
     }
+}
+
+/// Warns when a marker's property isn't a member of a `@Record` struct.
+private func warnOutsideRecord(_ node: AttributeSyntax, in context: some MacroExpansionContext) {
+    let isRecord = context.lexicalContext.first?.as(StructDeclSyntax.self)?.attributes.contains { element in
+        guard let name = element.as(AttributeSyntax.self)?.attributeName.trimmedDescription else { return false }
+        return name == "Record" || name == "SwiftRecords.Record"
+    } ?? false
+    guard !isRecord else { return }
+    let name = node.attributeName.trimmedDescription
+    context.diagnose(Diagnostic(node: node, message: MacroWarning(
+        "@\(name) has no effect outside a @Record struct"
+    )))
 }
 
 enum MacroError: Error, CustomStringConvertible, DiagnosticMessage {
@@ -290,6 +319,17 @@ enum MacroError: Error, CustomStringConvertible, DiagnosticMessage {
     var message: String { description }
     var diagnosticID: MessageID { MessageID(domain: "SwiftRecordsMacros", id: "error") }
     var severity: DiagnosticSeverity { .error }
+}
+
+struct MacroWarning: DiagnosticMessage {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var diagnosticID: MessageID { MessageID(domain: "SwiftRecordsMacros", id: "warning") }
+    var severity: DiagnosticSeverity { .warning }
 }
 
 @main
