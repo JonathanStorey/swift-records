@@ -234,12 +234,12 @@ a predicate on it runs in memory. A bare `@Timestamp` means `.modified`.
 
 ## Unsaved edits
 
-`hasChanges(in:)` says whether a copy of a record differs from the one its context holds, which suits
-an edit sheet that keeps a draft in `@State`:
+`context.hasChanges(record)` says whether a copy of a record differs from the one the context
+holds, which suits an edit sheet that keeps a draft in `@State`:
 
 ```swift
 Button("Save") { context.save(draft); dismiss() }
-    .disabled(!draft.hasChanges(in: context))
+    .disabled(!context.hasChanges(draft))
 ```
 
 It counts the context's pending changes and related records, so editing a step marks its recipe as

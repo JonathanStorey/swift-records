@@ -32,20 +32,20 @@ struct DraftStep {
 
     @Test func followsEditsAndSaves() throws {
         var draft = Draft(title: "Soup")
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
 
         context.save(draft)
-        #expect(!draft.hasChanges(in: context))
+        #expect(!context.hasChanges(draft))
         try context.save()
-        #expect(!draft.hasChanges(in: context))
+        #expect(!context.hasChanges(draft))
 
         draft.title = "Stew"
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
         draft.title = "Soup"
-        #expect(!draft.hasChanges(in: context))
+        #expect(!context.hasChanges(draft))
 
         context.delete(draft)
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
     }
 
     @Test func relatedRecordsCount() throws {
@@ -54,10 +54,10 @@ struct DraftStep {
         try context.save()
 
         draft.steps[0].text = "Simmer"
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
         draft.steps[0].text = "Boil"
         draft.steps.append(DraftStep(text: "Serve"))
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
     }
 
     @Test func ignoresWhatTheContainerSets() throws {
@@ -69,13 +69,13 @@ struct DraftStep {
         // The stored copy now has a modified date, and its step an inverse, that this copy lacks.
         let stored = try #require(try context.fetch(Draft.self, id: draft.id))
         #expect(stored.modified != nil)
-        #expect(!draft.hasChanges(in: context))
+        #expect(!context.hasChanges(draft))
 
         // Another draft sharing the step changes only its inverse.
         context.save(Draft(title: "Broth", steps: [step]))
         try context.save()
-        #expect(!step.hasChanges(in: context))
-        #expect(!stored.hasChanges(in: context))
+        #expect(!context.hasChanges(step))
+        #expect(!context.hasChanges(stored))
     }
 
     @Test func comparesAssetsByFile() throws {
@@ -84,24 +84,24 @@ struct DraftStep {
         try context.save()
 
         draft.image = Data([1, 2, 3])
-        #expect(draft.hasChanges(in: context))
+        #expect(context.hasChanges(draft))
         context.save(draft)
         try context.save()
-        #expect(!draft.hasChanges(in: context))
+        #expect(!context.hasChanges(draft))
 
         let stored = try #require(try context.fetch(Draft.self, id: draft.id))
-        #expect(!stored.hasChanges(in: context))
+        #expect(!context.hasChanges(stored))
         var replaced = stored
         replaced.image = Data([1, 2, 3])
-        #expect(replaced.hasChanges(in: context))
+        #expect(context.hasChanges(replaced))
     }
 
     @Test func backgroundContextsCompareWithTheStore() async throws {
         let draft = Draft(title: "Soup")
         try await container.performBackgroundTask { context in
-            #expect(try draft.hasChanges(in: context))
+            #expect(try context.hasChanges(draft))
             try context.save(draft)
-            #expect(try !draft.hasChanges(in: context))
+            #expect(try !context.hasChanges(draft))
         }
     }
 }

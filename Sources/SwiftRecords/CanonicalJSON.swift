@@ -14,7 +14,7 @@ enum CanonicalJSON {
         return encoder
     }()
 
-    /// True while comparing records for `hasChanges(in:)`, which skips what the container sets itself, such
+    /// True while comparing records for `hasChanges(_:)`, which skips what the container sets itself, such
     /// as timestamps and inverses, and compares assets by file rather than by contents.
     @TaskLocal static var comparing = false
 
