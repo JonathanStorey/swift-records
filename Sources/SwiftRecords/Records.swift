@@ -66,7 +66,7 @@ public struct Records<R: Record>: DynamicProperty {
         // Reading changeCount registers the dependency, so the view updates after each save.
         let changeCount = context.changeCount
         if cache.changeCount != changeCount || cache.records == nil {
-            cache.records = (try? context.store.fetch(R.self, where: predicate, sortBy: sort)) ?? []
+            cache.records = (try? context.container.fetch(R.self, where: predicate, sortBy: sort)) ?? []
             cache.changeCount = changeCount
         }
         return cache.records ?? []

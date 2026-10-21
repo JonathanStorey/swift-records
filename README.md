@@ -27,14 +27,14 @@ struct Note {
 ## Storing and querying
 
 ```swift
-let store = try RecordStore()                    // the default zone
+let container = try RecordContainer()                // the default zone
 
-try store.save(todo)                             // saves the ToDo, its Person and every Note
-let open = try store.fetch(ToDo.self,
+try container.save(todo)                             // saves the ToDo, its Person and every Note
+let open = try container.fetch(ToDo.self,
                            where: #Predicate { !$0.done },
                            sortBy: [SortDescriptor(\.title)])
-let parents = try store.fetch(ToDo.self, ids: note.todos)
-try store.delete(todo)
+let parents = try container.fetch(ToDo.self, ids: note.todos)
+try container.delete(todo)
 ```
 
 ## Zones
@@ -46,15 +46,15 @@ extension Zone {
     static let drafts: Zone = "drafts"
 }
 
-let main = try RecordStore()                     // Application Support/Records/default.sqlite
-let drafts = try RecordStore(zone: .drafts)      // Application Support/Records/drafts.sqlite
-let scratch = try RecordStore(zone: .inMemory)   // nothing on disk
+let main = try RecordContainer()                     // Application Support/Records/default.sqlite
+let drafts = try RecordContainer(zone: .drafts)      // Application Support/Records/drafts.sqlite
+let scratch = try RecordContainer(zone: .inMemory)   // nothing on disk
 ```
 
 Zone files are local to the device and never sync through iCloud. They are included in the device's
 own backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the folder sits inside one named for the
 app's bundle identifier. Relationships stay within one zone, and the same record type can be stored
-in several zones. To open a file somewhere else, use `RecordStore(url:)`.
+in several zones. To open a file somewhere else, use `RecordContainer(url:)`.
 
 ## Queries
 
@@ -63,7 +63,7 @@ Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`
 `localizedStandardContains`. Searching inside a to-many relationship also runs as SQL:
 
 ```swift
-let greeted = try store.fetch(ToDo.self, where: #Predicate { todo in
+let greeted = try container.fetch(ToDo.self, where: #Predicate { todo in
     todo.notes.contains { $0.text == "hello world" }
 })
 ```
@@ -78,7 +78,7 @@ Anything else is evaluated in memory, so every predicate works.
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
 - An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
-  recurse forever with value types, so fetch them with `store.fetch(_:ids:)`. Reordering the IDs and
+  recurse forever with value types, so fetch them with `container.fetch(_:ids:)`. Reordering the IDs and
   saving persists the new order.
 
 ## SwiftUI

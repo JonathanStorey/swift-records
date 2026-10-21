@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// The main-actor front door to a `RecordStore`, in the role SwiftData gives `ModelContext`.
+/// The main-actor front door to a `RecordContainer`, in the role SwiftData gives `ModelContext`.
 ///
 /// Inserts, updates and deletes are collected and committed together in one transaction, either when
 /// you call `save()` or automatically on the next turn of the main actor. Views using `@Records` refresh
@@ -9,7 +9,7 @@ import Observation
 @MainActor
 @Observable
 public final class RecordsContext {
-    public let store: RecordStore
+    public let container: RecordContainer
 
     /// Incremented after every save. `@Records` observes it to know when to fetch again.
     public private(set) var changeCount = 0
@@ -20,21 +20,21 @@ public final class RecordsContext {
     /// The error from the most recent autosave, if it failed.
     public private(set) var lastSaveError: Error?
 
-    @ObservationIgnored private var pending: [(RecordStore) throws -> Void] = []
+    @ObservationIgnored private var pending: [(RecordContainer) throws -> Void] = []
     @ObservationIgnored private var autosaveScheduled = false
 
-    public init(store: RecordStore) {
-        self.store = store
+    public init(container: RecordContainer) {
+        self.container = container
     }
 
-    /// Opens the zone's store. With no arguments this is the default zone.
+    /// Opens the zone's container. With no arguments this is the default zone.
     public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
-        self.init(store: try RecordStore(zone: zone, directory: directory))
+        self.init(container: try RecordContainer(zone: zone, directory: directory))
     }
 
-    /// Opens a store at an exact file location.
+    /// Opens a container at an exact file location.
     public convenience init(url: URL) throws {
-        self.init(store: try RecordStore(url: url))
+        self.init(container: try RecordContainer(url: url))
     }
 
     public var hasChanges: Bool { !pending.isEmpty }
@@ -55,9 +55,9 @@ public final class RecordsContext {
         guard !pending.isEmpty else { return }
         let changes = pending
         pending = []
-        try store.transaction {
+        try container.transaction {
             for change in changes {
-                try change(store)
+                try change(container)
             }
         }
         changeCount += 1
@@ -77,17 +77,17 @@ public final class RecordsContext {
         sortBy sortDescriptors: [SortDescriptor<R>] = []
     ) throws -> [R] {
         try save()
-        return try store.fetch(type, where: predicate, sortBy: sortDescriptors)
+        return try container.fetch(type, where: predicate, sortBy: sortDescriptors)
     }
 
     public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
         try save()
-        return try store.fetch(type, id: id)
+        return try container.fetch(type, id: id)
     }
 
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try save()
-        return try store.fetch(type, ids: ids)
+        return try container.fetch(type, ids: ids)
     }
 
     // MARK: Arrays
@@ -98,18 +98,18 @@ public final class RecordsContext {
     public func apply<R: Record>(_ records: [R], replacing previous: [R], keepOrder: Bool) {
         let kept = Set(records.map(\.id))
         let removed = previous.filter { !kept.contains($0.id) }
-        enqueue { store in
+        enqueue { container in
             for record in removed {
-                try store.delete(record)
+                try container.delete(record)
             }
-            try store.save(records)
+            try container.save(records)
             if keepOrder {
-                try store.setOrder(records.map(\.id), for: R.self)
+                try container.setOrder(records.map(\.id), for: R.self)
             }
         }
     }
 
-    private func enqueue(_ change: @escaping (RecordStore) throws -> Void) {
+    private func enqueue(_ change: @escaping (RecordContainer) throws -> Void) {
         pending.append(change)
         guard autosaveEnabled, !autosaveScheduled else { return }
         autosaveScheduled = true

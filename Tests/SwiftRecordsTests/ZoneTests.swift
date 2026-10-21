@@ -7,7 +7,7 @@ import Testing
 
     @Test func zoneNameIsTheFileName() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try RecordStore(zone: "drafts", directory: directory)
+        let store = try RecordContainer(zone: "drafts", directory: directory)
         try store.save(ToDo(title: "Draft"))
 
         #expect(store.url == directory.appendingPathComponent("drafts.sqlite"))
@@ -16,15 +16,15 @@ import Testing
 
     @Test func zonesAreSeparateFiles() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        try RecordStore(zone: .default, directory: directory).save(ToDo(title: "Main"))
-        try RecordStore(zone: "archive", directory: directory).save(ToDo(title: "Old"))
+        try RecordContainer(zone: .default, directory: directory).save(ToDo(title: "Main"))
+        try RecordContainer(zone: "archive", directory: directory).save(ToDo(title: "Old"))
 
-        #expect(try RecordStore(zone: .default, directory: directory).fetch(ToDo.self).map(\.title) == ["Main"])
-        #expect(try RecordStore(zone: "archive", directory: directory).fetch(ToDo.self).map(\.title) == ["Old"])
+        #expect(try RecordContainer(zone: .default, directory: directory).fetch(ToDo.self).map(\.title) == ["Main"])
+        #expect(try RecordContainer(zone: "archive", directory: directory).fetch(ToDo.self).map(\.title) == ["Old"])
     }
 
     @Test func inMemoryWritesNothing() throws {
-        let store = try RecordStore(zone: .inMemory, directory: directory)
+        let store = try RecordContainer(zone: .inMemory, directory: directory)
         try store.save(ToDo(title: "Gone"))
         #expect(store.url == nil)
         #expect(!FileManager.default.fileExists(atPath: directory.path))
@@ -32,8 +32,8 @@ import Testing
 
     @Test(arguments: ["", ".hidden", "a/b", "a\\b", "a:b"])
     func rejectsUnsafeNames(_ name: String) {
-        #expect(throws: RecordStoreError.invalidZoneName(name)) {
-            try RecordStore(zone: Zone(name), directory: directory)
+        #expect(throws: RecordContainerError.invalidZoneName(name)) {
+            try RecordContainer(zone: Zone(name), directory: directory)
         }
     }
 
@@ -54,7 +54,7 @@ import Testing
         var marked = directory
         try marked.setResourceValues(excluded)
 
-        _ = try RecordStore(zone: "local", directory: directory)
+        _ = try RecordContainer(zone: "local", directory: directory)
         var reread = directory
         reread.removeAllCachedResourceValues()
         let values = try reread.resourceValues(forKeys: [.isExcludedFromBackupKey])
