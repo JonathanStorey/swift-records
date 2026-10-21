@@ -46,11 +46,19 @@ import Testing
     }
 
     #if canImport(Darwin)
-    @Test func directoryIsExcludedFromBackup() throws {
+    @Test func directoryIsIncludedInBackup() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var excluded = URLResourceValues()
+        excluded.isExcludedFromBackup = true
+        var marked = directory
+        try marked.setResourceValues(excluded)
+
         _ = try RecordStore(zone: "local", directory: directory)
-        let values = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        #expect(values.isExcludedFromBackup == true)
+        var reread = directory
+        reread.removeAllCachedResourceValues()
+        let values = try reread.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(values.isExcludedFromBackup == false)
     }
     #endif
 }

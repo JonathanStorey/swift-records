@@ -51,8 +51,8 @@ let drafts = try RecordStore(zone: .drafts)      // Application Support/Records/
 let scratch = try RecordStore(zone: .inMemory)   // nothing on disk
 ```
 
-Zone files are local to the device. The `Records` folder is excluded from iCloud and computer backups,
-so its data is not restored to a new device. On macOS the folder sits inside one named for the
+Zone files are local to the device and never sync through iCloud. They are included in the device's
+own backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the folder sits inside one named for the
 app's bundle identifier. Relationships stay within one zone, and the same record type can be stored
 in several zones. To open a file somewhere else, use `RecordStore(url:)`.
 
