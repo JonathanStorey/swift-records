@@ -3,8 +3,8 @@ import Foundation
 /// A named database file. The name is the file name without its extension, so the zone `"drafts"`
 /// is stored as `drafts.sqlite`.
 ///
-/// Zone files live in the app's Application Support directory under `Records/`, which is excluded
-/// from iCloud and computer backups. The data stays on this device only.
+/// Zone files live in the app's Application Support directory under `Records/`. They never sync
+/// through iCloud, but they are included in the device's own backups and in phone-to-phone transfers.
 ///
 /// ```swift
 /// extension Zone {
@@ -59,13 +59,13 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
         return directory
     }
 
-    /// Creates the directory if needed and marks it as excluded from backup, which also covers every
-    /// file SQLite creates inside it.
+    /// Creates the directory if needed and makes sure it is included in device backups. The flag is
+    /// cleared explicitly because earlier versions excluded the folder.
     static func prepare(_ directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         #if canImport(Darwin)
         var values = URLResourceValues()
-        values.isExcludedFromBackup = true
+        values.isExcludedFromBackup = false
         var directory = directory
         try directory.setResourceValues(values)
         #endif
