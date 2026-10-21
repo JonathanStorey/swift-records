@@ -39,8 +39,6 @@ public enum DeleteRule: String, Sendable {
     case cascade
     /// Unlink related records and keep them.
     case nullify
-    /// Refuse to delete the owner while it still has related records.
-    case deny
 }
 
 /// The property list `@Record` generates for a type.
@@ -59,15 +57,21 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         public let deleteRule: DeleteRule?
         /// For an inverse field, the owner's forward key path, such as `\ToDo.notes`.
         public let inverse: AnyKeyPath?
+        /// True for an `Asset?` property, whose file lives beside the database.
+        public let isAsset: Bool
 
         public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = nil) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil)
+            Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false)
+        }
+
+        public static func asset(_ name: String, _ keyPath: KeyPath<Root, Asset?>) -> Field {
+            Field(name: name, keyPath: keyPath, deleteRule: nil, inverse: nil, isAsset: true)
         }
 
         public static func inverse<Owner: Record, Target>(
             _ name: String, _ keyPath: PartialKeyPath<Root>, of inverse: KeyPath<Owner, Target>
         ) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: nil, inverse: inverse)
+            Field(name: name, keyPath: keyPath, deleteRule: nil, inverse: inverse, isAsset: false)
         }
     }
 

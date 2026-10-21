@@ -74,12 +74,36 @@ Anything else is evaluated in memory, so every predicate works.
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
   It is stored in a join table named `Owner.property` that keeps the order of both sides.
-- Delete rules: `.cascade` (the default, like a nested struct), `.nullify` and `.deny`. Cascade only
+- Delete rules: `.cascade` (the default, like a nested struct) and `.nullify`. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
 - An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
   recurse forever with value types, so fetch them with `container.fetch(_:ids:)`. Reordering the IDs and
   saving persists the new order.
+
+## Assets
+
+Large data such as photos and audio belongs in an `Asset`, which is stored as a file beside the
+database instead of inside it. The property must be `Asset?`; `@Record` rejects any other use.
+
+```swift
+@Record
+struct Photo {
+    var id = UUID()
+    var image: Asset?
+}
+
+try container.save(Photo(image: Asset(data: jpeg, fileExtension: "jpg")))   // or Asset(contentsOf: url)
+let url = try container.fetch(Photo.self).first?.image?.fileURL             // hand to AVPlayer, QuickLook…
+```
+
+- Files live in a folder named after the database file, such as `Records/default.assets/`, so they
+  are included in device backups along with the zone.
+- An asset is immutable. Assigning a new one or `nil` removes the old file when the record is saved,
+  and deleting a record (directly or by cascade) removes its files. Rolled-back transactions leave no
+  files behind.
+- `fileURL` is `nil` until the asset has been saved and fetched back. `data()` reads the contents
+  either way.
 
 ## SwiftUI
 

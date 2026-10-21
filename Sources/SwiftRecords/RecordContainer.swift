@@ -1,8 +1,6 @@
 import Foundation
 
 public enum RecordContainerError: Error, Equatable {
-    /// A `.deny` relationship still has records, so its owner cannot be deleted.
-    case deleteDenied(table: String, field: String)
     /// Records refer to each other through forward properties. Use `@Reference(from:)` for back-pointers.
     case cycle(table: String)
     /// An inverse key path does not name a property of a `@Record` type.
@@ -22,6 +20,8 @@ public final class RecordContainer: @unchecked Sendable {
     private var columns: [String: Set<String>] = [:]
     private var relationInfo: [RelationInfo]?
     private var decoding: Set<String> = []
+    /// Asset files written and released by each open transaction, innermost last.
+    private var fileChanges: [(created: [URL], released: [String])] = []
 
     struct RelationInfo: Equatable {
         let ownerTable: String
@@ -36,6 +36,10 @@ public final class RecordContainer: @unchecked Sendable {
 
     /// The database file, or `nil` for an in-memory container.
     public let url: URL?
+
+    /// Where asset files are stored: beside the database file and named after it, such as
+    /// `default.assets`. An in-memory container uses a temporary folder that is removed with it.
+    public let assetsDirectory: URL
 
     /// Opens or creates the zone's file. With no arguments this is `default.sqlite` in
     /// `Zone.defaultDirectory`. Pass `directory` to keep zone files somewhere else, such as in tests.
@@ -56,12 +60,23 @@ public final class RecordContainer: @unchecked Sendable {
     private init(zone: Zone?, url: URL?) throws {
         self.zone = zone
         self.url = url
+        assetsDirectory = url.map { $0.deletingPathExtension().appendingPathExtension("assets") }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString).assets")
         db = try SQLiteDatabase(url: url)
         try db.execute("""
             CREATE TABLE IF NOT EXISTS "_records_relations" (
                 owner_table TEXT NOT NULL, field TEXT NOT NULL, target_table TEXT NOT NULL, delete_rule TEXT NOT NULL,
-                PRIMARY KEY (owner_table, field))
+                PRIMARY KEY (owner_table, field));
+            CREATE TABLE IF NOT EXISTS "_records_assets" (
+                name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "_records_assets.owner" ON "_records_assets" (owner_table, owner_id);
             """)
+    }
+
+    deinit {
+        if url == nil {
+            try? FileManager.default.removeItem(at: assetsDirectory)
+        }
     }
 
     // MARK: Transactions
@@ -69,9 +84,22 @@ public final class RecordContainer: @unchecked Sendable {
     /// Runs `body` atomically. Nested calls join the outer transaction.
     public func transaction<T>(_ body: () throws -> T) throws -> T {
         try locked {
+            fileChanges.append(([], []))
             do {
-                return try db.transaction(body)
+                let result = try db.transaction(body)
+                let changes = fileChanges.removeLast()
+                if fileChanges.isEmpty {
+                    removeReleasedFiles(changes.released)
+                } else {
+                    fileChanges[fileChanges.count - 1].created += changes.created
+                    fileChanges[fileChanges.count - 1].released += changes.released
+                }
+                return result
             } catch {
+                // Files written by the rolled-back work go with it, and released ones stay.
+                for url in fileChanges.removeLast().created {
+                    try? FileManager.default.removeItem(at: url)
+                }
                 // DDL rolls back with the transaction, so forget anything we cached about the schema.
                 columns = [:]
                 relationInfo = nil
@@ -105,7 +133,8 @@ public final class RecordContainer: @unchecked Sendable {
     private func saveRecord<R: Record>(_ record: R, visited: inout Set<String>) throws {
         let id = try record.sqlID
         guard visited.insert("\(R.table)|\(id)").inserted else { return }
-        let encoded = try RecordEncoder.encode(record)
+        var encoded = try RecordEncoder.encode(record)
+        encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
 
         try ensureTable(R.table)
         try ensureColumns(encoded.columns.map(\.name), in: R.table)
@@ -130,6 +159,81 @@ public final class RecordContainer: @unchecked Sendable {
 
         for (field, ownerIDs) in encoded.inverseOrders {
             try reorderInverse(of: R.self, field: field, targetID: id, ownerIDs: ownerIDs)
+        }
+    }
+
+    // MARK: Assets
+
+    /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
+    private func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
+        let fields = Set(R.schema.fields.filter(\.isAsset).map(\.name)).union(assets.keys)
+        var columns: [(name: String, value: SQLiteValue)] = []
+        for field in fields.sorted() {
+            let previous = try db.run(
+                "SELECT name FROM \"_records_assets\" WHERE owner_table = ? AND owner_id = ? AND field = ?",
+                [.text(R.table), id, .text(field)]
+            ).first?["name"]
+            var stored: SQLiteValue?
+            if let asset = assets[field] {
+                stored = .text(try storeAsset(asset, owner: R.table, id: id, field: field))
+                columns.append((field, stored!))
+            }
+            if let previous, case .text(let name) = previous, previous != stored {
+                try releaseAsset(named: name)
+            }
+        }
+        return columns
+    }
+
+    private func storeAsset(_ asset: Asset, owner table: String, id: SQLiteValue, field: String) throws -> String {
+        let owner = try db.run(
+            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(asset.name)]
+        ).first
+        if let owner, owner["owner_table"] == .text(table), owner["owner_id"] == id, owner["field"] == .text(field) {
+            return asset.name
+        }
+        // An asset already held by another record gets its own copy, so deleting one leaves the other.
+        let name = owner == nil ? asset.name : Asset.makeName(fileExtension: asset.fileExtension)
+        let destination = assetURL(named: name)
+        try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
+        let manager = FileManager.default
+        switch asset.source {
+        case .data(let data):
+            try data.write(to: destination, options: .atomic)
+            fileChanges[fileChanges.count - 1].created.append(destination)
+        case .file(let source):
+            try? manager.removeItem(at: destination)
+            try manager.copyItem(at: source, to: destination)
+            fileChanges[fileChanges.count - 1].created.append(destination)
+        case nil:
+            // A fetched asset: copy its file unless it is already here, such as one released earlier in this transaction.
+            let source = owner == nil ? asset.fileURL : assetURL(named: asset.name)
+            if !(owner == nil && manager.fileExists(atPath: destination.path)) {
+                guard let source else { throw CocoaError(.fileNoSuchFile) }
+                try manager.copyItem(at: source, to: destination)
+                fileChanges[fileChanges.count - 1].created.append(destination)
+            }
+        }
+        try db.run(
+            "INSERT INTO \"_records_assets\" (name, owner_table, owner_id, field) VALUES (?, ?, ?, ?)",
+            [.text(name), .text(table), id, .text(field)]
+        )
+        return name
+    }
+
+    /// Unlinks an asset. Its file is removed once the outermost transaction commits.
+    private func releaseAsset(named name: String) throws {
+        try db.run("DELETE FROM \"_records_assets\" WHERE name = ?", [.text(name)])
+        fileChanges[fileChanges.count - 1].released.append(name)
+    }
+
+    private func removeReleasedFiles(_ names: [String]) {
+        for name in Set(names) {
+            // A released name can be stored again later in the same transaction.
+            let held = (try? db.run("SELECT 1 FROM \"_records_assets\" WHERE name = ?", [.text(name)]).isEmpty == false) ?? true
+            if !held {
+                try? FileManager.default.removeItem(at: assetURL(named: name))
+            }
         }
     }
 
@@ -223,11 +327,6 @@ public final class RecordContainer: @unchecked Sendable {
         guard tableExists(table) else { return }
         let owned = relations().filter { $0.ownerTable == table }
 
-        for info in owned where info.deleteRule == .deny {
-            if try count(in: info.table, where: "owner", is: id) > 0 {
-                throw RecordContainerError.deleteDenied(table: table, field: info.field)
-            }
-        }
         for info in owned {
             let targets = try db.run("SELECT target FROM \(quoted(info.table)) WHERE owner = ?", [id]).map { $0["target"]! }
             try db.run("DELETE FROM \(quoted(info.table)) WHERE owner = ?", [id])
@@ -238,6 +337,12 @@ public final class RecordContainer: @unchecked Sendable {
         }
         for info in relations() where info.targetTable == table {
             try db.run("DELETE FROM \(quoted(info.table)) WHERE target = ?", [id])
+        }
+        let assets = try db.run(
+            "SELECT name FROM \"_records_assets\" WHERE owner_table = ? AND owner_id = ?", [.text(table), id]
+        )
+        for case .text(let name)? in assets.map({ $0["name"] }) {
+            try releaseAsset(named: name)
         }
         try db.run("DELETE FROM \(quoted(table)) WHERE id = ?", [id])
     }
@@ -359,7 +464,8 @@ public final class RecordContainer: @unchecked Sendable {
         let loaded = rows.compactMap { row -> RelationInfo? in
             guard case .text(let owner) = row["owner_table"], case .text(let field) = row["field"],
                   case .text(let target) = row["target_table"], case .text(let rule) = row["delete_rule"] else { return nil }
-            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? .cascade)
+            // A rule this version does not know, such as the removed `deny`, keeps records rather than deleting them.
+            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? .nullify)
         }
         relationInfo = loaded
         return loaded
@@ -419,5 +525,9 @@ extension RecordContainer: RelationLoader {
 
     func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int {
         try count(in: table + "." + field, where: "owner", is: ownerID)
+    }
+
+    func assetURL(named name: String) -> URL {
+        assetsDirectory.appendingPathComponent(name)
     }
 }
