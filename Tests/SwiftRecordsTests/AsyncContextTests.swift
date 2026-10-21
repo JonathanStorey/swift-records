@@ -51,7 +51,7 @@ import Testing
 
     @Test func failedAsyncSaveKeepsChangesPending() async throws {
         context.save(Measurement(value: .nan))
-        await #expect(throws: EncodingError.self) { try await context.save() }
+        await #expect(throws: RecordsError.self) { try await context.save() }
         #expect(context.pendingChangeCount == 1)
     }
 
@@ -73,7 +73,7 @@ import Testing
         for _ in 0..<1_000 where context.lastSaveError == nil {
             await Task.yield()
         }
-        #expect(context.lastSaveError is EncodingError)
+        #expect(context.lastSaveError is RecordsError)
         #expect(!context.hasChanges)
     }
 }
@@ -97,7 +97,7 @@ import Testing
         try other.execute("CREATE TABLE \"Extra\" (\"id\" PRIMARY KEY)")
 
         let before = context.changeCount
-        context.refresh()
+        try await context.refresh()
         for _ in 0..<100 where context.changeCount == before {
             await Task.yield()
         }
@@ -106,7 +106,7 @@ import Testing
 
         // Nothing new, nothing to refresh.
         let after = context.changeCount
-        context.refresh()
+        try await context.refresh()
         for _ in 0..<20 { await Task.yield() }
         #expect(context.changeCount == after)
     }

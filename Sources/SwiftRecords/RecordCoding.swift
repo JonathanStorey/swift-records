@@ -142,6 +142,8 @@ final class RecordEncoder: Encoder {
     let inverseFields: Set<String>
     /// Nested containers opened by a record's own `encode(to:)`, stored as JSON once encoding finishes.
     var nested: [(name: String, node: NestedNode)] = []
+    /// The property being encoded, to name in an error.
+    var property = ""
 
     init(inverseFields: Set<String>) {
         self.inverseFields = inverseFields
@@ -149,9 +151,14 @@ final class RecordEncoder: Encoder {
 
     static func encode<R: Record>(_ record: R) throws -> EncodedRecord {
         let encoder = RecordEncoder(inverseFields: Set(R.schema.fields.filter { $0.inverse != nil }.map(\.name)))
-        try record.encode(to: encoder)
-        for (name, node) in encoder.nested {
-            encoder.output.columns.append((name, try ValueCoding.encode(node)))
+        do {
+            try record.encode(to: encoder)
+            for (name, node) in encoder.nested {
+                encoder.property = name
+                encoder.output.columns.append((name, try ValueCoding.encode(node)))
+            }
+        } catch is EncodingError {
+            throw RecordsError.invalidValue(type: R.table, property: encoder.property)
         }
         return encoder.output
     }
@@ -178,6 +185,7 @@ final class RecordEncoder: Encoder {
 
         func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
             let name = key.stringValue
+            encoder.property = name
             if encoder.inverseFields.contains(name) {
                 let ids = (value as? [any Encodable]) ?? []
                 encoder.output.inverseOrders[name] = try ids.map { try ValueCoding.encode($0) }

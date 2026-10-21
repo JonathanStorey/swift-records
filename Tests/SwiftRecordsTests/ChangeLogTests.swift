@@ -76,7 +76,7 @@ import Testing
         #expect(try container.changes(since: container.changeToken).isEmpty)
     }
 
-    @Test func deletesLeaveEntriesThatCanBePruned() throws {
+    @Test func deletesLeaveEntries() throws {
         let todo = ToDo(title: "Gone", subtasks: [Subtask(title: "Cascaded")])
         try container.save(todo)
         try container.delete(todo)
@@ -84,12 +84,6 @@ import Testing
         let deletes = try container.changes().filter { $0.kind == .delete }
         #expect(Set(deletes.map(\.recordType)) == ["ToDo", "Subtask"])
         #expect(deletes.first { $0.id == todo.id }?.version == 2)
-
-        try container.pruneChanges(before: container.changeToken)
-        #expect(try container.changes().contains { $0.kind == .delete })   // the newest one is not before the token
-        let end = ChangeToken(rawValue: try container.changeToken.rawValue + 1)
-        try container.pruneChanges(before: end)
-        #expect(try container.changes().isEmpty)
     }
 
     @Test func deletingATargetChangesItsOwners() throws {
@@ -163,8 +157,6 @@ import Testing
         #expect(deletes.map(\.kind) == [.delete])
         let later = ToDo(title: "Later")
         context.save(later)
-        let latest = try #require(try context.changes(since: start).last)
-        try context.pruneChanges(before: latest.token)
-        #expect(try context.changes(since: start).map(\.id) == [later.id])
+        #expect(try context.changes(since: start).map(\.id) == [todo.id, later.id])
     }
 }

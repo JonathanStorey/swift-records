@@ -41,7 +41,7 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     func url(in directory: URL) throws -> URL? {
         guard let name else { return nil }
         guard !name.isEmpty, !name.hasPrefix("."), name.rangeOfCharacter(from: Self.disallowed) == nil else {
-            throw RecordContainerError.invalidZoneName(name)
+            throw RecordsError.invalidZoneName(name)
         }
         return directory.appendingPathComponent(name + ".sqlite")
     }

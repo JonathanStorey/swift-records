@@ -1,14 +1,5 @@
 import Foundation
 
-public enum RecordContainerError: Error, Equatable {
-    /// Records refer to each other through forward properties. Use `@Reference(from:)` for back-pointers.
-    case cycle(table: String)
-    /// An inverse key path does not name a property of a `@Record` type.
-    case unknownInverse(String)
-    /// A zone name is empty, starts with a dot, or contains a path separator.
-    case invalidZoneName(String)
-}
-
 /// A zone's database file, its asset files and the schema of the records stored in it, in the role
 /// SwiftData gives `ModelContainer`.
 ///
@@ -30,11 +21,56 @@ public final class RecordContainer: @unchecked Sendable {
     /// `default.assets`. An in-memory container uses a temporary folder that is removed with it.
     public var assetsDirectory: URL { store.assetsDirectory }
 
+    /// Keeps the zone in step with a server. `nil` for a container that only stores locally. Set once, in `init`.
+    private(set) nonisolated(unsafe) var sync: SyncCoordinator?
+
+    /// Where syncing stands, for the main context's `status`.
+    @MainActor private(set) var syncPhase: SyncCoordinator.Phase = .idle {
+        didSet { mainContextStorage?.syncPhaseChanged() }
+    }
+
+    /// How a server's copy and an unsent local edit of the same record are merged.
+    public let mergePolicy: MergePolicy
+    /// What happens to this device's records when the sync account signs out.
+    public let onSignOut: AccountPolicy
+    /// What happens to this device's records when a different sync account signs in.
+    public let onAccountSwitch: AccountPolicy
+    /// What happens to this device's records when the server's copy of the zone is deleted.
+    public let onServerReset: AccountPolicy
+
     /// Opens or creates the zone's file. With no arguments this is `default.sqlite` in
     /// `Zone.defaultDirectory`. Pass `directory` to keep zone files somewhere else, such as an App Group
     /// container from `Zone.directory(appGroup:)`, or a temporary folder in tests.
     public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
-        try self.init(zone: zone, directory: directory, registering: true)
+        try self.init(for: [], zone: zone, directory: directory)
+    }
+
+    /// Opens or creates the zone's file for these record types, and keeps it in sync through
+    /// `syncProvider` if you pass one. Types reached through relationships are registered too.
+    ///
+    /// Registering creates the types' tables and applies renames and indexes now, rather than the first
+    /// time code uses each type. A provider needs it, because a server's records can arrive before any code
+    /// has touched their type. The provider and policies stay fixed for the container's life.
+    public convenience init(
+        for types: [any Record.Type],
+        zone: Zone = .default,
+        directory: URL? = nil,
+        syncProvider: (any SyncProvider)? = nil,
+        mergePolicy: MergePolicy = .default,
+        onSignOut: AccountPolicy = .keepLocalData,
+        onAccountSwitch: AccountPolicy = .deleteLocalData,
+        onServerReset: AccountPolicy = .keepLocalData
+    ) throws {
+        let directory = directory ?? Zone.defaultDirectory
+        let url = try zone.url(in: directory)
+        if url != nil {
+            try Zone.prepare(directory)
+        }
+        try self.init(
+            zone: zone, store: RecordStore.open(url: url), types: types, syncProvider: syncProvider,
+            policies: .init(merge: mergePolicy, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset)
+        )
+        Self.register(self)
     }
 
     /// Opens or creates a database file at an exact location.
@@ -43,21 +79,24 @@ public final class RecordContainer: @unchecked Sendable {
         Self.register(self)
     }
 
-    private convenience init(zone: Zone, directory: URL?, registering: Bool) throws {
-        let directory = directory ?? Zone.defaultDirectory
-        let url = try zone.url(in: directory)
-        if url != nil {
-            try Zone.prepare(directory)
-        }
-        try self.init(zone: zone, store: RecordStore.open(url: url))
-        if registering {
-            Self.register(self)
-        }
-    }
-
-    private init(zone: Zone?, store: RecordStore) {
+    private init(
+        zone: Zone?, store: RecordStore, types: [any Record.Type] = [], syncProvider: (any SyncProvider)? = nil,
+        policies: SyncCoordinator.Policies = .init(merge: .default, onSignOut: .keepLocalData, onAccountSwitch: .deleteLocalData, onServerReset: .keepLocalData)
+    ) throws {
         self.zone = zone
         self.store = store
+        mergePolicy = policies.merge
+        onSignOut = policies.onSignOut
+        onAccountSwitch = policies.onAccountSwitch
+        onServerReset = policies.onServerReset
+        try store.register(types)
+        guard let syncProvider else { return }
+        store.syncEnabled = true
+        let sync = SyncCoordinator(provider: syncProvider, store: store, policies: policies) { [weak self] phase in
+            Task { @MainActor in self?.syncPhase = phase }
+        }
+        self.sync = sync
+        Task { await sync.open() }
     }
 
     // MARK: Contexts
@@ -117,7 +156,11 @@ public final class RecordContainer: @unchecked Sendable {
         if let container = registry[key]?.container {
             return container
         }
-        let container = try RecordContainer(zone: zone, directory: nil, registering: false)
+        let url = try zone.url(in: Zone.defaultDirectory)
+        if url != nil {
+            try Zone.prepare(Zone.defaultDirectory)
+        }
+        let container = try RecordContainer(zone: zone, store: RecordStore.open(url: url))
         registry[key] = Registration(container: container, retained: container)
         return container
     }
@@ -194,10 +237,6 @@ extension RecordContainer {
 
     package func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
         try store.changes(since: token)
-    }
-
-    package func pruneChanges(before token: ChangeToken) throws {
-        try store.pruneChanges(before: token)
     }
 
     package func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {

@@ -59,6 +59,10 @@ let open = try await context.fetch(ToDo.self, where: #Predicate { !$0.done })
 
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. A failed autosave sets `lastSaveError` and rolls back, since nothing could retry it.
+Every error the library throws is a `RecordsError`, such as `.invalidValue(type:property:)` for a NaN.
+
+`context.status` says where changes stand: `saving`, `saved` or `failed(_:)` for a local container, plus
+`syncing`, `offline` and `signedOut` with a sync provider. It is observable, so a view can show it.
 
 For work off the main actor, such as an import, use a background context. Its saves commit right away,
 `transaction(_:)` groups several into one commit, and the main context refreshes after each commit.
@@ -76,7 +80,16 @@ The container serializes access to its file, so the main context waits while a t
 each transaction to a few hundred records and split a large import into several, as above.
 
 `container.deleteAllData()` removes every record, asset file and piece of sync state in the zone and
-discards the main context's pending changes, for signing out or resetting the app.
+discards the main context's pending changes, for signing out or resetting the app. It touches this
+device only: a sync server keeps its copy, and the next sign-in brings it back.
+
+Listing the record types up front, as SwiftData's `ModelContainer(for:)` does, creates their tables and
+applies renames and indexes when the container opens. Types reached through relationships are found
+automatically. It's optional for a local container and required for sync.
+
+```swift
+let container = try RecordContainer(for: [ToDo.self, Folder.self])
+```
 
 ## Zones
 
@@ -204,14 +217,46 @@ meta?.tag         // the sync server's opaque tag, if any
 Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
 and fetches never load tags.
 
-Behind this sits a change log for a sync layer such as `CKSyncEngine`. It keeps one entry per record,
-so it grows only with the number of records plus one entry per deleted record. The log, its tokens and
-the sync hooks (`changes(since:)`, `pruneChanges(before:)`, `setTag(_:for:id:)`,
-`applyingSyncedChanges(_:)` and a small key-value store for engine state) are package-level, so they
-stay out of the public API until the sync layer that uses them ships.
+Behind this sits a change log with one entry per record, which is how sync knows what the server
+doesn't have yet. A deleted record's entry stays until the server acknowledges the deletion.
 
 The main context refreshes its views after any change committed to its container, including ones
-written by a background context or a sync layer.
+written by a background context or a sync provider.
+
+## Sync
+
+A `SyncProvider` keeps a zone in step with a server. Pass one when the container opens. The same app
+code works with or without it: sync adds to saving, it doesn't replace it.
+
+```swift
+let container = try RecordContainer(for: [ToDo.self], syncProvider: provider)
+
+try await context.save()       // commits, then sends what the server doesn't have
+try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
+```
+
+The async `save()` and autosave send. The synchronous `save()` only commits, and its changes go with
+the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
+errors, and changes wait on the device until they can go.
+
+The provider is transport only. It has three requirements, `open(state:report:)`, `send(_:)` and
+`fetch()`, and answers through `SyncEvent`s such as `.received`, `.sent` and `.accountChanged`. Records
+cross as `SyncRecord`s holding standard types, so anyone can write a provider. The container owns the
+rules:
+
+- **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
+  changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
+  item by item, so steps added on two devices both survive. Only a property both sides changed falls
+  to `mergePolicy`, which defaults to the latest edit. `.serverWins`, `.localWins` and `.latestWins`
+  settle whole records instead.
+- **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`.
+- **Order doesn't matter.** A record can arrive before the records it links to, and its links appear
+  when they do.
+- **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
+  next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
+  tried again after an update.
+- **Accounts have policies.** `onSignOut` (keep local data by default), `onAccountSwitch` (delete) and
+  `onServerReset` (keep and upload again) decide what an account change does.
 
 ## SwiftUI
 
