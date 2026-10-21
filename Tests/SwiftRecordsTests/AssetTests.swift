@@ -6,7 +6,7 @@ import Testing
 struct Photo {
     var id = UUID()
     var caption = ""
-    var image: Asset?
+    @Asset(fileExtension: "jpg") var image: Data? = nil
 }
 
 @Record
@@ -23,27 +23,42 @@ struct Album {
     }
 
     @Test func storesDataAsAFile() throws {
-        let photo = Photo(image: Asset(data: Data("pixels".utf8), fileExtension: "jpg"))
+        let photo = Photo(image: Data("pixels".utf8))
+        #expect(photo.$image.url == nil)
         try container.save(photo)
 
         let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
-        let url = try #require(fetched.image?.fileURL)
+        let url = try #require(fetched.$image.url)
         #expect(url.pathExtension == "jpg")
         #expect(url.deletingLastPathComponent().standardizedFileURL.path == container.assetsDirectory.standardizedFileURL.path)
         #expect(try Data(contentsOf: url) == Data("pixels".utf8))
-        #expect(fetched.image == photo.image)
+        #expect(fetched.image == Data("pixels".utf8))
+    }
+
+    @Test func loadsLazilyAndCaches() throws {
+        try container.save(Photo(image: Data("lazy".utf8)))
+        let fetched = try #require(try container.fetch(Photo.self).first)
+        let url = try #require(fetched.$image.url)
+
+        // Nothing is read until the property is used, and then the bytes stay with the record.
+        try Data("changed on disk".utf8).write(to: url)
+        #expect(fetched.image == Data("changed on disk".utf8))
+        try FileManager.default.removeItem(at: url)
+        #expect(fetched.image == Data("changed on disk".utf8))
     }
 
     @Test func copiesFromAFile() throws {
-        let source = FileManager.default.temporaryDirectory.appendingPathComponent("asset-\(UUID()).txt")
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("asset-\(UUID()).png")
         try Data("from disk".utf8).write(to: source)
         defer { try? FileManager.default.removeItem(at: source) }
 
-        let photo = Photo(image: Asset(contentsOf: source))
+        var photo = Photo()
+        photo.$image = Asset(contentsOf: source)
         try container.save(photo)
 
-        let url = try #require(try container.fetch(Photo.self, id: photo.id)?.image?.fileURL)
+        let url = try #require(try container.fetch(Photo.self, id: photo.id)?.$image.url)
         #expect(url != source)
+        #expect(url.pathExtension == "png")
         #expect(try String(contentsOf: url, encoding: .utf8) == "from disk")
         #expect(FileManager.default.fileExists(atPath: source.path))
     }
@@ -51,11 +66,13 @@ struct Album {
     @Test func nilAssetDecodesAsNil() throws {
         let photo = Photo(caption: "none")
         try container.save(photo)
-        #expect(try container.fetch(Photo.self, id: photo.id)?.image == nil)
+        let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
+        #expect(fetched.image == nil)
+        #expect(fetched.$image.url == nil)
     }
 
     @Test func resavingKeepsOneFile() throws {
-        var photo = Photo(image: Asset(data: Data("a".utf8)))
+        var photo = Photo(image: Data("a".utf8))
         try container.save(photo)
         photo.caption = "edited"
         try container.save(photo)
@@ -64,14 +81,14 @@ struct Album {
     }
 
     @Test func replacingOrClearingRemovesTheOldFile() throws {
-        var photo = Photo(image: Asset(data: Data("old".utf8)))
+        var photo = Photo(image: Data("old".utf8))
         try container.save(photo)
-        let old = try #require(try container.fetch(Photo.self, id: photo.id)?.image?.fileURL)
+        let old = try #require(try container.fetch(Photo.self, id: photo.id)?.$image.url)
 
-        photo.image = Asset(data: Data("new".utf8))
+        photo.image = Data("new".utf8)
         try container.save(photo)
         #expect(!FileManager.default.fileExists(atPath: old.path))
-        #expect(files() == [photo.image!.name])
+        #expect(files() == [photo.$image.name!])
 
         photo.image = nil
         try container.save(photo)
@@ -80,10 +97,7 @@ struct Album {
     }
 
     @Test func deletingRemovesFilesThroughCascades() throws {
-        let album = Album(photos: [
-            Photo(image: Asset(data: Data("1".utf8))),
-            Photo(image: Asset(data: Data("2".utf8))),
-        ])
+        let album = Album(photos: [Photo(image: Data("1".utf8)), Photo(image: Data("2".utf8))])
         try container.save(album)
         #expect(files().count == 2)
 
@@ -92,26 +106,26 @@ struct Album {
     }
 
     @Test func sharedAssetsGetTheirOwnCopy() throws {
-        let first = Photo(image: Asset(data: Data("shared".utf8)))
+        let first = Photo(image: Data("shared".utf8))
         try container.save(first)
         let fetched = try #require(try container.fetch(Photo.self, id: first.id))
 
-        let second = Photo(image: fetched.image)
+        var second = Photo()
+        second.$image = fetched.$image
         try container.save(second)
         #expect(files().count == 2)
 
         try container.delete(first)
-        let url = try #require(try container.fetch(Photo.self, id: second.id)?.image?.fileURL)
-        #expect(try Data(contentsOf: url) == Data("shared".utf8))
+        #expect(try container.fetch(Photo.self, id: second.id)?.image == Data("shared".utf8))
     }
 
     @Test func rollbackRemovesNewFilesAndKeepsReleasedOnes() throws {
-        var photo = Photo(image: Asset(data: Data("kept".utf8)))
+        var photo = Photo(image: Data("kept".utf8))
         try container.save(photo)
         let kept = files()
 
         struct Abort: Error {}
-        photo.image = Asset(data: Data("discarded".utf8))
+        photo.image = Data("discarded".utf8)
         #expect(throws: Abort.self) {
             try container.transaction {
                 try container.save(photo)
@@ -119,30 +133,45 @@ struct Album {
             }
         }
         #expect(files() == kept)
-        let url = try #require(try container.fetch(Photo.self, id: photo.id)?.image?.fileURL)
-        #expect(try Data(contentsOf: url) == Data("kept".utf8))
+        #expect(try container.fetch(Photo.self, id: photo.id)?.image == Data("kept".utf8))
+    }
+
+    @Test func encodesAsPlainDataOutsideAContainer() throws {
+        try container.save(Photo(caption: "A", image: Data("bytes".utf8)))
+        let fetched = try #require(try container.fetch(Photo.self).first)
+
+        let json = try JSONEncoder().encode(fetched)
+        let object = try #require(try JSONSerialization.jsonObject(with: json) as? [String: Any])
+        #expect(object["image"] as? String == Data("bytes".utf8).base64EncodedString())
+
+        let decoded = try JSONDecoder().decode(Photo.self, from: json)
+        #expect(decoded.image == Data("bytes".utf8))
+
+        // An empty asset is left out, and a missing key decodes as nil.
+        let empty = try JSONEncoder().encode(Photo(caption: "B"))
+        #expect(String(decoding: empty, as: UTF8.self).contains("image") == false)
+        #expect(try JSONDecoder().decode(Photo.self, from: empty).image == nil)
     }
 
     @Test func zoneFilesSitBesideTheDatabase() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("records-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let photo = Photo(image: Asset(data: Data("x".utf8), fileExtension: "png"))
+        let photo = Photo(image: Data("x".utf8))
         do {
             let container = try RecordContainer(zone: "library", directory: directory)
             #expect(container.assetsDirectory.lastPathComponent == "library.assets")
             try container.save(photo)
         }
         let reopened = try RecordContainer(zone: "library", directory: directory)
-        let url = try #require(try reopened.fetch(Photo.self, id: photo.id)?.image?.fileURL)
-        #expect(try Data(contentsOf: url) == Data("x".utf8))
+        #expect(try reopened.fetch(Photo.self, id: photo.id)?.image == Data("x".utf8))
     }
 
     @Test func inMemoryAssetsAreRemovedWithTheContainer() throws {
         var directory: URL?
         do {
             let container = try RecordContainer(zone: .inMemory)
-            try container.save(Photo(image: Asset(data: Data("temp".utf8))))
+            try container.save(Photo(image: Data("temp".utf8)))
             directory = container.assetsDirectory
             #expect(FileManager.default.fileExists(atPath: directory!.path))
         }

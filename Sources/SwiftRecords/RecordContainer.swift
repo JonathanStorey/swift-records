@@ -32,7 +32,8 @@ public final class RecordContainer: @unchecked Sendable {
         let ownerTable: String
         let field: String
         let targetTable: String
-        var deleteRule: DeleteRule
+        /// `nil` keeps related records.
+        var deleteRule: DeleteRule?
         var table: String { ownerTable + "." + field }
     }
 
@@ -150,7 +151,7 @@ public final class RecordContainer: @unchecked Sendable {
             linked.insert(relation.name)
             let info = try ensureRelation(
                 owner: R.table, field: relation.name, target: relation.targetType.table,
-                deleteRule: R.schema.field(named: relation.name)?.deleteRule ?? .cascade
+                deleteRule: R.schema.field(named: relation.name).map(\.deleteRule) ?? .cascade
             )
             for target in relation.targets {
                 try saveRecord(target, visited: &visited)
@@ -171,7 +172,8 @@ public final class RecordContainer: @unchecked Sendable {
 
     /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
     private func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
-        let fields = Set(R.schema.fields.filter(\.isAsset).map(\.name)).union(assets.keys)
+        let assetFields = R.schema.fields.filter(\.isAsset)
+        let fields = Set(assetFields.map(\.name)).union(assets.keys)
         var columns: [(name: String, value: SQLiteValue)] = []
         for field in fields.sorted() {
             let previous = try db.run(
@@ -179,8 +181,9 @@ public final class RecordContainer: @unchecked Sendable {
                 [.text(R.table), id, .text(field)]
             ).first?["name"]
             var stored: SQLiteValue?
-            if let asset = assets[field] {
-                stored = .text(try storeAsset(asset, owner: R.table, id: id, field: field))
+            if let asset = assets[field], let storage = asset.storage {
+                let fileExtension = assetFields.first { $0.name == field }?.fileExtension ?? ""
+                stored = .text(try storeAsset(storage, fileExtension: fileExtension, owner: R.table, id: id, field: field))
                 columns.append((field, stored!))
             }
             if let previous, case .text(let name) = previous, previous != stored {
@@ -190,19 +193,24 @@ public final class RecordContainer: @unchecked Sendable {
         return columns
     }
 
-    private func storeAsset(_ asset: Asset, owner table: String, id: SQLiteValue, field: String) throws -> String {
+    private func storeAsset(
+        _ asset: Asset.Storage, fileExtension: String, owner table: String, id: SQLiteValue, field: String
+    ) throws -> String {
+        // A new asset's name gets the extension from `@Asset(fileExtension:)` if it has none of its own.
+        let hasExtension = !(asset.name as NSString).pathExtension.isEmpty
+        let fileName = hasExtension || fileExtension.isEmpty ? asset.name : asset.name + "." + fileExtension
         let owner = try db.run(
-            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(asset.name)]
+            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(fileName)]
         ).first
         if let owner, owner["owner_table"] == .text(table), owner["owner_id"] == id, owner["field"] == .text(field) {
-            return asset.name
+            return fileName
         }
         // An asset already held by another record gets its own copy, so deleting one leaves the other.
-        let name = owner == nil ? asset.name : Asset.makeName(fileExtension: asset.fileExtension)
+        let name = owner == nil ? fileName : Asset.makeName(fileExtension: (fileName as NSString).pathExtension)
         let destination = assetURL(named: name)
         structuralChanges += 1
-        try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
         let manager = FileManager.default
+        try manager.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
         switch asset.source {
         case .data(let data):
             try data.write(to: destination, options: .atomic)
@@ -211,11 +219,9 @@ public final class RecordContainer: @unchecked Sendable {
             try? manager.removeItem(at: destination)
             try manager.copyItem(at: source, to: destination)
             fileChanges[fileChanges.count - 1].created.append(destination)
-        case nil:
+        case .stored(let source):
             // A fetched asset: copy its file unless it is already here, such as one released earlier in this transaction.
-            let source = owner == nil ? asset.fileURL : assetURL(named: asset.name)
             if !(owner == nil && manager.fileExists(atPath: destination.path)) {
-                guard let source else { throw CocoaError(.fileNoSuchFile) }
                 try manager.copyItem(at: source, to: destination)
                 fileChanges[fileChanges.count - 1].created.append(destination)
             }
@@ -484,19 +490,19 @@ public final class RecordContainer: @unchecked Sendable {
         let loaded = rows.compactMap { row -> RelationInfo? in
             guard case .text(let owner) = row["owner_table"], case .text(let field) = row["field"],
                   case .text(let target) = row["target_table"], case .text(let rule) = row["delete_rule"] else { return nil }
-            // A rule this version does not know, such as the earlier `nullify` or `deny`, keeps records rather than deleting them.
-            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? DeleteRule.none)
+            // Any rule but cascade, including the earlier `nullify` and `deny`, keeps records rather than deleting them.
+            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule))
         }
         relationInfo = loaded
         return loaded
     }
 
-    private func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule) throws -> RelationInfo {
+    private func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule?) throws -> RelationInfo {
         let info = RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: deleteRule)
         if relations().contains(info) { return info }
         try db.run(
             "INSERT OR REPLACE INTO \"_records_relations\" (owner_table, field, target_table, delete_rule) VALUES (?, ?, ?, ?)",
-            [.text(owner), .text(field), .text(target), .text(deleteRule.rawValue)]
+            [.text(owner), .text(field), .text(target), .text(deleteRule?.rawValue ?? "none")]
         )
         let table = quoted(info.table)
         try db.execute("""

@@ -27,6 +27,19 @@ enum ValueCoding {
         }
     }
 
+    /// A decoder positioned at the JSON in `value`, for a nested container in a record's own `init(from:)`.
+    static func jsonDecoder(for value: SQLiteValue) throws -> Decoder {
+        guard case .text(let json) = value else {
+            throw DecodingError.typeMismatch([String: Any].self, .init(codingPath: [], debugDescription: "Expected JSON text, found \(value)"))
+        }
+        return try jsonDecoder.decode(DecoderCapture.self, from: Data(json.utf8)).decoder
+    }
+
+    private struct DecoderCapture: Decodable {
+        let decoder: Decoder
+        init(from decoder: Decoder) { self.decoder = decoder }
+    }
+
     /// Decodes an array of values, such as the IDs of an inverse relationship.
     static func decode<T: Decodable>(_ type: T.Type, fromArray values: [SQLiteValue]) throws -> T {
         try T(from: PrimitiveDecoder(storage: .array(values)))

@@ -18,10 +18,14 @@ public protocol Record: Identifiable, Codable, Sendable where ID: Codable & Send
 @attached(extension, conformances: Record, names: named(schema))
 public macro Record() = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
 
-/// Sets the delete rule for a relationship. Without it, related records are cascaded, the way a nested
-/// struct disappears with its parent.
+/// Marks a relationship with the default rule, `.cascade`. Writing it is optional.
 @attached(peer)
-public macro Reference(deleteRule: DeleteRule) = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
+public macro Reference() = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
+
+/// Sets the delete rule for a relationship. Without it, related records are cascaded, the way a nested
+/// struct disappears with its parent. Pass `.none` to unlink related records and keep them.
+@attached(peer)
+public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares an inverse relationship: the ordered IDs of every record whose `inverse` property
 /// contains this one. The property's type is `[Owner.ID]`.
@@ -33,12 +37,11 @@ public macro Reference(deleteRule: DeleteRule) = #externalMacro(module: "SwiftRe
 public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Target>) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
-/// What happens to related records when their owner is deleted or drops them.
+/// What happens to related records when their owner is deleted or drops them. A relationship whose
+/// rule is `nil` (written `.none`) unlinks them and keeps them.
 public enum DeleteRule: String, Sendable {
     /// Delete related records that no other record still references. The default.
     case cascade
-    /// Unlink related records and keep them. Databases written with the earlier name `nullify` read as this.
-    case none
 }
 
 /// The property list `@Record` generates for a type.
@@ -54,25 +57,28 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
     public struct Field: @unchecked Sendable {
         public let name: String
         public let keyPath: PartialKeyPath<Root>
-        /// The delete rule for a relationship. `.cascade` unless `@Reference(deleteRule:)` says otherwise.
-        public let deleteRule: DeleteRule
+        /// The delete rule for a relationship: `.cascade` unless `@Reference(deleteRule:)` says otherwise,
+        /// and `nil` to keep related records.
+        public let deleteRule: DeleteRule?
         /// For an inverse field, the owner's forward key path, such as `\ToDo.notes`.
         public let inverse: AnyKeyPath?
-        /// True for an `Asset?` property, whose file lives beside the database.
+        /// True for an `@Asset` property, whose file lives beside the database.
         public let isAsset: Bool
+        /// The extension for an asset's new files.
+        public let fileExtension: String
 
-        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule = .cascade) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false)
+        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = .cascade) -> Field {
+            Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false, fileExtension: "")
         }
 
-        public static func asset(_ name: String, _ keyPath: KeyPath<Root, Asset?>) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: true)
+        public static func asset(_ name: String, _ keyPath: KeyPath<Root, Data?>, fileExtension: String = "") -> Field {
+            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: true, fileExtension: fileExtension)
         }
 
         public static func inverse<Owner: Record, Target>(
             _ name: String, _ keyPath: PartialKeyPath<Root>, of inverse: KeyPath<Owner, Target>
         ) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: inverse, isAsset: false)
+            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: inverse, isAsset: false, fileExtension: "")
         }
     }
 

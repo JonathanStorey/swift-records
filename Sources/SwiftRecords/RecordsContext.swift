@@ -51,6 +51,40 @@ public final class RecordsContext {
         lifecycle = LifecycleObserver { [weak self] in
             self?.autosave()
         }
+        Self.register(self)
+    }
+
+    // MARK: Shared contexts
+
+    private struct Registration {
+        weak var context: RecordsContext?
+        /// Set for contexts that `shared(_:)` created, which nothing else keeps alive.
+        var retained: RecordsContext?
+    }
+
+    private static var registry: [String: Registration] = [:]
+
+    private static func key(for url: URL?) -> String {
+        url?.standardizedFileURL.path ?? "in-memory"
+    }
+
+    /// Makes this context the one `shared(_:)` returns for its file, so every view of a zone sees the same
+    /// pending changes and refreshes together. The most recently created context for a file wins.
+    private static func register(_ context: RecordsContext) {
+        registry[key(for: context.container.url)] = Registration(context: context)
+    }
+
+    /// The context for a zone's file in `Zone.defaultDirectory`: the most recently created one that is
+    /// still alive, or a new one that lives for the rest of the process. `@Records` uses it for a zone
+    /// that isn't in the environment.
+    public static func shared(_ zone: Zone = .default) throws -> RecordsContext {
+        let key = key(for: try zone.url(in: Zone.defaultDirectory))
+        if let context = registry[key]?.context {
+            return context
+        }
+        let context = try RecordsContext(zone: zone)
+        registry[key] = Registration(context: context, retained: context)
+        return context
     }
 
     /// Opens the zone's container. With no arguments this is the default zone.

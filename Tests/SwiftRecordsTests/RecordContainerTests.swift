@@ -38,7 +38,7 @@ struct Subtask {
 struct Folder {
     var id: Int
     var name: String
-    var items: [Subtask] = []
+    @Reference var items: [Subtask] = []  // a bare @Reference is the default, .cascade
 }
 
 @Suite struct RecordContainerTests {

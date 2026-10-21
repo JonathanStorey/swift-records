@@ -93,20 +93,23 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Photo {
                 var id = UUID()
-                var image: Asset?
+                @Asset(fileExtension: "jpg") var image: Data?
+                @Asset var raw: Data?
             }
             """,
             expandedSource: """
             struct Photo {
                 var id = UUID()
-                var image: Asset?
+                @Asset(fileExtension: "jpg") var image: Data?
+                @Asset var raw: Data?
             }
 
             extension Photo: Record {
                 static var schema: RecordSchema<Photo> {
                     RecordSchema(table: "Photo", fields: [
                         .field("id", \\Photo.id),
-                        .asset("image", \\Photo.image)
+                        .asset("image", \\Photo.image, fileExtension: "jpg"),
+                        .asset("raw", \\Photo.raw)
                     ])
                 }
             }
@@ -115,21 +118,21 @@ final class RecordMacroTests: XCTestCase {
         )
     }
 
-    func testRejectsNonOptionalAssets() {
+    func testRejectsAssetsThatAreNotOptionalData() {
         assertMacroExpansion(
             """
             @Record
             struct Photo {
                 var id = UUID()
-                var image: Asset
-                var gallery: [Asset] = []
+                @Asset var image: Data
+                @Asset var name: String?
             }
             """,
             expandedSource: """
             struct Photo {
                 var id = UUID()
-                var image: Asset
-                var gallery: [Asset] = []
+                @Asset var image: Data
+                @Asset var name: String?
             }
 
             extension Photo: Record {
@@ -141,8 +144,8 @@ final class RecordMacroTests: XCTestCase {
             }
             """,
             diagnostics: [
-                DiagnosticSpec(message: "An Asset property must be optional: declare it as 'Asset?'", line: 4, column: 9),
-                DiagnosticSpec(message: "An Asset property must be optional: declare it as 'Asset?'", line: 5, column: 9),
+                DiagnosticSpec(message: "An @Asset property must be declared as 'Data?'", line: 4, column: 16),
+                DiagnosticSpec(message: "An @Asset property must be declared as 'Data?'", line: 5, column: 16),
             ],
             macros: macros
         )
