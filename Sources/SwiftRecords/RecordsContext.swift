@@ -151,6 +151,24 @@ public final class RecordsContext {
         return try container.fetch(type, where: predicate, sortBy: sortDescriptors)
     }
 
+    /// Saves pending changes, then fetches one page. See `RecordContainer.fetch(_:where:sortBy:limit:offset:)`.
+    public func fetch<R: Record>(
+        _ type: R.Type = R.self,
+        where predicate: Predicate<R>? = nil,
+        sortBy sortDescriptors: [SortDescriptor<R>] = [],
+        limit: Int,
+        offset: Int = 0
+    ) throws -> RecordSlice<R> {
+        try save()
+        return try container.fetch(type, where: predicate, sortBy: sortDescriptors, limit: limit, offset: offset)
+    }
+
+    /// Saves pending changes, then counts in SQL when the predicate translates.
+    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
+        try save()
+        return try container.count(type, where: predicate)
+    }
+
     public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
         try save()
         return try container.fetch(type, id: id)
