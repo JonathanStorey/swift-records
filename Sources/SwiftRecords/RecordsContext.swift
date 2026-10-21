@@ -11,13 +11,15 @@ import AppKit
 /// Inserts, updates and deletes are collected and committed together in one transaction, either when
 /// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
 /// change to each record is kept, so rapid edits such as typing cost one write. Views using `@Records`
-/// refresh after each save.
+/// refresh after each save, and after changes written to the container some other way, such as by a
+/// background import or a sync engine.
 @MainActor
 @Observable
 public final class RecordsContext {
     public let container: RecordContainer
 
-    /// Incremented after every save. `@Records` observes it to know when to fetch again.
+    /// Incremented after every save, and after the container commits changes this context didn't make.
+    /// `@Records` observes it to know when to fetch again.
     public private(set) var changeCount = 0
 
     /// When true (the default), pending changes are saved automatically after `autosaveDelay`.
@@ -45,13 +47,35 @@ public final class RecordsContext {
     /// The single source of every change in the most recent save, when there was one and the save changed
     /// nothing structural. `@Records` uses it to skip fetching again after its own edits.
     @ObservationIgnored private(set) var lastSaveSource: ObjectIdentifier?
+    /// The container's commit count as of the last change this context has accounted for.
+    @ObservationIgnored private var knownCommits: Int
+    @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
 
     public init(container: RecordContainer) {
         self.container = container
+        knownCommits = container.commitCount
         lifecycle = LifecycleObserver { [weak self] in
             self?.autosave()
         }
+        commitObserver = container.observeCommits { [weak self] in
+            Task { @MainActor in self?.containerDidCommit() }
+        }
         Self.register(self)
+    }
+
+    deinit {
+        if let commitObserver {
+            container.removeCommitObserver(commitObserver)
+        }
+    }
+
+    /// Refreshes views after commits this context didn't make. Its own saves are already counted.
+    private func containerDidCommit() {
+        let commits = container.commitCount
+        guard commits != knownCommits else { return }
+        knownCommits = commits
+        lastSaveSource = nil
+        changeCount += 1
     }
 
     // MARK: Shared contexts
@@ -122,13 +146,19 @@ public final class RecordsContext {
         let changes = pending.values.sorted { $0.sequence < $1.sequence }
         pending = [:]
         let structure = container.structureVersion
+        var base = 0
         try container.transaction {
+            base = container.commitCount
             for change in changes {
                 try change.run(container)
             }
         }
+        // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
+        let commits = container.commitCount
+        let outside = base != knownCommits || commits > base + 1
+        knownCommits = commits
         let sources = Set(changes.map(\.source))
-        lastSaveSource = sources.count == 1 && container.structureVersion == structure ? sources.first! : nil
+        lastSaveSource = !outside && sources.count == 1 && container.structureVersion == structure ? sources.first! : nil
         changeCount += 1
     }
 

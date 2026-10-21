@@ -144,7 +144,12 @@ for change in try container.changes(since: token) {
   without changing its version. `metadata(_:id:)?.tag` reads it back. Fetches never load tags.
 
 These are the pieces a sync layer such as `CKSyncEngine` needs: what changed, what was deleted, and the
-server's change tag for each record.
+server's change tag for each record. Within this package, a sync layer also gets
+`applyingSyncedChanges(_:)`, whose writes are never logged and so never sent back, and a small key-value
+store (`syncValue(forKey:)`) for its engine state and change token.
+
+A `RecordsContext` refreshes its views after any change committed to its container, including ones
+written by a background task or a sync layer.
 
 ## SwiftUI
 
