@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: swift test
+      - name: Build for iOS
+        run: xcodebuild build -scheme swift-records-Package -destination 'generic/platform=iOS Simulator' -skipMacroValidation -quiet
+
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SQLite
+        run: apt-get update && apt-get install -y libsqlite3-dev
+      - name: Build and test
+        run: swift test
