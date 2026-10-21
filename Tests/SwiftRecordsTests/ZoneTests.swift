@@ -56,9 +56,21 @@ import Testing
 
         #expect(hasExcludeAttribute(directory))
 
+        let before = attributeNames(directory)
         _ = try RecordContainer(zone: "local", directory: directory)
+        let after = attributeNames(directory)
+        let removal = removexattr(directory.path, "com.apple.metadata:com_apple_backup_excludeItem", 0)
+        let removalError = errno
         // Read the attribute itself, since URL resource values can be served from a stale cache.
-        #expect(!hasExcludeAttribute(directory))
+        #expect(!hasExcludeAttribute(directory), "before: \(before), after: \(after), removexattr: \(removal) errno \(removalError), now: \(attributeNames(directory))")
+    }
+
+    private func attributeNames(_ url: URL) -> [String] {
+        let size = listxattr(url.path, nil, 0, 0)
+        guard size > 0 else { return [] }
+        var buffer = [CChar](repeating: 0, count: size)
+        _ = listxattr(url.path, &buffer, size, 0)
+        return buffer.split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
     }
 
     private func hasExcludeAttribute(_ url: URL) -> Bool {
