@@ -7,6 +7,8 @@ public enum RecordStoreError: Error, Equatable {
     case cycle(table: String)
     /// An inverse key path does not name a property of a `@Record` type.
     case unknownInverse(String)
+    /// A zone name is empty, starts with a dot, or contains a path separator.
+    case invalidZoneName(String)
 }
 
 /// The SQLite database behind your records. Thread-safe, and every method is synchronous, so it can be
@@ -29,8 +31,31 @@ public final class RecordStore: @unchecked Sendable {
         var table: String { ownerTable + "." + field }
     }
 
-    /// Opens or creates a store. Pass `nil` for an in-memory store.
-    public init(url: URL? = nil) throws {
+    /// The zone this store was opened with, or `nil` when opened by URL.
+    public let zone: Zone?
+
+    /// The database file, or `nil` for an in-memory store.
+    public let url: URL?
+
+    /// Opens or creates the zone's file. With no arguments this is `default.sqlite` in
+    /// `Zone.defaultDirectory`. Pass `directory` to keep zone files somewhere else, such as in tests.
+    public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
+        let directory = directory ?? Zone.defaultDirectory
+        let url = try zone.url(in: directory)
+        if url != nil {
+            try Zone.prepare(directory)
+        }
+        try self.init(zone: zone, url: url)
+    }
+
+    /// Opens or creates a database file at an exact location.
+    public convenience init(url: URL) throws {
+        try self.init(zone: nil, url: url)
+    }
+
+    private init(zone: Zone?, url: URL?) throws {
+        self.zone = zone
+        self.url = url
         db = try SQLiteDatabase(url: url)
         try db.execute("""
             CREATE TABLE IF NOT EXISTS "_records_relations" (

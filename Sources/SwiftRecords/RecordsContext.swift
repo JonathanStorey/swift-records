@@ -27,8 +27,13 @@ public final class RecordsContext {
         self.store = store
     }
 
-    /// Opens a store at `url`, or in memory when `url` is nil.
-    public convenience init(url: URL? = nil) throws {
+    /// Opens the zone's store. With no arguments this is the default zone.
+    public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
+        self.init(store: try RecordStore(zone: zone, directory: directory))
+    }
+
+    /// Opens a store at an exact file location.
+    public convenience init(url: URL) throws {
         self.init(store: try RecordStore(url: url))
     }
 

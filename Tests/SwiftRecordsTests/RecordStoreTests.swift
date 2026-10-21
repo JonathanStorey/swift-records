@@ -42,7 +42,7 @@ struct Folder {
 }
 
 @Suite struct RecordStoreTests {
-    let store = try! RecordStore()
+    let store = try! RecordStore(zone: .inMemory)
 
     @Test func roundTripsScalarsAndJSON() throws {
         let due = Date(timeIntervalSince1970: 1_000_000)
