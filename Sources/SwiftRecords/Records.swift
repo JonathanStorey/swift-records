@@ -121,7 +121,7 @@ public struct Records<R: Record>: DynamicProperty {
 
     @MainActor
     @Observable
-    private final class Cache {
+    final class Cache {
         var version = 0
         @ObservationIgnored var records: [R]?
         @ObservationIgnored var changeCount = -1
