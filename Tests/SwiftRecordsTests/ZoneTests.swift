@@ -54,10 +54,15 @@ import Testing
         var marked = directory
         try marked.setResourceValues(excluded)
 
+        #expect(hasExcludeAttribute(directory))
+
         _ = try RecordContainer(zone: "local", directory: directory)
-        let reread = URL(fileURLWithPath: directory.path, isDirectory: true)
-        let values = try reread.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        #expect(values.isExcludedFromBackup == false)
+        // Read the attribute itself, since URL resource values can be served from a stale cache.
+        #expect(!hasExcludeAttribute(directory))
+    }
+
+    private func hasExcludeAttribute(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.metadata:com_apple_backup_excludeItem", nil, 0, 0, 0) >= 0
     }
     #endif
 }
