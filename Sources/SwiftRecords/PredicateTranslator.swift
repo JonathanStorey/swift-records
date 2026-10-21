@@ -87,11 +87,13 @@ extension PredicateExpressions.NotEqual: SQLExpressible {
 
 extension PredicateExpressions.Comparison: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
-        let symbol = switch op {
-        case .lessThan: "<"
-        case .lessThanOrEqual: "<="
-        case .greaterThan: ">"
-        case .greaterThanOrEqual: ">="
+        let symbol: String
+        switch op {
+        case .lessThan: symbol = "<"
+        case .lessThanOrEqual: symbol = "<="
+        case .greaterThan: symbol = ">"
+        case .greaterThanOrEqual: symbol = ">="
+        @unknown default: throw PredicateTranslator.Unsupported()
         }
         return "(\(try builder.expression(lhs)) \(symbol) \(try builder.expression(rhs)))"
     }
