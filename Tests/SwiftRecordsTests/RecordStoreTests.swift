@@ -171,6 +171,31 @@ struct Folder {
         #expect(Set(byTitle.map(\.title)) == ["Alpha", "Beta"])
     }
 
+    @Test func searchesInsideRelationships() throws {
+        try store.save([
+            ToDo(title: "Greet", notes: [Note(text: "hello world"), Note(text: "other")]),
+            ToDo(title: "Quiet", notes: [Note(text: "shh")]),
+            ToDo(title: "Empty"),
+        ])
+        let matches = try store.fetch(ToDo.self, where: #Predicate { todo in
+            todo.notes.contains { $0.text == "hello world" }
+        })
+        #expect(matches.map(\.title) == ["Greet"])
+
+        let none = try store.fetch(ToDo.self, where: #Predicate { todo in
+            !todo.notes.contains { $0.text != "" }
+        })
+        #expect(none.map(\.title) == ["Empty"])
+    }
+
+    @Test func relationshipSearchBeforeAnyLinksExist() throws {
+        try store.save(Folder(id: 1, name: "Inbox"))
+        let matches = try store.fetch(Folder.self, where: #Predicate { folder in
+            folder.items.contains { $0.title == "x" }
+        })
+        #expect(matches.isEmpty)
+    }
+
     @Test func unsupportedPredicatesFallBackToMemory() throws {
         try store.save([
             ToDo(title: "Short"),

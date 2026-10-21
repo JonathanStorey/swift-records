@@ -283,8 +283,12 @@ public final class RecordStore: @unchecked Sendable {
             var bindings: [SQLiteValue] = []
             var filterInMemory = false
             if let predicate {
-                if let clause = try? PredicateTranslator.translate(predicate) {
-                    try ensureColumns(clause.columns, in: R.table)
+                // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
+                if let clause = try? PredicateTranslator.translate(predicate),
+                   clause.relations.allSatisfy(tableExists) {
+                    for (table, column) in clause.columns {
+                        try ensureColumns([column], in: table)
+                    }
                     sql += " WHERE " + clause.sql
                     bindings = clause.bindings
                 } else {
