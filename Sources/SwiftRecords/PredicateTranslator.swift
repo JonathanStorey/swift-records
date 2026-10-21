@@ -75,7 +75,10 @@ struct SQLBuilder {
 
     mutating func bind(_ value: Any) throws -> String {
         guard let encodable = value as? any Encodable else { throw PredicateTranslator.Unsupported() }
-        bindings.append(try ValueCoding.encode(encodable))
+        let encoded = try ValueCoding.encode(encodable)
+        // Unsigned values above `Int64.max` are stored as text, which only orders correctly against integers.
+        if case .text = encoded, value is UInt64 || value is UInt { throw PredicateTranslator.Unsupported() }
+        bindings.append(encoded)
         return "?"
     }
 }

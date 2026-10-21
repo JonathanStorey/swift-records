@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -39,7 +39,7 @@ import Testing
     @Test func applyInsertsUpdatesDeletesAndOrders() throws {
         context.autosaveEnabled = false
         var todos = [ToDo(title: "A"), ToDo(title: "B"), ToDo(title: "C")]
-        context.apply(todos, replacing: [], keepOrder: true)
+        context.apply(todos, replacing: [])
         try context.save()
 
         let previous = todos
@@ -47,7 +47,7 @@ import Testing
         todos[0].title = "A2"
         todos.append(ToDo(title: "D"))
         todos.swapAt(0, 1)
-        context.apply(todos, replacing: previous, keepOrder: true)
+        context.apply(todos, replacing: previous)
         try context.save()
 
         #expect(try context.container.fetch(ToDo.self).map(\.title) == ["C", "A2", "D"])

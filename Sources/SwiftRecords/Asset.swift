@@ -96,7 +96,7 @@ public struct Asset: Hashable, Sendable, Codable {
     }
 
     /// The file's unique name in the assets folder, or `nil` for an empty asset.
-    public var name: String? { storage?.name }
+    var name: String? { storage?.name }
 
     static func makeName(fileExtension: String) -> String {
         fileExtension.isEmpty ? UUID().uuidString : UUID().uuidString + "." + fileExtension

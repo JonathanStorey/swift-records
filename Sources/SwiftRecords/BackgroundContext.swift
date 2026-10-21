@@ -36,6 +36,12 @@ public struct BackgroundContext {
         try container.delete(type, id: id)
     }
 
+    /// Deletes every record that matches the predicate, applying each one's delete rules. Without a
+    /// predicate it deletes every record of the type.
+    public func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws {
+        try container.delete(type, where: predicate)
+    }
+
     // MARK: Fetching
 
     /// Fetches records matching a predicate in their stored order.

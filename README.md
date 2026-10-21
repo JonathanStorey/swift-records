@@ -40,6 +40,7 @@ context.save(todo)                                   // the ToDo, its Person and
 let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
 let parents = try context.fetch(ToDo.self, ids: note.todos)
 context.delete(todo)
+context.delete(ToDo.self, where: #Predicate { $0.done })   // or delete(ToDo.self, id: id)
 try context.save()                                   // or let autosave commit once edits pause
 ```
 
@@ -47,16 +48,26 @@ The main context collects changes and commits them together, either when you cal
 automatically once edits pause for `autosaveDelay`. Every fetch saves first, so results include your
 own edits. Records come back in their stored order. To show them in another order, sort a copy.
 
+If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
+with `rollback()`. A failed autosave sets `lastSaveError` and rolls back, since nothing could retry it.
+
 For work off the main actor, such as an import, use a background context. Its saves commit right away,
 `transaction(_:)` groups several into one commit, and the main context refreshes after each commit.
 
 ```swift
 try await container.performBackgroundTask { context in
-    try context.transaction {
-        for item in downloaded { try context.save(item) }
+    for start in stride(from: 0, to: downloaded.count, by: 200) {
+        let batch = Array(downloaded[start..<min(start + 200, downloaded.count)])
+        try context.transaction { try context.save(batch) }
     }
 }
 ```
+
+The container serializes access to its file, so the main context waits while a transaction runs. Keep
+each transaction to a few hundred records and split a large import into several, as above.
+
+`container.deleteAllData()` removes every record, asset file and piece of sync state in the zone and
+discards the main context's pending changes, for signing out or resetting the app.
 
 ## Zones
 
@@ -76,6 +87,17 @@ Zone files are local to the device and never sync through iCloud. They are inclu
 own backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the folder sits inside one named for the
 app's bundle identifier. Relationships stay within one zone, and the same record type can be stored
 in several zones. To open a file somewhere else, use `RecordContainer(url:)`.
+
+To share a zone with a widget or other app extension, open it in the App Group's container from both:
+
+```swift
+let directory = Zone.directory(appGroup: "group.com.example.todo")!
+let container = try RecordContainer(directory: directory)
+```
+
+Files use SQLite's write-ahead log, so the app and an extension can read while the other writes.
+Containers opened on the same file within one process share a connection, so each sees the other's
+changes and their main contexts refresh together.
 
 ## Queries
 
@@ -97,9 +119,17 @@ Anything else is evaluated in memory, so every predicate works.
   `var servings = 2`. Optionals read as `nil`. A new non-optional property needs a default.
 - **Renamed properties** keep their values with `@Renamed(from: "minutes") var duration = 0`. The
   column (or a relationship's join table) is renamed the first time the container uses the type.
-- **Renamed types** keep their data with `@Record(name: "Recipe")`, which fixes the stored name.
+- **Renamed types** keep their data with `@Record(name: "Recipe")`, which fixes the stored name. A
+  type nested inside another needs one, since its simple name could clash.
+- A property renamed more than once lists every earlier name: `@Renamed(from: "minutes", "time")`.
 - `@Indexed` adds an index to a property that predicates compare, and changes nothing about encoding.
 - Generic structs can't be records, since each specialization would need its own fixed name.
+- `_position`, `_version`, `_modified`, `_tag` and `rowid` are reserved for bookkeeping, and the macro
+  rejects them as property names.
+
+Values are stored exactly: a `UInt64` above `Int64.max` round-trips, strings keep embedded NUL
+characters, and sets and dictionaries are written in a stable order so re-saving one never counts as
+an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 
 ## Relationships
 
@@ -157,25 +187,17 @@ Every save keeps a record's bookkeeping beside it, out of the record's own prope
 let meta = try context.metadata(ToDo.self, id: todo.id)
 meta?.version     // goes up once per save that changes the record's values, links or order
 meta?.modified    // when that save happened
-
-let token = try context.changeToken
-// …later
-for change in try context.changes(since: token) {
-    change.recordType, change.id, change.kind   // "ToDo", its UUID, .save or .delete
-}
+meta?.tag         // the sync server's opaque tag, if any
 ```
 
-- The log keeps one entry per record, so editing a record moves its entry rather than adding one. It
-  grows only with the number of records, plus one entry per deleted record.
-- `pruneChanges(before:)` removes deleted records' entries older than a token.
-- Each record also has a tag, opaque data such as a `CKRecord`'s archived system fields, which
-  `metadata(_:id:)?.tag` reads. Storing a tag never changes the version, and fetches never load tags.
-- Reading changes or metadata saves the context's pending edits first.
+Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
+and fetches never load tags.
 
-These are the pieces a sync layer such as `CKSyncEngine` needs: what changed, what was deleted, and the
-server's change tag for each record. Within this package, a sync layer also gets `setTag(_:for:id:)`,
-`applyingSyncedChanges(_:)`, whose writes are never logged and so never sent back, and a small key-value
-store (`syncValue(forKey:)`) for its engine state and change token.
+Behind this sits a change log for a sync layer such as `CKSyncEngine`. It keeps one entry per record,
+so it grows only with the number of records plus one entry per deleted record. The log, its tokens and
+the sync hooks (`changes(since:)`, `pruneChanges(before:)`, `setTag(_:for:id:)`,
+`applyingSyncedChanges(_:)` and a small key-value store for engine state) are package-level, so they
+stay out of the public API until the sync layer that uses them ships.
 
 The main context refreshes its views after any change committed to its container, including ones
 written by a background context or a sync layer.
@@ -203,6 +225,8 @@ struct ContentView: View {
 }
 ```
 
+`@Records(filter:animation:)` animates the list's changes, including ones from a background import.
+
 Without a container in the environment, `@Records` uses the default zone's shared container.
 `@Records("drafts")` reads another zone, through the environment's container if it belongs to that
 zone and otherwise through `RecordContainer.shared(_:)`, which returns the most recently opened
@@ -211,7 +235,8 @@ container for a zone's file. Either way it reads and writes through that contain
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). The array's order is stored, so moves persist, and records always come back in that order.
-Sort a copy to display them another way.
+A filtered list reorders only its own records within the slots they already hold, leaving the rest in
+place. Sort a copy to display them another way.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows, links and positions that actually changed, and a `@Records`

@@ -38,7 +38,7 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     public var description: String { name ?? "in-memory" }
 
     /// The zone's file inside `directory`, or `nil` for an in-memory zone.
-    public func url(in directory: URL) throws -> URL? {
+    func url(in directory: URL) throws -> URL? {
         guard let name else { return nil }
         guard !name.isEmpty, !name.hasPrefix("."), name.rangeOfCharacter(from: Self.disallowed) == nil else {
             throw RecordContainerError.invalidZoneName(name)
@@ -58,6 +58,16 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
         directory.appendPathComponent("Records")
         return directory
     }
+
+    #if canImport(Darwin)
+    /// The folder for zone files shared with an app extension, such as a widget: `Library/Application
+    /// Support/Records` inside the App Group's container. Returns `nil` when the app doesn't have the
+    /// App Group entitlement. Pass it as the `directory` when opening each container.
+    public static func directory(appGroup identifier: String) -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)?
+            .appendingPathComponent("Library/Application Support/Records", isDirectory: true)
+    }
+    #endif
 
     /// Creates the directory if needed and makes sure it is included in device backups. The flag is
     /// cleared explicitly because earlier versions excluded the folder.
