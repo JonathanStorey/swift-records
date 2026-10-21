@@ -254,7 +254,7 @@ extension RecordStore {
             return nil
         }
         var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
-        for field in R.schema.fields where field.name != "id" && field.inverse == nil {
+        for field in R.schema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
             fields[field.name] = nil
             if Self.relationTarget(field) != nil {
                 let join = R.table + "." + field.name
@@ -319,7 +319,7 @@ extension RecordStore {
             for field in R.schema.fields where field.name != "id" {
                 known.insert(field.name)
                 known.formUnion(field.previousNames)
-                guard field.inverse == nil else { continue }
+                guard field.inverse == nil, field.timestamp != .synced else { continue }
                 let value = fields[field.name] ?? field.previousNames.lazy.compactMap { fields[$0] }.first
                 if let target = Self.relationTarget(field) {
                     guard case .ids(let ids) = value ?? .ids([]) else { throw RecordsError.incompatibleRecord(type: R.table, id: id) }
@@ -465,7 +465,12 @@ extension RecordStore {
         let snapshot: SQLiteValue = entry.version > change.version ? (try fields.map { .blob(try $0.encoded()) } ?? .null) : .null
         // A record deleted since this was sent keeps the new tag for its deletion.
         let deletedTag: SQLiteValue = entry.kind == .delete ? (tag.map { .blob($0) } ?? .null) : .null
-        try updateSyncRow(change.table, id: id, ["acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": deletedTag])
+        try updateSyncRow(change.table, id: id, [
+            "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": deletedTag,
+            "synced_at": .real(Date().timeIntervalSince1970),
+        ])
+        // Views showing a synced timestamp refresh.
+        changedData = true
         if entry.kind == .save {
             try setTagColumn(tag, table: change.table, id: id)
         }
@@ -531,7 +536,9 @@ extension RecordStore {
                 try setTagColumn(record.tag, table: table, id: id)
                 if merged == server {
                     let version = try logEntry(table, id: id)?.version ?? 0
-                    try updateSyncRow(table, id: id, ["acked": .integer(Int64(version)), "snapshot": .null])
+                    try updateSyncRow(table, id: id, [
+                        "acked": .integer(Int64(version)), "snapshot": .null, "synced_at": .real(Date().timeIntervalSince1970),
+                    ])
                 }
                 return
             }
@@ -541,7 +548,10 @@ extension RecordStore {
 
         try applyingSyncedChanges { try applySyncFields(table: table, id: record.id, fields: server) }
         let version = try logEntry(table, id: id)?.version ?? 0
-        try updateSyncRow(table, id: id, ["acked": .integer(Int64(version)), "known": .integer(1), "snapshot": .null, "tag": .null])
+        try updateSyncRow(table, id: id, [
+            "acked": .integer(Int64(version)), "known": .integer(1), "snapshot": .null, "tag": .null,
+            "synced_at": .real(Date().timeIntervalSince1970),
+        ])
         try setTagColumn(record.tag, table: table, id: id)
     }
 

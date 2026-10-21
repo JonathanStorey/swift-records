@@ -103,6 +103,7 @@ struct Device {
 
     @Test func onlyTheAsyncSaveSends() async throws {
         let phone = try Device(server)
+        try await phone.context.refresh()   // opening the provider sends what is pending, so open it first
         phone.context.save(SyncRecipe(title: "Toast"))
         try phone.commit()
         #expect(server.count == 0)

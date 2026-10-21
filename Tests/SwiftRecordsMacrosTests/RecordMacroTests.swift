@@ -210,6 +210,45 @@ final class RecordMacroTests: XCTestCase {
         )
     }
 
+    func testGeneratesTimestampFields() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Entry {
+                var id = UUID()
+                @Timestamp(.created) var created: Date?
+                @Timestamp var modified: Date?
+                @Timestamp(Timestamp.Kind.synced) var synced: Date?
+                @Timestamp var wrong: Date
+            }
+            """,
+            expandedSource: """
+            struct Entry {
+                var id = UUID()
+                @Timestamp(.created) var created: Date?
+                @Timestamp var modified: Date?
+                @Timestamp(Timestamp.Kind.synced) var synced: Date?
+                @Timestamp var wrong: Date
+            }
+
+            extension Entry: Record {
+                static var schema: RecordSchema<Entry> {
+                    RecordSchema(table: "Entry", fields: [
+                        .field("id", \\Entry.id),
+                        .timestamp("created", \\Entry.created, .created),
+                        .timestamp("modified", \\Entry.modified, .modified),
+                        .timestamp("synced", \\Entry.synced, .synced)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(message: "A @Timestamp property must be declared as 'Date?'", line: 7, column: 20),
+            ],
+            macros: macros
+        )
+    }
+
     func testRejectsAssetsThatAreNotOptionalData() {
         assertMacroExpansion(
             """

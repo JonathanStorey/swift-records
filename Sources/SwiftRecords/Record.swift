@@ -95,6 +95,8 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         private(set) var previousNames: [String] = []
         /// True for an `@Indexed` property.
         private(set) var isIndexed = false
+        /// What the container stamps into a `@Timestamp` property.
+        private(set) var timestamp: Timestamp.Kind?
 
         init(name: String, keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule?, inverse: AnyKeyPath?, isAsset: Bool, fileExtension: String) {
             self.name = name
@@ -126,6 +128,12 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
 
         public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = .cascade) -> Field {
             Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false, fileExtension: "")
+        }
+
+        public static func timestamp(_ name: String, _ keyPath: KeyPath<Root, Date?>, _ kind: Timestamp.Kind) -> Field {
+            var field = Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: false, fileExtension: "")
+            field.timestamp = kind
+            return field
         }
 
         public static func asset(_ name: String, _ keyPath: KeyPath<Root, Data?>, fileExtension: String = "") -> Field {

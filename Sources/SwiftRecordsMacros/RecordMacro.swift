@@ -58,7 +58,7 @@ public struct RecordMacro: ExtensionMacro {
             // Another attribute may be a property wrapper, whose initial value isn't the stored value.
             let wrapped = variable.attributes.contains { element in
                 guard let name = element.as(AttributeSyntax.self)?.attributeName.trimmedDescription else { return false }
-                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset"].contains(name)
+                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset", "Timestamp", "SwiftRecords.Timestamp"].contains(name)
             }
             for binding in variable.bindings {
                 guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription else {
@@ -85,6 +85,16 @@ public struct RecordMacro: ExtensionMacro {
                     }
                     let fileExtension = asset.fileExtension.map { ", fileExtension: \($0)" } ?? ""
                     fields.append(".asset(\"\(name)\", \(keyPath)\(fileExtension))" + modifiers)
+                    continue
+                }
+                if let kind = timestampKind(variable.attributes) {
+                    guard isOptionalDate(binding) else {
+                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                            "A @Timestamp property must be declared as 'Date?'"
+                        )))
+                        continue
+                    }
+                    fields.append(".timestamp(\"\(name)\", \(keyPath), \(kind))" + modifiers)
                     continue
                 }
                 if let inverse = reference?.from {
@@ -198,6 +208,25 @@ public struct RecordMacro: ExtensionMacro {
             }
         }
         return modifiers
+    }
+
+    /// The kind in a property's `@Timestamp` attribute, such as `.created`, or nil when it has none.
+    private static func timestampKind(_ attributes: AttributeListSyntax) -> String? {
+        for element in attributes {
+            guard let attribute = element.as(AttributeSyntax.self),
+                  ["Timestamp", "SwiftRecords.Timestamp"].contains(attribute.attributeName.trimmedDescription) else { continue }
+            if case .argumentList(let arguments) = attribute.arguments, let kind = arguments.first?.expression.trimmedDescription {
+                return kind.hasPrefix(".") ? kind : "." + (kind.split(separator: ".").last.map(String.init) ?? kind)
+            }
+            return ".modified"
+        }
+        return nil
+    }
+
+    private static func isOptionalDate(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type else { return false }
+        let text = type.trimmedDescription.filter { !$0.isWhitespace }
+        return ["Date?", "Foundation.Date?", "Optional<Date>", "Optional<Foundation.Date>"].contains(text)
     }
 
     private static func isOptionalData(_ binding: PatternBindingSyntax) -> Bool {
