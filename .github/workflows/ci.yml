@@ -13,7 +13,12 @@ jobs:
       - name: Build and test
         run: swift test
       - name: Build for iOS
-        run: xcodebuild build -scheme SwiftRecords -destination 'generic/platform=iOS Simulator' -skipMacroValidation -quiet
+        run: |
+          # Xcode names the package scheme differently across versions, so pick it from the list.
+          SCHEMES=$(xcodebuild -list -json | python3 -c 'import json, sys; print("\n".join(json.load(sys.stdin)["workspace"]["schemes"]))')
+          echo "Schemes: $SCHEMES"
+          SCHEME=$(echo "$SCHEMES" | grep -x -m1 -e SwiftRecords -e swift-records-Package -e swift-records || echo "$SCHEMES" | head -1)
+          xcodebuild build -scheme "$SCHEME" -destination 'generic/platform=iOS Simulator' -skipMacroValidation -quiet
 
   linux:
     runs-on: ubuntu-latest
