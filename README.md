@@ -232,6 +232,21 @@ device's view of the server: when it acknowledged the record as it is now, or `n
 changes it doesn't have, so a list can show which rows are still waiting. It isn't stored or sent, and
 a predicate on it runs in memory. A bare `@Timestamp` means `.modified`.
 
+## Unsaved edits
+
+`hasChanges(in:)` says whether a copy of a record differs from the one its context holds, which suits
+an edit sheet that keeps a draft in `@State`:
+
+```swift
+Button("Save") { context.save(draft); dismiss() }
+    .disabled(!draft.hasChanges(in: context))
+```
+
+It counts the context's pending changes and related records, so editing a step marks its recipe as
+changed, and undoing an edit makes it false again. A record the context has never saved is changed.
+`@Timestamp` properties and inverses are left out, because the container sets them. It never saves, so
+a view can call it while it updates, and each call costs one read by ID.
+
 ## Change tracking
 
 Every save keeps a record's bookkeeping beside it, out of the record's own properties:
