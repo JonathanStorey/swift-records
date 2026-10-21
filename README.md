@@ -27,7 +27,7 @@ struct Note {
 ## Storing and querying
 
 ```swift
-let store = try RecordStore(url: databaseURL)   // or RecordStore() for in-memory
+let store = try RecordStore()                    // the default zone
 
 try store.save(todo)                             // saves the ToDo, its Person and every Note
 let open = try store.fetch(ToDo.self,
@@ -36,6 +36,27 @@ let open = try store.fetch(ToDo.self,
 let parents = try store.fetch(ToDo.self, ids: note.todos)
 try store.delete(todo)
 ```
+
+## Zones
+
+A zone is a named database file. The name is the file name without its extension.
+
+```swift
+extension Zone {
+    static let drafts: Zone = "drafts"
+}
+
+let main = try RecordStore()                     // Application Support/Records/default.sqlite
+let drafts = try RecordStore(zone: .drafts)      // Application Support/Records/drafts.sqlite
+let scratch = try RecordStore(zone: .inMemory)   // nothing on disk
+```
+
+Zone files are local to the device. The `Records` folder is excluded from iCloud and computer backups,
+so its data is not restored to a new device. On macOS the folder sits inside one named for the
+app's bundle identifier. Relationships stay within one zone, and the same record type can be stored
+in several zones. To open a file somewhere else, use `RecordStore(url:)`.
+
+## Queries
 
 Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`,
 `||`, `!`, `nil` checks, `[values].contains(\.property)`, `String.contains` (iOS 18 / macOS 15) and
@@ -57,7 +78,7 @@ Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`
 ```swift
 @main
 struct ToDoApp: App {
-    let context = try! RecordsContext(url: .documentsDirectory.appending(path: "todos.sqlite"))
+    @State private var context = try! RecordsContext()   // the default zone
 
     var body: some Scene {
         WindowGroup { ContentView().recordsContext(context) }
