@@ -121,6 +121,31 @@ try container.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(
 
 A page is a read-only `RecordSlice`. Without sort descriptors it is read straight from SQL.
 
+## Change tracking
+
+Every save keeps a record's bookkeeping beside it, out of the record's own properties:
+
+```swift
+let meta = try container.metadata(ToDo.self, id: todo.id)
+meta?.version     // goes up once per save that changes the record's values, links or order
+meta?.modified    // when that save happened
+
+let token = try container.changeToken
+// …later
+for change in try container.changes(since: token) {
+    change.recordType, change.id, change.kind   // "ToDo", its UUID, .save or .delete
+}
+```
+
+- The log keeps one entry per record, so editing a record moves its entry rather than adding one. It
+  grows only with the number of records, plus one entry per deleted record.
+- `pruneChanges(before:)` removes deleted records' entries older than a token.
+- `setTag(_:for:id:)` stores opaque data with a record, such as a `CKRecord`'s archived system fields,
+  without changing its version. `metadata(_:id:)?.tag` reads it back. Fetches never load tags.
+
+These are the pieces a sync layer such as `CKSyncEngine` needs: what changed, what was deleted, and the
+server's change tag for each record.
+
 ## SwiftUI
 
 ```swift
