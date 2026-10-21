@@ -38,6 +38,29 @@ public final class RecordsContext {
     /// The error from the most recent autosave, if it failed. A failed autosave discards its changes.
     public private(set) var lastSaveError: Error?
 
+    /// Where this context's changes stand, locally and, with a sync provider, on the server.
+    public enum Status: Sendable, Hashable {
+        /// Everything is saved, and with a provider, sent.
+        case saved
+        /// A save is committing.
+        case saving
+        /// Changes are being sent or fetched.
+        case syncing
+        /// The server can't be reached. Changes are saved here and sent once it can.
+        case offline
+        /// No sync account is signed in. Changes are saved here.
+        case signedOut
+        /// The latest save, send or fetch failed.
+        case failed(RecordsError)
+    }
+
+    /// Where this context's changes stand. It works the same with or without a sync provider: a local
+    /// container moves between `saving`, `saved` and `failed`.
+    public private(set) var status: Status = .saved
+
+    /// The error from the latest save, cleared by the next one that succeeds.
+    @ObservationIgnored private var saveFailure: RecordsError?
+
     private struct Change: Sendable {
         let sequence: Int
         let source: ObjectIdentifier?
@@ -79,7 +102,9 @@ public final class RecordsContext {
     /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
     @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordsContext")
     /// Async saves committing now. Their commits are accounted for when they finish.
-    @ObservationIgnored private var savesInFlight = 0
+    @ObservationIgnored private var savesInFlight = 0 {
+        didSet { updateStatus() }
+    }
 
     init(container: RecordContainer) {
         self.container = container
@@ -87,16 +112,45 @@ public final class RecordsContext {
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
             self?.autosave()
         }, becomeActive: { [weak self] in
-            self?.refresh()
+            guard let self else { return }
+            if container.sync == nil {
+                refresh()
+            } else {
+                Task { try? await self.refresh() }
+            }
         })
         commitObserver = container.observeCommits { [weak self] in
             Task { @MainActor in self?.containerDidCommit() }
         }
+        updateStatus()
     }
 
     deinit {
         if let commitObserver {
             container.removeCommitObserver(commitObserver)
+        }
+    }
+
+    func syncPhaseChanged() {
+        updateStatus()
+    }
+
+    private func updateStatus() {
+        let new: Status = if savesInFlight > 0 {
+            .saving
+        } else if let saveFailure {
+            .failed(saveFailure)
+        } else {
+            switch container.syncPhase {
+            case .idle: .saved
+            case .syncing: .syncing
+            case .offline: .offline
+            case .signedOut: .signedOut
+            case .failed(let error): .failed(error)
+            }
+        }
+        if new != status {
+            status = new
         }
     }
 
@@ -165,12 +219,16 @@ public final class RecordsContext {
 
     /// Commits every pending change in one transaction off the main actor, so the interface keeps running
     /// while it waits for the file. If the save fails, the changes stay pending, as with `save()`.
+    ///
+    /// With a sync provider, this also sends what the server doesn't have yet. Autosave does too. The
+    /// synchronous `save()` only commits, for moments that can't wait, and its changes go with the next send.
     public func save() async throws {
-        guard let batch = takePending() else {
+        if let batch = takePending() {
+            try await commit(batch, keepingFailures: true)
+        } else {
             try await read { _ in }
-            return
         }
-        try await commit(batch, keepingFailures: true)
+        await container.sync?.send()
     }
 
     /// Drops pending changes that have not been saved. Views refresh, so edits made through a `@Records`
@@ -189,6 +247,15 @@ public final class RecordsContext {
     /// save and fetch reads the latest data whether or not you call this.
     public func refresh() {
         container.checkForExternalChanges()
+    }
+
+    /// Saves, picks up changes other processes wrote, and with a sync provider, sends what is pending and
+    /// fetches the server's changes. It returns once they're stored, so it suits pull-to-refresh. It
+    /// throws only what leaves `status` at `failed`: being offline or signed out isn't an error.
+    public func refresh() async throws {
+        try await save()
+        try await read { $0.checkForExternalChanges() }
+        try await container.sync?.refresh()
     }
 
     /// Blocks until async saves already started have committed.
@@ -235,7 +302,10 @@ public final class RecordsContext {
         let commit: Commit
         do {
             commit = try result.get()
+            saveFailure = nil
         } catch {
+            saveFailure = (error as? RecordsError) ?? .database(code: -1, message: "\(error)")
+            updateStatus()
             if keepingFailures {
                 pending = batch.taken.merging(pending) { _, newer in newer }
             } else {
@@ -245,6 +315,7 @@ public final class RecordsContext {
             }
             throw error
         }
+        updateStatus()
         // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
         let commits = container.commitCount
         let outside = commit.base != knownCommits || commits > commit.base + 1
@@ -357,12 +428,6 @@ public final class RecordsContext {
         return try container.changes(since: token)
     }
 
-    /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
-    /// because there is only one per record. A sync layer calls this once the server has the deletes.
-    package func pruneChanges(before token: ChangeToken) throws {
-        try container.pruneChanges(before: token)
-    }
-
     /// Saves pending changes, then returns a record's version, modification time and tag, or `nil` when
     /// the record doesn't exist.
     public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
@@ -438,6 +503,7 @@ public final class RecordsContext {
         } catch {
             lastSaveError = error
         }
+        await container.sync?.send()
     }
 }
 

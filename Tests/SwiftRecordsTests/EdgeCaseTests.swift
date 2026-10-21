@@ -76,7 +76,7 @@ struct DishV3 {
     }
 
     @Test func nanIsRejected() throws {
-        #expect(throws: EncodingError.self) {
+        #expect(throws: RecordsError.invalidValue(type: "Measurement", property: "value")) {
             try container.save(Measurement(value: .nan))
         }
         #expect(try container.fetch(Measurement.self).isEmpty)
@@ -107,7 +107,7 @@ struct DishV3 {
                 [try ValueCoding.encode(child.id), try ValueCoding.encode(parent.id)]
             )
         }
-        #expect(throws: RecordContainerError.cycle(table: "TreeFolder")) {
+        #expect(throws: RecordsError.cycle(type: "TreeFolder")) {
             try container.fetch(TreeFolder.self, id: parent.id)
         }
     }
@@ -230,7 +230,7 @@ struct DishV3 {
     @Test func failedSaveKeepsChangesPending() throws {
         context.save(Measurement(value: .nan))
         context.save(Person(name: "Kept"))
-        #expect(throws: EncodingError.self) { try context.save() }
+        #expect(throws: RecordsError.invalidValue(type: "Measurement", property: "value")) { try context.save() }
         #expect(context.pendingChangeCount == 2)
         #expect(try context.container.fetch(Person.self).isEmpty)
 

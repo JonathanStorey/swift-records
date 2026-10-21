@@ -9,7 +9,7 @@ import Foundation
 final class RecordStore: @unchecked Sendable {
     let db: SQLiteDatabase
     private let lock = NSRecursiveLock()
-    private var columns: [String: Set<String>] = [:]
+    private(set) var columns: [String: Set<String>] = [:]
     private var relationInfo: [RelationInfo]?
     private var decoding: Set<RowKey> = []
     /// Asset files written and released by each open transaction, innermost last.
@@ -17,7 +17,7 @@ final class RecordStore: @unchecked Sendable {
     /// Records logged by each open transaction, innermost last, so a record's version goes up once per save.
     private var logged: [[RowKey: RecordChange.Kind]] = []
     /// Above zero while applying changes from a sync server, which are never logged.
-    private var applyingSynced = 0
+    private(set) var applyingSynced = 0
     /// True once the open transaction has written something a fetch could see.
     private var changedData = false
     /// Goes up with each committed transaction that changed data.
@@ -32,6 +32,12 @@ final class RecordStore: @unchecked Sendable {
     private var lockDepth = 0
     /// SQLite's count of commits by other connections, such as an app extension's, as last seen.
     private var dataVersion: Int64?
+    /// Record types registered with a container, by table, so a server's records can be stored before
+    /// code uses their type.
+    var registered: [String: any Record.Type] = [:]
+    /// True when a container with a sync provider is open on this file, which turns on snapshots and
+    /// keeps links whose targets haven't arrived.
+    var syncEnabled = false
 
     var structureVersion: Int { locked { structuralChanges } }
 
@@ -60,6 +66,14 @@ final class RecordStore: @unchecked Sendable {
 
     /// The store for a file: the one already open, or a new one. Every in-memory store is new.
     static func open(url: URL?) throws -> RecordStore {
+        do {
+            return try openStore(url: url)
+        } catch {
+            throw RecordsError.mapping(error)
+        }
+    }
+
+    private static func openStore(url: URL?) throws -> RecordStore {
         guard let url else { return try RecordStore(url: nil) }
         let key = fileKey(url)
         openStoresLock.lock()
@@ -95,6 +109,13 @@ final class RecordStore: @unchecked Sendable {
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, record_table TEXT NOT NULL, record_id NOT NULL,
                 kind TEXT NOT NULL, version INTEGER NOT NULL, time REAL NOT NULL,
                 UNIQUE (record_table, record_id));
+            CREATE TABLE IF NOT EXISTS "_records_sync" (
+                record_table TEXT NOT NULL, record_id NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
+                known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB,
+                PRIMARY KEY (record_table, record_id));
+            CREATE TABLE IF NOT EXISTS "_records_parked" (
+                record_table TEXT NOT NULL, record_id NOT NULL, record BLOB NOT NULL,
+                PRIMARY KEY (record_table, record_id));
             """)
     }
 
@@ -146,7 +167,7 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+    func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
         lockDepth += 1
         defer {
@@ -156,7 +177,11 @@ final class RecordStore: @unchecked Sendable {
         if lockDepth == 1 {
             noticeExternalChanges()
         }
-        return try body()
+        do {
+            return try body()
+        } catch {
+            throw lockDepth == 1 ? RecordsError.mapping(error) : error
+        }
     }
 
     /// Picks up commits another process made to the file, such as a widget's. Its schema may differ from
@@ -232,7 +257,7 @@ final class RecordStore: @unchecked Sendable {
     // MARK: Assets
 
     /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
-    private func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
+    func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
         let assetFields = R.schema.fields.filter(\.isAsset)
         let fields = Set(assetFields.map(\.name)).union(assets.keys)
         var columns: [(name: String, value: SQLiteValue)] = []
@@ -310,7 +335,7 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    private func upsert(_ values: [(name: String, value: SQLiteValue)], id: SQLiteValue, into table: String) throws {
+    func upsert(_ values: [(name: String, value: SQLiteValue)], id: SQLiteValue, into table: String) throws {
         var row: [String: SQLiteValue] = [:]
         for (name, value) in values where name != "id" {
             row[name] = value
@@ -321,9 +346,12 @@ final class RecordStore: @unchecked Sendable {
         }
         let names = row.keys.sorted()
         // Skip the write when nothing changed, which is the common case when an edited array is saved.
-        if let existing = try db.run("SELECT \(recordColumns(table)) FROM \(quoted(table)) WHERE id = ?", [id]).first,
-           names.allSatisfy({ existing[$0, default: .null] == row[$0] }) {
+        let existing = try db.run("SELECT \(recordColumns(table)) FROM \(quoted(table)) WHERE id = ?", [id]).first
+        if let existing, names.allSatisfy({ existing[$0, default: .null] == row[$0] }) {
             return
+        }
+        if existing != nil {
+            try snapshotBeforeChange(table, id: id)
         }
         let insertColumns = (["id"] + names + ["_position"]).map(quoted).joined(separator: ", ")
         let placeholders = (["?"] + names.map { _ in "?" }).joined(separator: ", ")
@@ -339,7 +367,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     /// Replaces an owner's links, keeping each target's existing place in its inverse order.
-    private func link(_ info: RelationInfo, ownerID: SQLiteValue, targets: [SQLiteValue]) throws {
+    func link(_ info: RelationInfo, ownerID: SQLiteValue, targets: [SQLiteValue]) throws {
         let table = quoted(info.table)
         var inversePositions: [SQLiteValue: SQLiteValue] = [:]
         var current: [SQLiteValue] = []
@@ -347,7 +375,17 @@ final class RecordStore: @unchecked Sendable {
             inversePositions[row["target"]!] = row["inverse_position"]!
             current.append(row["target"]!)
         }
+        var targets = targets
+        if syncEnabled, applyingSynced == 0 {
+            // Links a server delivered before their targets stay, in place, until the targets arrive.
+            for (index, target) in current.enumerated() where !targets.contains(target) {
+                if try !rowExists(info.targetTable, id: target) {
+                    targets.insert(target, at: min(index, targets.count))
+                }
+            }
+        }
         guard current != targets else { return }
+        try snapshotBeforeChange(info.ownerTable, id: ownerID)
         structuralChanges += 1
         // In a synced store the links belong to the owner, so changing them is a change to the owner.
         try logChange(info.ownerTable, id: ownerID)
@@ -467,12 +505,18 @@ final class RecordStore: @unchecked Sendable {
             relationInfo = nil
             prepared = []
             try? FileManager.default.removeItem(at: assetsDirectory)
+            // Registered types get their tables back, ready for records from a server.
+            let types = Array(registered.values)
+            registered = [:]
+            try register(types)
         }
     }
 
     /// Deletes by table name, so cascades work for types this process has never loaded.
-    private func deleteRow(_ table: String, id: SQLiteValue) throws {
+    func deleteRow(_ table: String, id: SQLiteValue) throws {
         guard tableExists(table) else { return }
+        try snapshotBeforeChange(table, id: id)
+        try keepTagOfDeletedRow(table, id: id)
         structuralChanges += 1
         let owned = relations().filter { $0.ownerTable == table }
 
@@ -501,6 +545,11 @@ final class RecordStore: @unchecked Sendable {
             try logChange(table, id: id, kind: .delete)
         }
         try db.run("DELETE FROM \(quoted(table)) WHERE id = ?", [id])
+    }
+
+    func rowExists(_ table: String, id: SQLiteValue) throws -> Bool {
+        guard tableExists(table) else { return false }
+        return try !db.run("SELECT 1 FROM \(quoted(table)) WHERE id = ?", [id]).isEmpty
     }
 
     private func isReferenced(_ table: String, id: SQLiteValue) throws -> Bool {
@@ -705,14 +754,18 @@ final class RecordStore: @unchecked Sendable {
 
     private func decodeRow<R: Record>(_ type: R.Type, row: [String: SQLiteValue]) throws -> R {
         let key = RowKey(table: R.table, id: row["id"] ?? .null)
-        guard decoding.insert(key).inserted else { throw RecordContainerError.cycle(table: R.table) }
+        guard decoding.insert(key).inserted else { throw RecordsError.cycle(type: R.table) }
         defer { decoding.remove(key) }
-        return try R(from: RecordDecoder<R>(row: row, loader: self))
+        do {
+            return try R(from: RecordDecoder<R>(row: row, loader: self))
+        } catch is DecodingError {
+            throw RecordsError.incompatibleRecord(type: R.table, id: (try? ValueCoding.decode(UUID.self, from: key.id)) ?? UUID())
+        }
     }
 
     // MARK: Schema
 
-    private func tableExists(_ table: String) -> Bool {
+    func tableExists(_ table: String) -> Bool {
         if columns[table] != nil { return true }
         let rows = (try? db.run("PRAGMA table_info(\(quoted(table)))")) ?? []
         guard !rows.isEmpty else { return false }
@@ -723,7 +776,7 @@ final class RecordStore: @unchecked Sendable {
         return true
     }
 
-    private func ensureTable(_ table: String) throws {
+    func ensureTable(_ table: String) throws {
         if !tableExists(table) {
             try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY, \"_position\" INTEGER)")
             columns[table] = ["id", "_position"]
@@ -738,7 +791,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// Applies `@Renamed` and `@Indexed` to a table the first time this container uses its type: old
     /// columns, join tables and asset entries take the new name, and indexed columns get an index.
-    private func prepare<R: Record>(_ type: R.Type) throws {
+    func prepare<R: Record>(_ type: R.Type) throws {
         guard !prepared.contains(ObjectIdentifier(R.self)), tableExists(R.table) else { return }
         for field in R.schema.fields {
             for old in field.previousNames {
@@ -782,7 +835,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     /// Adds any missing columns. Columns have no declared type, so SQLite stores each value as given.
-    private func ensureColumns(_ names: [String], in table: String) throws {
+    func ensureColumns(_ names: [String], in table: String) throws {
         try ensureTable(table)
         for name in names where !columns[table, default: []].contains(name) {
             try db.execute("ALTER TABLE \(quoted(table)) ADD COLUMN \(quoted(name))")
@@ -790,7 +843,7 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    private func relations() -> [RelationInfo] {
+    func relations() -> [RelationInfo] {
         if let relationInfo { return relationInfo }
         let rows = (try? db.run("SELECT * FROM \"_records_relations\"")) ?? []
         let loaded = rows.compactMap { row -> RelationInfo? in
@@ -803,7 +856,7 @@ final class RecordStore: @unchecked Sendable {
         return loaded
     }
 
-    private func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule?) throws -> RelationInfo {
+    func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule?) throws -> RelationInfo {
         let info = RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: deleteRule)
         if relations().contains(info) { return info }
         try db.run(
@@ -825,7 +878,7 @@ final class RecordStore: @unchecked Sendable {
     private func inverseRelation(_ keyPath: AnyKeyPath) throws -> RelationInfo? {
         guard let ownerType = type(of: keyPath).rootType as? any Record.Type,
               let field = fieldName(ownerType, keyPath) else {
-            throw RecordContainerError.unknownInverse("\(keyPath)")
+            throw RecordsError.unknownInverse("\(keyPath)")
         }
         return relations().first { $0.ownerTable == ownerType.table && $0.field == field }
     }
@@ -861,11 +914,18 @@ extension RecordStore: RelationLoader {
         relations().contains { $0.ownerTable == table && $0.field == field }
     }
 
+    /// Counts linked records that exist. A link a server delivered before its target doesn't count.
     func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int {
-        if let targets = prefetched?.links[table + "." + field]?[ownerID] {
-            return targets.count
+        guard let info = relations().first(where: { $0.ownerTable == table && $0.field == field }) else { return 0 }
+        if let targets = prefetched?.links[info.table]?[ownerID] {
+            return targets.filter { prefetched?.rows[info.targetTable]?[$0] != nil }.count
         }
-        return try count(in: table + "." + field, where: "owner", is: ownerID)
+        guard tableExists(info.targetTable) else { return 0 }
+        let rows = try db.run(
+            "SELECT COUNT(*) AS n FROM \(quoted(info.table)) j JOIN \(quoted(info.targetTable)) t ON t.id = j.target WHERE j.owner = ?",
+            [ownerID]
+        )
+        return Int(rows.first?["n"]?.integerValue ?? 0)
     }
 
     func assetURL(named name: String) -> URL {
@@ -907,7 +967,7 @@ struct RowKey: Hashable {
 
 extension RecordStore {
     /// Bumps a record's version and moves its log entry to the end, once per transaction.
-    fileprivate func logChange(_ table: String, id: SQLiteValue, kind: RecordChange.Kind = .save) throws {
+    func logChange(_ table: String, id: SQLiteValue, kind: RecordChange.Kind = .save) throws {
         changedData = true
         if applyingSynced > 0 {
             // The server already has this change. A record it deleted has nothing left to send.
@@ -962,14 +1022,6 @@ extension RecordStore {
                     version: Int(version), date: Date(timeIntervalSince1970: time), token: ChangeToken(rawValue: seq)
                 )
             }
-        }
-    }
-
-    /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
-    /// because there is only one per record. A sync layer calls this once the server has the deletes.
-    func pruneChanges(before token: ChangeToken) throws {
-        try transaction {
-            _ = try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete' AND seq < ?", [.integer(token.rawValue)])
         }
     }
 

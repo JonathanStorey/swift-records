@@ -91,7 +91,7 @@ enum ValueCoding {
         return nil
     }
 
-    private static let jsonDecoder = JSONDecoder()
+    static let jsonDecoder = JSONDecoder()
 }
 
 /// Thrown when a value needs a keyed or unkeyed container, meaning it must be stored as JSON.

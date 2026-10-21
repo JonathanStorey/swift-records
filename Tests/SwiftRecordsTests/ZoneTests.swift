@@ -32,7 +32,7 @@ import Testing
 
     @Test(arguments: ["", ".hidden", "a/b", "a\\b", "a:b"])
     func rejectsUnsafeNames(_ name: String) {
-        #expect(throws: RecordContainerError.invalidZoneName(name)) {
+        #expect(throws: RecordsError.invalidZoneName(name)) {
             try RecordContainer(zone: Zone(name), directory: directory)
         }
     }
