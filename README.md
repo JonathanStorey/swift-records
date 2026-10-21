@@ -87,6 +87,14 @@ Listing the record types up front, as SwiftData's `ModelContainer(for:)` does, c
 applies renames and indexes when the container opens. Types reached through relationships are found
 automatically. It's optional for a local container and required for sync.
 
+Registering also checks the types before anything is written, and throws
+`RecordsError.invalidSchema(type:reason:)` for a setup mistake that would mix up data:
+- two types stored under one name
+- an inverse whose key path isn't a relationship back to its type
+- an `@Renamed` old name that is still a property's name, or is shared by two properties
+- with a sync provider, a type or property name a server can't take: it must be letters, digits and
+  underscores, starting with a letter
+
 ```swift
 let container = try RecordContainer(for: [ToDo.self, Folder.self])
 ```

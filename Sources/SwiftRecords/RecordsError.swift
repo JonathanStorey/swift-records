@@ -13,6 +13,9 @@ public enum RecordsError: Error, Hashable, Sendable {
     case unknownInverse(String)
     /// A zone name is empty, starts with a dot, or contains a path separator.
     case invalidZoneName(String)
+    /// A registered record type is set up in a way that would lose or mix up data, such as two types
+    /// stored under one name. `reason` says what to fix.
+    case invalidSchema(type: String, reason: String)
     /// The sync account is out of storage. Changes stay on this device until there is room.
     case storageFull
     /// The sync server refused a record for good.

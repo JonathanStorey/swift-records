@@ -132,31 +132,100 @@ struct PendingChange: Hashable, Sendable {
 extension RecordStore {
     /// Registers record types and every type their relationships reach, creating their tables and join
     /// tables and applying renames and indexes now rather than on first use.
-    func register(_ types: [any Record.Type]) throws {
+    ///
+    /// Every type is checked before anything is written, so a setup mistake fails when the container
+    /// opens instead of mixing up data later. `syncSafe` also requires names a server such as CloudKit accepts.
+    func register(_ types: [any Record.Type], syncSafe: Bool = false) throws {
+        var found: [String: any Record.Type] = [:]
+        var queue = types
+        while let type = queue.popLast() {
+            if let other = found[type.table] ?? registered[type.table] {
+                guard ObjectIdentifier(other) == ObjectIdentifier(type) else {
+                    throw RecordsError.invalidSchema(
+                        type: type.table, reason: "\(other) and \(type) are both stored as \"\(type.table)\". Give one a different @Record(name:)."
+                    )
+                }
+                continue
+            }
+            found[type.table] = type
+            queue += Self.relatedTypes(type)
+        }
+        for type in found.values {
+            try Self.validate(type, syncSafe: syncSafe)
+        }
         try transaction {
-            var queue = types
-            while let type = queue.popLast() {
-                guard registered[type.table] == nil else { continue }
-                registered[type.table] = type
-                queue += try prepareRegistered(type)
+            for (table, type) in found where registered[table] == nil {
+                registered[table] = type
+                try prepareRegistered(type)
             }
         }
     }
 
-    /// Creates a registered type's tables and returns the types its relationships name.
-    private func prepareRegistered<R: Record>(_ type: R.Type) throws -> [any Record.Type] {
+    /// The types a type's relationships and inverses name.
+    private static func relatedTypes<R: Record>(_ type: R.Type) -> [any Record.Type] {
+        R.schema.fields.compactMap { field in
+            if let inverse = field.inverse {
+                return Swift.type(of: inverse).rootType as? any Record.Type
+            }
+            return relationTarget(field)
+        }
+    }
+
+    /// Checks what the macro can't see from inside one type: inverses that point back, renames that don't
+    /// collide, and with sync, names a server accepts.
+    private static func validate<R: Record>(_ type: R.Type, syncSafe: Bool) throws {
+        func invalid(_ reason: String) -> RecordsError {
+            .invalidSchema(type: R.table, reason: reason)
+        }
+        let names = Set(R.schema.fields.map(\.name))
+        var oldNames: [String: String] = [:]
+        for field in R.schema.fields {
+            if let inverse = field.inverse {
+                guard let owner = Swift.type(of: inverse).rootType as? any Record.Type else {
+                    throw invalid("\(field.name) is an inverse of \(inverse), which isn't a property of a @Record type.")
+                }
+                guard let target = forwardTarget(of: owner, keyPath: inverse), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
+                    throw invalid("\(field.name) is an inverse of \(inverse), which isn't a relationship to \(R.self).")
+                }
+            }
+            for old in field.previousNames {
+                if old != field.name, names.contains(old) {
+                    throw invalid("\(field.name) is renamed from \"\(old)\", which is still a property's name.")
+                }
+                if let other = oldNames.updateValue(field.name, forKey: old), other != field.name {
+                    throw invalid("\(other) and \(field.name) are both renamed from \"\(old)\".")
+                }
+            }
+            if syncSafe, !isSyncSafe(field.name) {
+                throw invalid("\"\(field.name)\" can't sync. Use letters, digits and underscores, starting with a letter.")
+            }
+        }
+        if syncSafe, !isSyncSafe(R.table) {
+            throw invalid("\"\(R.table)\" can't sync. Use @Record(name:) with letters, digits and underscores, starting with a letter.")
+        }
+    }
+
+    /// The related type of the forward relationship a key path names, or `nil` if it names none.
+    private static func forwardTarget<O: Record>(of owner: O.Type, keyPath: AnyKeyPath) -> (any Record.Type)? {
+        O.schema.field(for: keyPath).flatMap(relationTarget)
+    }
+
+    /// Letters, digits and underscores, starting with a letter and at most 255 long, which CloudKit
+    /// accepts for record types and field names.
+    static func isSyncSafe(_ name: String) -> Bool {
+        let isLetter = { (c: Unicode.Scalar) in ("a"..."z").contains(c) || ("A"..."Z").contains(c) }
+        guard let first = name.unicodeScalars.first, isLetter(first), name.unicodeScalars.count <= 255 else { return false }
+        return name.unicodeScalars.allSatisfy { isLetter($0) || ("0"..."9").contains($0) || $0 == "_" }
+    }
+
+    /// Creates a registered type's table and join tables.
+    private func prepareRegistered<R: Record>(_ type: R.Type) throws {
         try ensureTable(R.table)
         try prepare(R.self)
-        var related: [any Record.Type] = []
         for field in R.schema.fields {
-            if let inverse = field.inverse, let owner = Swift.type(of: inverse).rootType as? any Record.Type {
-                related.append(owner)
-            }
             guard let target = Self.relationTarget(field) else { continue }
-            related.append(target)
             _ = try ensureRelation(owner: R.table, field: field.name, target: target.table, deleteRule: field.deleteRule)
         }
-        return related
     }
 
     /// The related type of a forward relationship property, such as `Note` for `[Note]` or `Person?`.

@@ -89,7 +89,7 @@ public final class RecordContainer: @unchecked Sendable {
         onSignOut = policies.onSignOut
         onAccountSwitch = policies.onAccountSwitch
         onServerReset = policies.onServerReset
-        try store.register(types)
+        try store.register(types, syncSafe: syncProvider != nil)
         guard let syncProvider else { return }
         store.syncEnabled = true
         let sync = SyncCoordinator(provider: syncProvider, store: store, policies: policies) { [weak self] phase in
