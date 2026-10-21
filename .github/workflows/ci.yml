@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and test
+        run: swift test
+      - name: Build for iOS
+        run: |
+          # Xcode names the package scheme differently across versions, so pick it from the list.
+          SCHEMES=$(xcodebuild -list -json | python3 -c 'import json, sys; print("\n".join(json.load(sys.stdin)["workspace"]["schemes"]))')
+          echo "Schemes: $SCHEMES"
+          SCHEME=$(echo "$SCHEMES" | grep -x -m1 -e SwiftRecords -e swift-records-Package -e swift-records || echo "$SCHEMES" | head -1)
+          xcodebuild build -scheme "$SCHEME" -destination 'generic/platform=iOS Simulator' -skipMacroValidation -quiet
+
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install SQLite
+        run: apt-get update && apt-get install -y libsqlite3-dev
+      - name: Build and test
+        run: swift test
