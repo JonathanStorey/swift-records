@@ -60,12 +60,18 @@ struct Place {
 }
 
 @MainActor
-@Suite struct SharedContextTests {
-    @Test func sharedReturnsTheLatestContextForAFile() throws {
-        let mine = try RecordsContext(zone: .inMemory)
-        #expect(try RecordsContext.shared(.inMemory) === mine)
+@Suite struct SharedContainerTests {
+    @Test func sharedReturnsTheLatestContainerForAFile() throws {
+        let mine = try RecordContainer(zone: .inMemory)
+        #expect(try RecordContainer.shared(.inMemory) === mine)
 
-        let newer = try RecordsContext(zone: .inMemory)
-        #expect(try RecordsContext.shared(.inMemory) === newer)
+        let newer = try RecordContainer(zone: .inMemory)
+        #expect(try RecordContainer.shared(.inMemory) === newer)
+    }
+
+    @Test func eachContainerHasOneMainContext() throws {
+        let container = try RecordContainer(zone: .inMemory)
+        #expect(container.mainContext === container.mainContext)
+        #expect(container.mainContext.container === container)
     }
 }

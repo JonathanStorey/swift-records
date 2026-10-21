@@ -1,6 +1,6 @@
 import Foundation
 
-/// A point in a container's change log. Pass it to `RecordContainer.changes(since:)` to learn what
+/// A point in a container's change log. Pass it to `RecordsContext.changes(since:)` to learn what
 /// changed after it.
 public struct ChangeToken: Hashable, Comparable, Codable, Sendable {
     public let rawValue: Int64

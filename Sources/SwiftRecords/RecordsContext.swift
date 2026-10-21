@@ -6,7 +6,8 @@ import UIKit
 import AppKit
 #endif
 
-/// The main-actor front door to a `RecordContainer`, in the role SwiftData gives `ModelContext`.
+/// A container's main-actor context, in the role SwiftData gives `ModelContext`. Get it from
+/// `RecordContainer.mainContext`, which every view and caller shares.
 ///
 /// Inserts, updates and deletes are collected and committed together in one transaction, either when
 /// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
@@ -51,7 +52,7 @@ public final class RecordsContext {
     @ObservationIgnored private var knownCommits: Int
     @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
 
-    public init(container: RecordContainer) {
+    init(container: RecordContainer) {
         self.container = container
         knownCommits = container.commitCount
         lifecycle = LifecycleObserver { [weak self] in
@@ -60,7 +61,6 @@ public final class RecordsContext {
         commitObserver = container.observeCommits { [weak self] in
             Task { @MainActor in self?.containerDidCommit() }
         }
-        Self.register(self)
     }
 
     deinit {
@@ -76,49 +76,6 @@ public final class RecordsContext {
         knownCommits = commits
         lastSaveSource = nil
         changeCount += 1
-    }
-
-    // MARK: Shared contexts
-
-    private struct Registration {
-        weak var context: RecordsContext?
-        /// Set for contexts that `shared(_:)` created, which nothing else keeps alive.
-        var retained: RecordsContext?
-    }
-
-    private static var registry: [String: Registration] = [:]
-
-    private static func key(for url: URL?) -> String {
-        url?.standardizedFileURL.path ?? "in-memory"
-    }
-
-    /// Makes this context the one `shared(_:)` returns for its file, so every view of a zone sees the same
-    /// pending changes and refreshes together. The most recently created context for a file wins.
-    private static func register(_ context: RecordsContext) {
-        registry[key(for: context.container.url)] = Registration(context: context)
-    }
-
-    /// The context for a zone's file in `Zone.defaultDirectory`: the most recently created one that is
-    /// still alive, or a new one that lives for the rest of the process. `@Records` uses it for a zone
-    /// that isn't in the environment.
-    public static func shared(_ zone: Zone = .default) throws -> RecordsContext {
-        let key = key(for: try zone.url(in: Zone.defaultDirectory))
-        if let context = registry[key]?.context {
-            return context
-        }
-        let context = try RecordsContext(zone: zone)
-        registry[key] = Registration(context: context, retained: context)
-        return context
-    }
-
-    /// Opens the zone's container. With no arguments this is the default zone.
-    public convenience init(zone: Zone = .default, directory: URL? = nil) throws {
-        self.init(container: try RecordContainer(zone: zone, directory: directory))
-    }
-
-    /// Opens a container at an exact file location.
-    public convenience init(url: URL) throws {
-        self.init(container: try RecordContainer(url: url))
     }
 
     public var hasChanges: Bool { !pending.isEmpty }
@@ -171,13 +128,17 @@ public final class RecordsContext {
 
     // MARK: Fetching
 
-    /// Saves pending changes, then fetches, so results always include your own edits.
+    /// Saves pending changes, then fetches records in their stored order, so results always include your
+    /// own edits. Simple predicates on a record's own properties run as SQL. Anything else is evaluated
+    /// in memory.
     public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
         try save()
         return try container.fetch(type, where: predicate)
     }
 
-    /// Saves pending changes, then fetches one page. See `RecordContainer.fetch(_:where:sortBy:limit:offset:)`.
+    /// Saves pending changes, then fetches one page: at most `limit` records, starting `offset` records
+    /// into the results. The slice's indices are the records' positions in the full results, so a page
+    /// fetched with an offset of 40 starts at index 40.
     public func fetch<R: Record>(
         _ type: R.Type = R.self,
         where predicate: Predicate<R>? = nil,
@@ -199,9 +160,42 @@ public final class RecordsContext {
         return try container.fetch(type, id: id)
     }
 
+    /// Saves pending changes, then fetches records by ID in the order given, skipping any that no longer
+    /// exist. Use it to load an inverse relationship: `context.fetch(Cookbook.self, ids: recipe.cookbooks)`.
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try save()
         return try container.fetch(type, ids: ids)
+    }
+
+    // MARK: Change tracking
+
+    /// Saves pending changes, then returns the token of the latest change. Store it before you start
+    /// reading changes.
+    public var changeToken: ChangeToken {
+        get throws {
+            try save()
+            return try container.changeToken
+        }
+    }
+
+    /// Saves pending changes, then returns each record's latest change after `token`, oldest first. Store
+    /// the last change's token and pass it next time.
+    public func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
+        try save()
+        return try container.changes(since: token)
+    }
+
+    /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
+    /// because there is only one per record. A sync layer calls this once the server has the deletes.
+    public func pruneChanges(before token: ChangeToken) throws {
+        try container.pruneChanges(before: token)
+    }
+
+    /// Saves pending changes, then returns a record's version, modification time and tag, or `nil` when
+    /// the record doesn't exist.
+    public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
+        try save()
+        return try container.metadata(type, id: id)
     }
 
     // MARK: Arrays

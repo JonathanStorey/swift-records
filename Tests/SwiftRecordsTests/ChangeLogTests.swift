@@ -144,3 +144,27 @@ import Testing
         #expect(try container.changes().isEmpty)
     }
 }
+
+@MainActor
+@Suite struct ContextChangeLogTests {
+    let context = try! RecordContainer(zone: .inMemory).mainContext
+
+    @Test func readingChangesSavesPendingEditsFirst() throws {
+        let start = try context.changeToken
+        let todo = ToDo(title: "Pending")
+        context.save(todo)
+
+        #expect(try context.changes(since: start).map(\.id) == [todo.id])
+        #expect(!context.hasChanges)
+        #expect(try context.metadata(ToDo.self, id: todo.id)?.version == 1)
+
+        context.delete(todo)
+        let deletes = try context.changes(since: start)
+        #expect(deletes.map(\.kind) == [.delete])
+        let later = ToDo(title: "Later")
+        context.save(later)
+        let latest = try #require(try context.changes(since: start).last)
+        try context.pruneChanges(before: latest.token)
+        #expect(try context.changes(since: start).map(\.id) == [later.id])
+    }
+}

@@ -11,23 +11,23 @@ import SwiftUI
 /// }
 /// ```
 ///
-/// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through a
-/// `RecordsContext`. The array's order is saved too, so moves persist. To show records in another
-/// order, sort a copy for display, or fetch with sort descriptors through `RecordContainer`.
+/// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through the
+/// container's `mainContext`. The array's order is saved too, so moves persist. To show records in
+/// another order, sort a copy for display.
 ///
-/// Without a zone, the wrapper uses the environment's context, or the default zone's shared context
-/// when there is none. With a zone, such as `@Records("pantry")`, it uses the environment's context if
-/// that context belongs to the zone, and otherwise the zone's shared context.
+/// Without a zone, the wrapper uses the environment's container, or the default zone's shared container
+/// when there is none. With a zone, such as `@Records("pantry")`, it uses the environment's container if
+/// that container belongs to the zone, and otherwise the zone's shared container.
 @MainActor
 @propertyWrapper
 public struct Records<R: Record>: DynamicProperty {
-    @Environment(\.recordsContext) private var context
+    @Environment(\.recordContainer) private var container
     @State private var cache = Cache()
 
     private let zone: Zone?
     private let predicate: Predicate<R>?
 
-    /// Records from the environment's context, or from the default zone when there is none, in their
+    /// Records from the environment's container, or from the default zone when there is none, in their
     /// stored order.
     public init(filter predicate: Predicate<R>? = nil) {
         zone = nil
@@ -45,13 +45,14 @@ public struct Records<R: Record>: DynamicProperty {
         self.init(Zone(zone), filter: predicate)
     }
 
-    /// The environment's context when it fits the requested zone, otherwise the zone's shared context.
+    /// The main context of the environment's container when it fits the requested zone, otherwise of the
+    /// zone's shared container.
     private var resolvedContext: RecordsContext? {
-        if let context, zone == nil || context.container.zone == zone {
-            return context
+        if let container, zone == nil || container.zone == zone {
+            return container.mainContext
         }
         do {
-            return try RecordsContext.shared(zone ?? .default)
+            return try RecordContainer.shared(zone ?? .default).mainContext
         } catch {
             assertionFailure("@Records could not open zone \(zone ?? .default): \(error)")
             return nil
@@ -111,21 +112,22 @@ public struct Records<R: Record>: DynamicProperty {
     }
 }
 
-private struct RecordsContextKey: EnvironmentKey {
-    static let defaultValue: RecordsContext? = nil
+private struct RecordContainerKey: EnvironmentKey {
+    static let defaultValue: RecordContainer? = nil
 }
 
 extension EnvironmentValues {
-    public var recordsContext: RecordsContext? {
-        get { self[RecordsContextKey.self] }
-        set { self[RecordsContextKey.self] = newValue }
+    /// The container that `@Records` in this view uses, when one was set with `recordContainer(_:)`.
+    public var recordContainer: RecordContainer? {
+        get { self[RecordContainerKey.self] }
+        set { self[RecordContainerKey.self] = newValue }
     }
 }
 
 extension View {
-    /// Makes a context available to `@Records` in this view and its children.
-    public func recordsContext(_ context: RecordsContext) -> some View {
-        environment(\.recordsContext, context)
+    /// Makes a container available to `@Records` in this view and its children.
+    public func recordContainer(_ container: RecordContainer) -> some View {
+        environment(\.recordContainer, container)
     }
 }
 #endif
