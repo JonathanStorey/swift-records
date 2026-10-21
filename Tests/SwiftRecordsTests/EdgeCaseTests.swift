@@ -260,7 +260,7 @@ struct DishV3 {
             try background.delete(Person.self, id: first.id)
             try background.delete(Person.self, where: #Predicate { $0.name == "P3" })
         }
-        #expect(try context.fetch(Person.self).map(\.name) == ["P1", "P2"])
+        #expect(try await context.fetch(Person.self).map(\.name) == ["P1", "P2"])
     }
 
     @Test func deleteAllDataStartsOver() throws {
@@ -295,12 +295,12 @@ struct DishV3 {
         }
         for index in 0..<50 {
             context.save(ToDo(title: "Main \(index)"))
-            try context.save()
+            try await context.save()
             await Task.yield()
         }
         try await importing.value
-        #expect(try context.count(Person.self) == 500)
-        #expect(try context.count(ToDo.self) == 50)
+        #expect(try await context.count(Person.self) == 500)
+        #expect(try await context.count(ToDo.self) == 50)
     }
 }
 

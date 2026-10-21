@@ -83,7 +83,7 @@ import Testing
     @Test func ownSavesRefreshOnce() async throws {
         let before = context.changeCount
         context.save(Person(name: "Mine"))
-        try context.save()
+        try await context.save()
         await settle()
         #expect(context.changeCount == before + 1)
     }
@@ -100,6 +100,6 @@ import Testing
         await settle()
         #expect(count == 2)
         #expect(context.changeCount == before + 1)
-        #expect(try context.fetch(Person.self).map(\.name) == ["Imported", "Also imported"])
+        #expect(try await context.fetch(Person.self).map(\.name) == ["Imported", "Also imported"])
     }
 }

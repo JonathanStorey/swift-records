@@ -92,6 +92,7 @@ public final class RecordContainer: @unchecked Sendable {
     @MainActor
     public func deleteAllData() throws {
         mainContextStorage?.rollback()
+        mainContextStorage?.waitForSaves()
         try store.deleteAllData()
     }
 
@@ -217,6 +218,10 @@ extension RecordContainer {
 
     package func setSyncValue(_ value: Data?, forKey key: String) throws {
         try store.setSyncValue(value, forKey: key)
+    }
+
+    func checkForExternalChanges() {
+        store.checkForExternalChanges()
     }
 
     var commitCount: Int { store.commitCount }
