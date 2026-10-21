@@ -155,6 +155,8 @@ Anything else is evaluated in memory, so every predicate works.
   type nested inside another needs one, since its simple name could clash.
 - A property renamed more than once lists every earlier name: `@Renamed(from: "minutes", "time")`.
 - `@Indexed` adds an index to a property that predicates compare, and changes nothing about encoding.
+- `@Reference`, `@Renamed`, `@Indexed` and `@Timestamp` are read by `@Record`, so they only mean
+  something on a `@Record` struct's properties. Elsewhere the compiler warns that they have no effect.
 - Generic structs can't be records, since each specialization would need its own fixed name.
 - `_position`, `_version`, `_modified`, `_tag` and `rowid` are reserved for bookkeeping, and the macro
   rejects them as property names.

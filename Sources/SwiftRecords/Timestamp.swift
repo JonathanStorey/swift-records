@@ -18,18 +18,25 @@ import Foundation
 /// and every device agrees on them. They use the clock of the device that made the change. `.synced` is
 /// this device's own view: when the server acknowledged the record as it is now, or `nil` while it has
 /// changes the server doesn't. It isn't stored or sent, and a predicate on it runs in memory.
-@propertyWrapper
-public struct Timestamp: Hashable, Sendable, Codable {
-    public enum Kind: String, Sendable {
-        case created
-        case modified
-        case synced
-    }
+///
+/// `@Timestamp` is a marker that `@Record` turns into a `TimestampStorage` wrapper. Outside a `@Record`
+/// struct it does nothing, and the compiler warns.
+@attached(peer)
+public macro Timestamp(_ kind: TimestampKind = .modified) = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
+/// What the container stamps into a `@Timestamp` property.
+public enum TimestampKind: String, Sendable {
+    case created
+    case modified
+    case synced
+}
+
+/// The wrapper `@Record` adds to each `@Timestamp` property. Write `@Timestamp` rather than this.
+@propertyWrapper
+public struct TimestampStorage: Hashable, Sendable, Codable {
     var date: Date?
 
-    /// The kind is read by `@Record`, which tells the container what to stamp.
-    public init(_ kind: Kind = .modified) {}
+    public init() {}
 
     init(date: Date?) {
         self.date = date
@@ -49,7 +56,7 @@ public struct Timestamp: Hashable, Sendable, Codable {
 
 extension KeyedDecodingContainer {
     /// Lets a record decode without its timestamp key, as a plain optional property would.
-    public func decode(_ type: Timestamp.Type, forKey key: Key) throws -> Timestamp {
-        try decodeIfPresent(type, forKey: key) ?? Timestamp(date: nil)
+    public func decode(_ type: TimestampStorage.Type, forKey key: Key) throws -> TimestampStorage {
+        try decodeIfPresent(type, forKey: key) ?? TimestampStorage(date: nil)
     }
 }

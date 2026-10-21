@@ -186,7 +186,7 @@ final class RecordEncoder: Encoder {
         func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
             let name = key.stringValue
             encoder.property = name
-            if value is Timestamp {
+            if value is TimestampStorage {
                 // The container stamps timestamps itself.
             } else if encoder.inverseFields.contains(name) {
                 let ids = (value as? [any Encodable]) ?? []
@@ -291,12 +291,12 @@ struct RecordDecoder<R: Record>: Decoder {
 
         func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
             let name = key.stringValue
-            if T.self == Timestamp.self {
+            if T.self == TimestampStorage.self {
                 if R.schema.field(named: name)?.timestamp == .synced {
-                    return Timestamp(date: try decoder.loader.syncedDate(table: R.table, id: id)) as! T
+                    return TimestampStorage(date: try decoder.loader.syncedDate(table: R.table, id: id)) as! T
                 }
-                guard let value = stored(name), value != .null else { return Timestamp(date: nil) as! T }
-                return Timestamp(date: try ValueCoding.decode(Date.self, from: value)) as! T
+                guard let value = stored(name), value != .null else { return TimestampStorage(date: nil) as! T }
+                return TimestampStorage(date: try ValueCoding.decode(Date.self, from: value)) as! T
             }
             if let inverse = R.schema.field(named: name)?.inverse {
                 let ids = try decoder.loader.loadInverse(targetID: id, inverse: inverse)
