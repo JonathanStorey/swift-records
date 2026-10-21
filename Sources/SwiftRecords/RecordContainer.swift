@@ -24,6 +24,13 @@ public final class RecordContainer: @unchecked Sendable {
     private var fileChanges: [(created: [URL], released: [String])] = []
     /// Records logged by each open transaction, innermost last, so a record's version goes up once per save.
     private var logged: [[RowKey: RecordChange.Kind]] = []
+    /// Above zero while applying changes from a sync server, which are never logged.
+    private var applyingSynced = 0
+    /// True once the open transaction has written something a fetch could see.
+    private var changedData = false
+    /// Goes up with each committed transaction that changed data.
+    private var commits = 0
+    private var commitObservers: [UUID: @Sendable () -> Void] = [:]
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
@@ -78,6 +85,7 @@ public final class RecordContainer: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS "_records_assets" (
                 name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS "_records_assets.owner" ON "_records_assets" (owner_table, owner_id);
+            CREATE TABLE IF NOT EXISTS "_records_sync_state" (key TEXT PRIMARY KEY, value BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS "_records_changes" (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, record_table TEXT NOT NULL, record_id NOT NULL,
                 kind TEXT NOT NULL, version INTEGER NOT NULL, time REAL NOT NULL,
@@ -104,6 +112,11 @@ public final class RecordContainer: @unchecked Sendable {
                 let records = logged.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
+                    if changedData {
+                        changedData = false
+                        commits += 1
+                        commitObservers.values.forEach { $0() }
+                    }
                 } else {
                     fileChanges[fileChanges.count - 1].created += changes.created
                     fileChanges[fileChanges.count - 1].released += changes.released
@@ -112,6 +125,9 @@ public final class RecordContainer: @unchecked Sendable {
                 return result
             } catch {
                 logged.removeLast()
+                if fileChanges.count == 1 {
+                    changedData = false
+                }
                 // Files written by the rolled-back work go with it, and released ones stay.
                 for url in fileChanges.removeLast().created {
                     try? FileManager.default.removeItem(at: url)
@@ -785,6 +801,14 @@ struct RowKey: Hashable {
 extension RecordContainer {
     /// Bumps a record's version and moves its log entry to the end, once per transaction.
     fileprivate func logChange(_ table: String, id: SQLiteValue, kind: RecordChange.Kind = .save) throws {
+        changedData = true
+        if applyingSynced > 0 {
+            // The server already has this change. A record it deleted has nothing left to send.
+            if kind == .delete {
+                try db.run("DELETE FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
+            }
+            return
+        }
         let key = RowKey(table: table, id: id)
         if kind == .save, logged.last(where: { $0[key] != nil })?[key] == .save { return }
         logged[logged.count - 1][key] = kind
@@ -870,5 +894,57 @@ extension RecordContainer {
                 "UPDATE \(quoted(R.table)) SET \"_tag\" = ? WHERE id = ?", [tag.map { .blob($0) } ?? .null, try ValueCoding.encode(id)]
             )
         }
+    }
+}
+
+// MARK: Sync support
+
+extension RecordContainer {
+    /// Runs `body` in one transaction for writes that come from a sync server. They don't change a
+    /// record's version or add to the change log, so they're never sent back, and deleting a record
+    /// this way also drops its log entry. Contexts still refresh their views afterwards.
+    package func applyingSyncedChanges<T>(_ body: () throws -> T) throws -> T {
+        try transaction {
+            applyingSynced += 1
+            defer { applyingSynced -= 1 }
+            return try body()
+        }
+    }
+
+    /// A value the sync layer stores, such as a sync engine's saved state or its change token. Write
+    /// related values inside one `transaction` so they can't get out of step.
+    package func syncValue(forKey key: String) throws -> Data? {
+        try locked {
+            guard case .blob(let data) = try db.run(
+                "SELECT value FROM \"_records_sync_state\" WHERE key = ?", [.text(key)]
+            ).first?["value"] else { return nil }
+            return data
+        }
+    }
+
+    package func setSyncValue(_ value: Data?, forKey key: String) throws {
+        try transaction {
+            if let value {
+                _ = try db.run("INSERT OR REPLACE INTO \"_records_sync_state\" (key, value) VALUES (?, ?)", [.text(key), .blob(value)])
+            } else {
+                _ = try db.run("DELETE FROM \"_records_sync_state\" WHERE key = ?", [.text(key)])
+            }
+        }
+    }
+
+    /// Counts committed transactions that changed data, so a context can tell its own saves from others.
+    var commitCount: Int { locked { commits } }
+
+    /// Calls `handler` after each committed transaction that changed data, on the thread that committed it.
+    func observeCommits(_ handler: @escaping @Sendable () -> Void) -> UUID {
+        locked {
+            let token = UUID()
+            commitObservers[token] = handler
+            return token
+        }
+    }
+
+    func removeCommitObserver(_ token: UUID) {
+        locked { _ = commitObservers.removeValue(forKey: token) }
     }
 }
