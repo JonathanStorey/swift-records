@@ -66,10 +66,10 @@ public enum DeleteRule: String, Sendable {
     case cascade
 }
 
-/// The property list `@Record` generates for a type.
+/// The property list `@Record` generates for a type. Only the macro's generated code builds one.
 public struct RecordSchema<Root: Record>: @unchecked Sendable {
-    public let table: String
-    public let fields: [Field]
+    let table: String
+    let fields: [Field]
 
     public init(table: String, fields: [Field]) {
         self.table = table
@@ -77,24 +77,24 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
     }
 
     public struct Field: @unchecked Sendable {
-        public let name: String
-        public let keyPath: PartialKeyPath<Root>
+        let name: String
+        let keyPath: PartialKeyPath<Root>
         /// The delete rule for a relationship: `.cascade` unless `@Reference(deleteRule:)` says otherwise,
         /// and `nil` to keep related records.
-        public let deleteRule: DeleteRule?
+        let deleteRule: DeleteRule?
         /// For an inverse field, the owner's forward key path, such as `\ToDo.notes`.
-        public let inverse: AnyKeyPath?
+        let inverse: AnyKeyPath?
         /// True for an `@Asset` property, whose file lives beside the database.
-        public let isAsset: Bool
+        let isAsset: Bool
         /// The extension for an asset's new files.
-        public let fileExtension: String
+        let fileExtension: String
         /// The property's declared default, used when a stored row has no value for it, such as a row
         /// saved before the property existed.
-        public private(set) var defaultValue: (@Sendable () -> Any)?
+        private(set) var defaultValue: (@Sendable () -> Any)?
         /// Names the property was stored under before, from `@Renamed(from:)`.
-        public private(set) var previousNames: [String] = []
+        private(set) var previousNames: [String] = []
         /// True for an `@Indexed` property.
-        public private(set) var isIndexed = false
+        private(set) var isIndexed = false
 
         init(name: String, keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule?, inverse: AnyKeyPath?, isAsset: Bool, fileExtension: String) {
             self.name = name

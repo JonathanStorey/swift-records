@@ -6,12 +6,18 @@ import CSQLite
 #endif
 
 /// A value as SQLite stores it.
-public enum SQLiteValue: Hashable, Sendable {
+enum SQLiteValue: Hashable, Sendable {
     case null
     case integer(Int64)
     case real(Double)
     case text(String)
     case blob(Data)
+
+    /// The value as an integer, for ordering positions. Anything else counts as zero.
+    var integerValue: Int64 {
+        if case .integer(let value) = self { return value }
+        return 0
+    }
 }
 
 public struct SQLiteError: Error, CustomStringConvertible {
@@ -39,6 +45,12 @@ final class SQLiteDatabase {
             let error = SQLiteError(code: sqlite3_errcode(handle), message: String(cString: sqlite3_errmsg(handle)))
             sqlite3_close(handle)
             throw error
+        }
+        if url != nil {
+            // WAL lets readers and a writer work at once, such as an app and its widget, and the timeout waits
+            // out another connection's write instead of failing with SQLITE_BUSY.
+            sqlite3_busy_timeout(handle, 5000)
+            try execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL")
         }
     }
 
@@ -78,7 +90,13 @@ final class SQLiteDatabase {
             case .null: result = sqlite3_bind_null(statement, position)
             case .integer(let int): result = sqlite3_bind_int64(statement, position, int)
             case .real(let double): result = sqlite3_bind_double(statement, position, double)
-            case .text(let text): result = sqlite3_bind_text(statement, position, text, -1, SQLITE_TRANSIENT)
+            case .text(let text):
+                // An explicit byte count keeps text after an embedded NUL character. The trailing zero keeps
+                // the pointer non-nil for empty text, which SQLite would otherwise store as NULL.
+                let bytes = Array(text.utf8CString)
+                result = bytes.withUnsafeBufferPointer {
+                    sqlite3_bind_text(statement, position, $0.baseAddress, Int32($0.count - 1), SQLITE_TRANSIENT)
+                }
             case .blob(let data):
                 result = data.withUnsafeBytes {
                     sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT)
@@ -129,7 +147,11 @@ final class SQLiteDatabase {
         case SQLITE_FLOAT:
             return .real(sqlite3_column_double(statement, column))
         case SQLITE_TEXT:
-            return .text(String(cString: sqlite3_column_text(statement, column)))
+            // Read the pointer before the byte count, as SQLite requires.
+            let text = sqlite3_column_text(statement, column)
+            let count = Int(sqlite3_column_bytes(statement, column))
+            guard count > 0, let text else { return .text("") }
+            return .text(String(decoding: UnsafeBufferPointer(start: text, count: count), as: UTF8.self))
         case SQLITE_BLOB:
             let count = Int(sqlite3_column_bytes(statement, column))
             guard count > 0, let bytes = sqlite3_column_blob(statement, column) else { return .blob(Data()) }

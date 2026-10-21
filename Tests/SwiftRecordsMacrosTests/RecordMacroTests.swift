@@ -242,4 +242,110 @@ final class RecordMacroTests: XCTestCase {
             macros: macros
         )
     }
+    func testRejectsReservedPropertyNames() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Draft {
+                var id = UUID()
+                var _version = 1
+                var rowid = 0
+            }
+            """,
+            expandedSource: """
+            struct Draft {
+                var id = UUID()
+                var _version = 1
+                var rowid = 0
+            }
+
+            extension Draft: Record {
+                static var schema: RecordSchema<Draft> {
+                    RecordSchema(table: "Draft", fields: [
+                        .field("id", \\Draft.id)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(message: "'_version' is a name SwiftRecords uses for its own bookkeeping. Choose another name", line: 4, column: 9),
+                DiagnosticSpec(message: "'rowid' is a name SwiftRecords uses for its own bookkeeping. Choose another name", line: 5, column: 9),
+            ],
+            macros: macros
+        )
+    }
+
+    func testRejectsInvalidStoredNames() {
+        for name in ["\"Recipe.steps\"", "\"9lives\"", "\"\"", "someConstant"] {
+            assertMacroExpansion(
+                """
+                @Record(name: \(name))
+                struct Dish {
+                    var id = UUID()
+                }
+                """,
+                expandedSource: """
+                struct Dish {
+                    var id = UUID()
+                }
+                """,
+                diagnostics: [DiagnosticSpec(
+                    message: "@Record(name:) takes a string literal of letters, digits and underscores that doesn't start with a digit",
+                    line: 1, column: 1
+                )],
+                macros: macros
+            )
+        }
+    }
+
+    func testNestedTypesNeedAStoredName() {
+        assertMacroExpansion(
+            """
+            enum Pantry {
+                @Record
+                struct Item {
+                    var id = UUID()
+                }
+            }
+            """,
+            expandedSource: """
+            enum Pantry {
+                struct Item {
+                    var id = UUID()
+                }
+            }
+            """,
+            diagnostics: [DiagnosticSpec(
+                message: "A nested @Record type needs @Record(name:), because it's stored under its simple name 'Item', which another type could also use",
+                line: 2, column: 5
+            )],
+            macros: macros
+        )
+        assertMacroExpansion(
+            """
+            enum Pantry {
+                @Record(name: "PantryItem")
+                struct Item {
+                    var id = UUID()
+                }
+            }
+            """,
+            expandedSource: """
+            enum Pantry {
+                struct Item {
+                    var id = UUID()
+                }
+            }
+
+            extension Pantry.Item: Record {
+                static var schema: RecordSchema<Pantry.Item> {
+                    RecordSchema(table: "PantryItem", fields: [
+                        .field("id", \\Pantry.Item.id)
+                    ])
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
 }

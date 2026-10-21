@@ -1,37 +1,37 @@
 import Foundation
 
-/// A point in a container's change log. Pass it to `RecordsContext.changes(since:)` to learn what
-/// changed after it.
-public struct ChangeToken: Hashable, Comparable, Codable, Sendable {
-    public let rawValue: Int64
+/// A point in a container's change log. Pass it to `changes(since:)` to learn what changed after it.
+/// The change log belongs to the sync layer, so it is visible only inside this package.
+package struct ChangeToken: Hashable, Comparable, Codable, Sendable {
+    package let rawValue: Int64
 
-    public init(rawValue: Int64) {
+    package init(rawValue: Int64) {
         self.rawValue = rawValue
     }
 
     /// Before any change, so `changes(since: .initial)` returns every record's latest change.
-    public static let initial = ChangeToken(rawValue: 0)
+    package static let initial = ChangeToken(rawValue: 0)
 
-    public static func < (lhs: ChangeToken, rhs: ChangeToken) -> Bool { lhs.rawValue < rhs.rawValue }
+    package static func < (lhs: ChangeToken, rhs: ChangeToken) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
 /// The latest change to one record. The log keeps one entry per record, so saving a record again moves
 /// its entry to the end instead of adding another.
-public struct RecordChange: Hashable, Sendable {
-    public enum Kind: String, Sendable {
+package struct RecordChange: Hashable, Sendable {
+    package enum Kind: String, Sendable {
         case save
         case delete
     }
 
     /// The record type's table, such as `"Recipe"`.
-    public let recordType: String
-    public let id: UUID
-    public let kind: Kind
+    package let recordType: String
+    package let id: UUID
+    package let kind: Kind
     /// The record's version after this change. A delete takes the next version too.
-    public let version: Int
-    public let date: Date
+    package let version: Int
+    package let date: Date
     /// Where this change sits in the log. Keep the last one you handled and pass it to `changes(since:)`.
-    public let token: ChangeToken
+    package let token: ChangeToken
 }
 
 /// Bookkeeping kept beside a record that the record itself never sees.

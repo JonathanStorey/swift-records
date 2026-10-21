@@ -13,7 +13,7 @@ enum ValueCoding {
             try value.encode(to: encoder)
             if !encoder.isStructured, let result = encoder.result { return result }
         } catch is NeedsJSON {}
-        return .text(String(decoding: try jsonEncoder.encode(value), as: UTF8.self))
+        return .text(String(decoding: try CanonicalJSON.encode(value), as: UTF8.self))
     }
 
     static func decode<T: Decodable>(_ type: T.Type, from value: SQLiteValue) throws -> T {
@@ -91,12 +91,6 @@ enum ValueCoding {
         return nil
     }
 
-    private static let jsonEncoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        return encoder
-    }()
-
     private static let jsonDecoder = JSONDecoder()
 }
 
@@ -126,18 +120,26 @@ private final class PrimitiveEncoder: Encoder, SingleValueEncodingContainer {
     func encodeNil() throws { result = .null }
     func encode(_ value: Bool) throws { result = .integer(value ? 1 : 0) }
     func encode(_ value: String) throws { result = .text(value) }
-    func encode(_ value: Double) throws { result = .real(value) }
-    func encode(_ value: Float) throws { result = .real(Double(value)) }
+    func encode(_ value: Double) throws {
+        // SQLite would store NaN as NULL, which reads back as nil or the default, so refuse it like `JSONEncoder`.
+        guard !value.isNaN else {
+            throw EncodingError.invalidValue(value, .init(codingPath: codingPath, debugDescription: "NaN can't be stored"))
+        }
+        result = .real(value)
+    }
+    func encode(_ value: Float) throws { try encode(Double(value)) }
     func encode(_ value: Int) throws { result = .integer(Int64(value)) }
     func encode(_ value: Int8) throws { result = .integer(Int64(value)) }
     func encode(_ value: Int16) throws { result = .integer(Int64(value)) }
     func encode(_ value: Int32) throws { result = .integer(Int64(value)) }
     func encode(_ value: Int64) throws { result = .integer(value) }
-    func encode(_ value: UInt) throws { result = .integer(Int64(bitPattern: UInt64(value))) }
+    func encode(_ value: UInt) throws { try encode(UInt64(value)) }
     func encode(_ value: UInt8) throws { result = .integer(Int64(value)) }
     func encode(_ value: UInt16) throws { result = .integer(Int64(value)) }
     func encode(_ value: UInt32) throws { result = .integer(Int64(value)) }
-    func encode(_ value: UInt64) throws { result = .integer(Int64(bitPattern: value)) }
+    /// Values above `Int64.max` are stored as text, which sorts above every integer, so SQL comparisons with
+    /// smaller values stay right.
+    func encode(_ value: UInt64) throws { result = Int64(exactly: value).map { .integer($0) } ?? .text(String(value)) }
 
     func encode<T: Encodable>(_ value: T) throws {
         result = try ValueCoding.encode(value)
@@ -214,16 +216,37 @@ private struct PrimitiveSingleValueContainer: SingleValueDecodingContainer {
         }
     }
     func decode(_ type: Float.Type) throws -> Float { Float(try decode(Double.self)) }
-    func decode(_ type: Int.Type) throws -> Int { Int(try integer()) }
-    func decode(_ type: Int8.Type) throws -> Int8 { Int8(try integer()) }
-    func decode(_ type: Int16.Type) throws -> Int16 { Int16(try integer()) }
-    func decode(_ type: Int32.Type) throws -> Int32 { Int32(try integer()) }
+    func decode(_ type: Int.Type) throws -> Int { try exactly(type) }
+    func decode(_ type: Int8.Type) throws -> Int8 { try exactly(type) }
+    func decode(_ type: Int16.Type) throws -> Int16 { try exactly(type) }
+    func decode(_ type: Int32.Type) throws -> Int32 { try exactly(type) }
     func decode(_ type: Int64.Type) throws -> Int64 { try integer() }
-    func decode(_ type: UInt.Type) throws -> UInt { UInt(UInt64(bitPattern: try integer())) }
-    func decode(_ type: UInt8.Type) throws -> UInt8 { UInt8(try integer()) }
-    func decode(_ type: UInt16.Type) throws -> UInt16 { UInt16(try integer()) }
-    func decode(_ type: UInt32.Type) throws -> UInt32 { UInt32(try integer()) }
-    func decode(_ type: UInt64.Type) throws -> UInt64 { UInt64(bitPattern: try integer()) }
+    func decode(_ type: UInt.Type) throws -> UInt {
+        guard let value = UInt(exactly: try decode(UInt64.self)) else { throw mismatch(type) }
+        return value
+    }
+    func decode(_ type: UInt8.Type) throws -> UInt8 { try exactly(type) }
+    func decode(_ type: UInt16.Type) throws -> UInt16 { try exactly(type) }
+    func decode(_ type: UInt32.Type) throws -> UInt32 { try exactly(type) }
+    func decode(_ type: UInt64.Type) throws -> UInt64 {
+        switch value {
+        case .text(let text):
+            guard let value = UInt64(text) else { throw mismatch(type) }
+            return value
+        case .integer(let int) where int < 0:
+            // Earlier versions stored values above `Int64.max` as their bit pattern.
+            return UInt64(bitPattern: int)
+        default:
+            guard let value = UInt64(exactly: try integer()) else { throw mismatch(type) }
+            return value
+        }
+    }
+
+    /// An integer that fits `type`, or a decoding error instead of a trap when it doesn't.
+    private func exactly<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
+        guard let value = T(exactly: try integer()) else { throw mismatch(type) }
+        return value
+    }
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         try ValueCoding.decode(type, from: value)
@@ -232,7 +255,9 @@ private struct PrimitiveSingleValueContainer: SingleValueDecodingContainer {
     private func integer() throws -> Int64 {
         switch value {
         case .integer(let int): return int
-        case .real(let double): return Int64(double)
+        case .real(let double):
+            guard let int = Int64(exactly: double.rounded(.towardZero)) else { throw mismatch(Int64.self) }
+            return int
         default: throw mismatch(Int64.self)
         }
     }

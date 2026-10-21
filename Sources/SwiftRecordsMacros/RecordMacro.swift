@@ -25,7 +25,27 @@ public struct RecordMacro: ExtensionMacro {
             )
         }
 
-        let typeName = structDecl.name.trimmedDescription
+        // The type as the extension names it, which qualifies a nested type such as `Pantry.Item`.
+        let typeName = type.trimmedDescription
+
+        // `@Record(name:)` fixes the stored name, so renaming the struct keeps its data.
+        var table = "\"\(structDecl.name.trimmedDescription)\""
+        if case .argumentList(let arguments) = node.arguments,
+           let name = arguments.first(where: { $0.label?.text == "name" })?.expression {
+            guard let literal = name.as(StringLiteralExprSyntax.self), literal.segments.count == 1,
+                  let segment = literal.segments.first?.as(StringSegmentSyntax.self),
+                  isIdentifier(segment.content.text) else {
+                throw MacroError.message(
+                    "@Record(name:) takes a string literal of letters, digits and underscores that doesn't start with a digit"
+                )
+            }
+            table = "\"\(segment.content.text)\""
+        } else if context.lexicalContext.contains(where: { !$0.is(SourceFileSyntax.self) }) {
+            // Records are stored under their simple name, so `Pantry.Item` and `Recipes.Item` would share a table.
+            throw MacroError.message(
+                "A nested @Record type needs @Record(name:), because it's stored under its simple name '\(structDecl.name.text)', which another type could also use"
+            )
+        }
         let access = structDecl.modifiers.contains { ["public", "open", "package"].contains($0.name.text) }
             ? "public " : ""
 
@@ -45,6 +65,12 @@ public struct RecordMacro: ExtensionMacro {
                     continue
                 }
                 let keyPath = "\\\(typeName).\(name)"
+                if reservedNames.contains(name) {
+                    context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                        "'\(name)' is a name SwiftRecords uses for its own bookkeeping. Choose another name"
+                    )))
+                    continue
+                }
                 if name == "id", !isUUID(binding) {
                     context.diagnose(Diagnostic(node: binding, message: MacroError.message(
                         "A record's 'id' must be a 'UUID'"
@@ -74,13 +100,6 @@ public struct RecordMacro: ExtensionMacro {
             }
         }
 
-        // `@Record(name:)` fixes the stored name, so renaming the struct keeps its data.
-        var table = "\"\(typeName)\""
-        if case .argumentList(let arguments) = node.arguments,
-           let name = arguments.first(where: { $0.label?.text == "name" })?.expression {
-            table = name.trimmedDescription
-        }
-
         let fieldList = fields.isEmpty ? "[]" : "[\n            " + fields.joined(separator: ",\n            ") + "\n        ]"
         let decl: DeclSyntax = """
             extension \(type.trimmed): Record {
@@ -90,6 +109,15 @@ public struct RecordMacro: ExtensionMacro {
             }
             """
         return [decl.cast(ExtensionDeclSyntax.self)]
+    }
+
+    /// Column names the container uses for a record's position, version, change time and sync tag, and
+    /// SQLite's own row ID.
+    private static let reservedNames: Set<String> = ["_position", "_version", "_modified", "_tag", "rowid", "oid", "_rowid_"]
+
+    private static func isIdentifier(_ name: String) -> Bool {
+        guard let first = name.first, !first.isNumber else { return false }
+        return name.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "_" }
     }
 
     private static func isStored(_ variable: VariableDeclSyntax) -> Bool {

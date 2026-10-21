@@ -19,9 +19,10 @@ import AppKit
 public final class RecordsContext {
     public let container: RecordContainer
 
-    /// Incremented after every save, and after the container commits changes this context didn't make.
-    /// `@Records` observes it to know when to fetch again.
-    public private(set) var changeCount = 0
+    /// Incremented after every save, after a rollback, and after the container commits changes this
+    /// context didn't make. `@Records` compares it with its cache to know when to fetch again, and learns
+    /// of each change through `onChange(for:_:)`.
+    @ObservationIgnored private(set) var changeCount = 0
 
     /// When true (the default), pending changes are saved automatically after `autosaveDelay`.
     public var autosaveEnabled = true
@@ -31,13 +32,20 @@ public final class RecordsContext {
     /// by `save()`, by every fetch, and when the app moves to the background.
     public var autosaveDelay: Duration = .milliseconds(500)
 
-    /// The error from the most recent autosave, if it failed.
+    /// The error from the most recent autosave, if it failed. A failed autosave discards its changes.
     public private(set) var lastSaveError: Error?
 
     private struct Change {
         let sequence: Int
         let source: ObjectIdentifier?
+        /// Stored orders run after every record change, so records inserted in the same save take their places.
+        var isOrder = false
         let run: (RecordContainer) throws -> Void
+    }
+
+    private struct ChangeHandler {
+        weak var owner: AnyObject?
+        let run: @MainActor () -> Void
     }
 
     /// Pending changes keyed by what they change, such as one record, so a newer change replaces an older one.
@@ -51,6 +59,7 @@ public final class RecordsContext {
     /// The container's commit count as of the last change this context has accounted for.
     @ObservationIgnored private var knownCommits: Int
     @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
+    @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
 
     init(container: RecordContainer) {
         self.container = container
@@ -75,7 +84,21 @@ public final class RecordsContext {
         guard commits != knownCommits else { return }
         knownCommits = commits
         lastSaveSource = nil
+        didChange()
+    }
+
+    /// Calls `run` after each change that views may need to show, for as long as `owner` is alive.
+    /// `@Records` uses it to refresh with its animation.
+    func onChange(for owner: AnyObject, _ run: @escaping @MainActor () -> Void) {
+        changeHandlers[ObjectIdentifier(owner)] = ChangeHandler(owner: owner, run: run)
+    }
+
+    private func didChange() {
         changeCount += 1
+        changeHandlers = changeHandlers.filter { $0.value.owner != nil }
+        for handler in changeHandlers.values {
+            handler.run()
+        }
     }
 
     public var hasChanges: Bool { !pending.isEmpty }
@@ -95,20 +118,37 @@ public final class RecordsContext {
         enqueue(key: Self.key(record), source: nil) { try $0.delete(record) }
     }
 
-    /// Commits every pending change in one transaction.
+    public func delete<R: Record>(_ type: R.Type, id: R.ID) {
+        enqueue(key: Self.key(type, id: id), source: nil) { try $0.delete(type, id: id) }
+    }
+
+    /// Deletes every record that matches the predicate when the context saves, applying each one's
+    /// delete rules. Without a predicate it deletes every record of the type.
+    public func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) {
+        enqueue(key: "delete|\(R.table)|\(sequence + 1)", source: nil) { try $0.delete(type, where: predicate) }
+    }
+
+    /// Commits every pending change in one transaction. If the save fails, the changes stay pending so
+    /// you can fix the cause and save again, or discard them with `rollback()`.
     public func save() throws {
         autosaveTask?.cancel()
         autosaveTask = nil
         guard !pending.isEmpty else { return }
-        let changes = pending.values.sorted { $0.sequence < $1.sequence }
+        let saving = pending
+        let changes = pending.values.sorted { ($0.isOrder ? 1 : 0, $0.sequence) < ($1.isOrder ? 1 : 0, $1.sequence) }
         pending = [:]
         let structure = container.structureVersion
         var base = 0
-        try container.transaction {
-            base = container.commitCount
-            for change in changes {
-                try change.run(container)
+        do {
+            try container.transaction {
+                base = container.commitCount
+                for change in changes {
+                    try change.run(container)
+                }
             }
+        } catch {
+            pending = saving.merging(pending) { _, newer in newer }
+            throw error
         }
         // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
         let commits = container.commitCount
@@ -116,14 +156,18 @@ public final class RecordsContext {
         knownCommits = commits
         let sources = Set(changes.map(\.source))
         lastSaveSource = !outside && sources.count == 1 && container.structureVersion == structure ? sources.first! : nil
-        changeCount += 1
+        didChange()
     }
 
-    /// Drops pending changes that have not been saved.
+    /// Drops pending changes that have not been saved. Views refresh, so edits made through a `@Records`
+    /// binding disappear with them.
     public func rollback() {
         autosaveTask?.cancel()
         autosaveTask = nil
+        guard !pending.isEmpty else { return }
         pending = [:]
+        lastSaveSource = nil
+        didChange()
     }
 
     // MARK: Fetching
@@ -171,7 +215,7 @@ public final class RecordsContext {
 
     /// Saves pending changes, then returns the token of the latest change. Store it before you start
     /// reading changes.
-    public var changeToken: ChangeToken {
+    package var changeToken: ChangeToken {
         get throws {
             try save()
             return try container.changeToken
@@ -180,14 +224,14 @@ public final class RecordsContext {
 
     /// Saves pending changes, then returns each record's latest change after `token`, oldest first. Store
     /// the last change's token and pass it next time.
-    public func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
+    package func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
         try save()
         return try container.changes(since: token)
     }
 
     /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
     /// because there is only one per record. A sync layer calls this once the server has the deletes.
-    public func pruneChanges(before token: ChangeToken) throws {
+    package func pruneChanges(before token: ChangeToken) throws {
         try container.pruneChanges(before: token)
     }
 
@@ -200,14 +244,10 @@ public final class RecordsContext {
 
     // MARK: Arrays
 
-    /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the
-    /// rest are updated. With `keepOrder`, the array's order becomes the stored order. This is what
-    /// the `@Records` binding calls when SwiftUI writes to it.
-    public func apply<R: Record>(_ records: [R], replacing previous: [R], keepOrder: Bool) {
-        apply(records, replacing: previous, keepOrder: keepOrder, source: nil)
-    }
-
-    func apply<R: Record>(_ records: [R], replacing previous: [R], keepOrder: Bool, source: ObjectIdentifier?) {
+    /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the rest
+    /// are updated. The array's order becomes the stored order among these records, leaving others in
+    /// place. This is what the `@Records` binding calls when SwiftUI writes to it.
+    func apply<R: Record>(_ records: [R], replacing previous: [R], source: ObjectIdentifier? = nil) {
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
             enqueue(key: Self.key(record), source: source) { try $0.delete(record) }
@@ -215,19 +255,23 @@ public final class RecordsContext {
         for record in records {
             enqueue(key: Self.key(record), source: source) { try $0.save(record) }
         }
-        if keepOrder {
-            let ids = records.map(\.id)
-            enqueue(key: "order|" + R.table, source: source) { try $0.setOrder(ids, for: R.self) }
-        }
+        let ids = records.map(\.id)
+        enqueue(key: "order|\(R.table)|\(source.map { "\($0)" } ?? "")", source: source, isOrder: true) { try $0.setOrder(ids, for: R.self) }
     }
 
     private static func key<R: Record>(_ record: R) -> String {
-        "record|\(R.table)|\(record.id)"
+        key(R.self, id: record.id)
     }
 
-    private func enqueue(key: String, source: ObjectIdentifier?, _ run: @escaping (RecordContainer) throws -> Void) {
+    private static func key<R: Record>(_ type: R.Type, id: R.ID) -> String {
+        "record|\(R.table)|\(id)"
+    }
+
+    private func enqueue(
+        key: String, source: ObjectIdentifier?, isOrder: Bool = false, _ run: @escaping (RecordContainer) throws -> Void
+    ) {
         sequence += 1
-        pending[key] = Change(sequence: sequence, source: source, run: run)
+        pending[key] = Change(sequence: sequence, source: source, isOrder: isOrder, run: run)
         guard autosaveEnabled else { return }
         autosaveTask?.cancel()
         let delay = autosaveDelay
@@ -248,7 +292,10 @@ public final class RecordsContext {
             try save()
             lastSaveError = nil
         } catch {
+            // Nobody can fix and retry an autosave, and a change that always fails would block every later
+            // save, so the failed changes are discarded and views show what is stored.
             lastSaveError = error
+            rollback()
         }
     }
 }

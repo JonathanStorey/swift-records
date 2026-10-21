@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 @Record

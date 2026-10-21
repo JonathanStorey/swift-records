@@ -1,4 +1,5 @@
 #if canImport(SwiftUI)
+import Observation
 import SwiftUI
 
 /// Fetches records for a SwiftUI view and keeps them current.
@@ -26,23 +27,26 @@ public struct Records<R: Record>: DynamicProperty {
 
     private let zone: Zone?
     private let predicate: Predicate<R>?
+    private let animation: Animation?
 
     /// Records from the environment's container, or from the default zone when there is none, in their
-    /// stored order.
-    public init(filter predicate: Predicate<R>? = nil) {
+    /// stored order. With an animation, the view animates as records arrive, change and leave.
+    public init(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) {
         zone = nil
         self.predicate = predicate
+        self.animation = animation
     }
 
     /// Records from a zone, such as `@Records(.pantry)`.
-    public init(_ zone: Zone, filter predicate: Predicate<R>? = nil) {
+    public init(_ zone: Zone, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) {
         self.zone = zone
         self.predicate = predicate
+        self.animation = animation
     }
 
     /// Records from a zone by name, such as `@Records("pantry")`.
-    public init(_ zone: String, filter predicate: Predicate<R>? = nil) {
-        self.init(Zone(zone), filter: predicate)
+    public init(_ zone: String, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) {
+        self.init(Zone(zone), filter: predicate, animation: animation)
     }
 
     /// The main context of the environment's container when it fits the requested zone, otherwise of the
@@ -60,7 +64,8 @@ public struct Records<R: Record>: DynamicProperty {
     }
 
     public var wrappedValue: [R] {
-        Self.records(context: resolvedContext, cache: cache, predicate: predicate)
+        cache.animation = animation
+        return Self.records(context: resolvedContext, cache: cache, predicate: predicate)
     }
 
     public var projectedValue: Binding<[R]> {
@@ -80,7 +85,7 @@ public struct Records<R: Record>: DynamicProperty {
                     let previous = Self.records(context: context, cache: cache, predicate: predicate)
                     // Show the edit immediately; the context saves it once edits pause.
                     cache.records = newValue
-                    context.apply(newValue, replacing: previous, keepOrder: true, source: ObjectIdentifier(cache))
+                    context.apply(newValue, replacing: previous, source: ObjectIdentifier(cache))
                 }
             }
         )
@@ -88,7 +93,16 @@ public struct Records<R: Record>: DynamicProperty {
 
     private static func records(context: RecordsContext?, cache: Cache, predicate: Predicate<R>?) -> [R] {
         guard let context else { return [] }
-        // Reading changeCount registers the dependency, so the view updates after each save.
+        // Reading the cache's version registers the dependency. The context bumps it after each change,
+        // inside the view's animation.
+        _ = cache.version
+        if cache.context !== context {
+            cache.context = context
+            context.onChange(for: cache) { [weak cache] in
+                guard let cache else { return }
+                withAnimation(cache.animation) { cache.version += 1 }
+            }
+        }
         let changeCount = context.changeCount
         if let records = cache.records, changeCount == cache.changeCount + 1,
            context.lastSaveSource == ObjectIdentifier(cache) {
@@ -106,9 +120,13 @@ public struct Records<R: Record>: DynamicProperty {
     }
 
     @MainActor
+    @Observable
     private final class Cache {
-        var records: [R]?
-        var changeCount = -1
+        var version = 0
+        @ObservationIgnored var records: [R]?
+        @ObservationIgnored var changeCount = -1
+        @ObservationIgnored weak var context: RecordsContext?
+        @ObservationIgnored var animation: Animation?
     }
 }
 
