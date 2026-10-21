@@ -31,6 +31,8 @@ struct EncodedRecord {
     var relations: [Relation] = []
     /// The order of IDs in each inverse property, keyed by field name.
     var inverseOrders: [String: [SQLiteValue]] = [:]
+    /// Assets to store as files, keyed by field name. A nil asset is absent.
+    var assets: [String: Asset] = [:]
 }
 
 // MARK: - Encoding
@@ -78,6 +80,8 @@ final class RecordEncoder: Encoder {
             if encoder.inverseFields.contains(name) {
                 let ids = (value as? [any Encodable]) ?? []
                 encoder.output.inverseOrders[name] = try ids.map { try ValueCoding.encode($0) }
+            } else if let asset = value as? Asset {
+                encoder.output.assets[name] = asset
             } else if let record = value as? any Record {
                 encoder.output.relations.append(.init(name: name, targetType: type(of: record), targets: [record]))
             } else if let collection = value as? any RecordCollection {
@@ -110,6 +114,7 @@ protocol RelationLoader {
     func loadInverse(targetID: SQLiteValue, inverse: AnyKeyPath) throws -> [SQLiteValue]
     func hasRelation(owner table: String, field: String) -> Bool
     func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int
+    func assetURL(named name: String) -> URL
 }
 
 /// Decodes a record from its row, loading related records through a `RelationLoader`.
@@ -175,6 +180,9 @@ struct RecordDecoder<R: Record>: Decoder {
             }
             guard let value = decoder.row[name] else {
                 throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "No column \(name)"))
+            }
+            if T.self == Asset.self, case .text(let fileName) = value {
+                return Asset(name: fileName, fileURL: decoder.loader.assetURL(named: fileName)) as! T
             }
             return try ValueCoding.decode(T.self, from: value)
         }

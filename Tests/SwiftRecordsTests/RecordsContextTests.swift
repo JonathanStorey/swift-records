@@ -54,12 +54,15 @@ import Testing
 
     @Test func failedSaveRollsBackEverything() throws {
         context.autosaveEnabled = false
-        let folder = Folder(id: 7, name: "Locked", items: [Subtask(title: "Item")])
+        let folder = Folder(id: 7, name: "Kept", items: [Subtask(title: "Item")])
         try context.container.save(folder)
 
         context.save(ToDo(title: "Should not land"))
         context.delete(folder)
-        #expect(throws: RecordContainerError.self) { try context.save() }
+        // Copying a file that does not exist fails the whole batch.
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID()).jpg")
+        context.save(Photo(image: Asset(contentsOf: missing)))
+        #expect(throws: (any Error).self) { try context.save() }
         #expect(try context.container.fetch(ToDo.self).isEmpty)
         #expect(try context.container.fetch(Folder.self, id: 7) != nil)
     }

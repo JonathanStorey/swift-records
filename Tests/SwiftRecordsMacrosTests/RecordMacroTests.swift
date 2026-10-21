@@ -86,4 +86,65 @@ final class RecordMacroTests: XCTestCase {
             macros: macros
         )
     }
+
+    func testGeneratesAssetField() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Photo {
+                var id = UUID()
+                var image: Asset?
+            }
+            """,
+            expandedSource: """
+            struct Photo {
+                var id = UUID()
+                var image: Asset?
+            }
+
+            extension Photo: Record {
+                static var schema: RecordSchema<Photo> {
+                    RecordSchema(table: "Photo", fields: [
+                        .field("id", \\Photo.id),
+                        .asset("image", \\Photo.image)
+                    ])
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func testRejectsNonOptionalAssets() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Photo {
+                var id = UUID()
+                var image: Asset
+                var gallery: [Asset] = []
+            }
+            """,
+            expandedSource: """
+            struct Photo {
+                var id = UUID()
+                var image: Asset
+                var gallery: [Asset] = []
+            }
+
+            extension Photo: Record {
+                static var schema: RecordSchema<Photo> {
+                    RecordSchema(table: "Photo", fields: [
+                        .field("id", \\Photo.id)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(message: "An Asset property must be optional: declare it as 'Asset?'", line: 4, column: 9),
+                DiagnosticSpec(message: "An Asset property must be optional: declare it as 'Asset?'", line: 5, column: 9),
+            ],
+            macros: macros
+        )
+    }
 }

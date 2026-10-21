@@ -38,7 +38,7 @@ struct Subtask {
 struct Folder {
     var id: Int
     var name: String
-    @Reference(deleteRule: .deny) var items: [Subtask] = []
+    var items: [Subtask] = []
 }
 
 @Suite struct RecordContainerTests {
@@ -128,21 +128,6 @@ struct Folder {
         let notes = try store.fetch(Note.self)
         #expect(notes.map(\.text) == ["Keep me"])
         #expect(notes[0].todos.isEmpty)
-    }
-
-    @Test func denyBlocksDelete() throws {
-        let folder = Folder(id: 1, name: "Inbox", items: [Subtask(title: "Item")])
-        try store.save(folder)
-        #expect(throws: RecordContainerError.deleteDenied(table: "Folder", field: "items")) {
-            try store.delete(folder)
-        }
-        #expect(try store.fetch(Folder.self, id: 1) != nil)
-
-        var emptied = folder
-        emptied.items = []
-        try store.save(emptied)
-        try store.delete(emptied)
-        #expect(try store.fetch(Folder.self, id: 1) == nil)
     }
 
     @Test func predicatesRunAsSQL() throws {

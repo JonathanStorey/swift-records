@@ -32,6 +32,18 @@ public struct RecordMacro: ExtensionMacro {
                     continue
                 }
                 let keyPath = "\\\(typeName).\(name)"
+                switch assetKind(binding) {
+                case .optional:
+                    fields.append(".asset(\"\(name)\", \(keyPath))")
+                    continue
+                case .invalid:
+                    context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                        "An Asset property must be optional: declare it as 'Asset?'"
+                    )))
+                    continue
+                case nil:
+                    break
+                }
                 if let inverse = reference?.from {
                     fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))")
                 } else if let rule = reference?.deleteRule {
@@ -72,6 +84,30 @@ public struct RecordMacro: ExtensionMacro {
         return true
     }
 
+    private enum AssetKind { case optional, invalid }
+
+    /// Recognizes `Asset?`. Any other use of `Asset` as a property type, such as `Asset` or `[Asset]`, is invalid.
+    private static func assetKind(_ binding: PatternBindingSyntax) -> AssetKind? {
+        guard let type = binding.typeAnnotation?.type else {
+            // `var photo = Asset(...)` infers a non-optional Asset.
+            let call = binding.initializer?.value.as(FunctionCallExprSyntax.self)?.calledExpression.trimmedDescription
+            return call.map(isAssetName) == true ? .invalid : nil
+        }
+        if let optional = type.as(OptionalTypeSyntax.self), isAssetName(optional.wrappedType.trimmedDescription) {
+            return .optional
+        }
+        let text = type.trimmedDescription.filter { !$0.isWhitespace }
+        if text == "Optional<Asset>" || text == "Optional<SwiftRecords.Asset>" {
+            return .optional
+        }
+        let words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "." }).map(String.init)
+        return words.contains(where: isAssetName) ? .invalid : nil
+    }
+
+    private static func isAssetName(_ name: String) -> Bool {
+        name == "Asset" || name == "SwiftRecords.Asset"
+    }
+
     private static func referenceArguments(_ attributes: AttributeListSyntax) -> (deleteRule: String?, from: String?)? {
         for element in attributes {
             guard let attribute = element.as(AttributeSyntax.self),
@@ -104,7 +140,7 @@ public struct ReferenceMacro: PeerMacro {
     }
 }
 
-enum MacroError: Error, CustomStringConvertible {
+enum MacroError: Error, CustomStringConvertible, DiagnosticMessage {
     case message(String)
 
     var description: String {
@@ -112,6 +148,10 @@ enum MacroError: Error, CustomStringConvertible {
         case .message(let text): text
         }
     }
+
+    var message: String { description }
+    var diagnosticID: MessageID { MessageID(domain: "SwiftRecordsMacros", id: "error") }
+    var severity: DiagnosticSeverity { .error }
 }
 
 @main
