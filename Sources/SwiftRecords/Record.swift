@@ -7,7 +7,7 @@ import Foundation
 /// struct ToDo {
 ///     var id = UUID()
 ///     var title: String
-///     @Reference(deleteRule: .nullify) var notes: [Note] = []
+///     @Reference(deleteRule: .none) var notes: [Note] = []
 /// }
 /// ```
 public protocol Record: Identifiable, Codable, Sendable where ID: Codable & Sendable {
@@ -37,8 +37,8 @@ public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Targe
 public enum DeleteRule: String, Sendable {
     /// Delete related records that no other record still references. The default.
     case cascade
-    /// Unlink related records and keep them.
-    case nullify
+    /// Unlink related records and keep them. Databases written with the earlier name `nullify` read as this.
+    case none
 }
 
 /// The property list `@Record` generates for a type.
@@ -54,24 +54,25 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
     public struct Field: @unchecked Sendable {
         public let name: String
         public let keyPath: PartialKeyPath<Root>
-        public let deleteRule: DeleteRule?
+        /// The delete rule for a relationship. `.cascade` unless `@Reference(deleteRule:)` says otherwise.
+        public let deleteRule: DeleteRule
         /// For an inverse field, the owner's forward key path, such as `\ToDo.notes`.
         public let inverse: AnyKeyPath?
         /// True for an `Asset?` property, whose file lives beside the database.
         public let isAsset: Bool
 
-        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = nil) -> Field {
+        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule = .cascade) -> Field {
             Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false)
         }
 
         public static func asset(_ name: String, _ keyPath: KeyPath<Root, Asset?>) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: nil, inverse: nil, isAsset: true)
+            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: true)
         }
 
         public static func inverse<Owner: Record, Target>(
             _ name: String, _ keyPath: PartialKeyPath<Root>, of inverse: KeyPath<Owner, Target>
         ) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: nil, inverse: inverse, isAsset: false)
+            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: inverse, isAsset: false)
         }
     }
 

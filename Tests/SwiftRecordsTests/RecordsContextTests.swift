@@ -78,7 +78,9 @@ import Testing
             todo.title = title
             context.save(todo)
         }
+        #expect(context.pendingChangeCount == 2)
         try context.save()
+        #expect(context.pendingChangeCount == 0)
         #expect(try context.container.fetch(ToDo.self).map(\.title).sorted() == ["Other", "Typed"])
 
         context.save(other)

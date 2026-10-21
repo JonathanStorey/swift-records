@@ -13,7 +13,7 @@ final class RecordMacroTests: XCTestCase {
             public struct ToDo {
                 var id = UUID()
                 var title: String
-                @Reference(deleteRule: .nullify) var notes: [Note] = []
+                @Reference(deleteRule: .none) var notes: [Note] = []
                 var isEmpty: Bool { title.isEmpty }
                 static var sample = 1
             }
@@ -32,7 +32,7 @@ final class RecordMacroTests: XCTestCase {
                     RecordSchema(table: "ToDo", fields: [
                         .field("id", \\ToDo.id),
                         .field("title", \\ToDo.title),
-                        .field("notes", \\ToDo.notes, deleteRule: .nullify)
+                        .field("notes", \\ToDo.notes, deleteRule: .none)
                     ])
                 }
             }

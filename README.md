@@ -12,7 +12,7 @@ struct ToDo {
     var title: String
     var done = false
     var owner: Person?                                   // to-one relationship
-    @Reference(deleteRule: .nullify) var notes: [Note] = []  // to-many, order kept
+    @Reference(deleteRule: .none) var notes: [Note] = []  // to-many, order kept
     var tags: [String] = []                              // plain Codable, stored as JSON
 }
 
@@ -74,7 +74,7 @@ Anything else is evaluated in memory, so every predicate works.
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
   It is stored in a join table named `Owner.property` that keeps the order of both sides.
-- Delete rules: `.cascade` (the default, like a nested struct) and `.nullify`. Cascade only
+- Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
 - An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would

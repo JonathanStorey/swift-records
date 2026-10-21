@@ -65,6 +65,10 @@ public final class RecordsContext {
 
     public var hasChanges: Bool { !pending.isEmpty }
 
+    /// The number of unsaved changes. Repeated edits to one record count once, and storing an array's
+    /// order counts as one change.
+    public var pendingChangeCount: Int { pending.count }
+
     // MARK: Changes
 
     /// Inserts the record, or updates it if one with the same ID exists.

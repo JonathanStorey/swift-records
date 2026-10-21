@@ -484,8 +484,8 @@ public final class RecordContainer: @unchecked Sendable {
         let loaded = rows.compactMap { row -> RelationInfo? in
             guard case .text(let owner) = row["owner_table"], case .text(let field) = row["field"],
                   case .text(let target) = row["target_table"], case .text(let rule) = row["delete_rule"] else { return nil }
-            // A rule this version does not know, such as the removed `deny`, keeps records rather than deleting them.
-            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? .nullify)
+            // A rule this version does not know, such as the earlier `nullify` or `deny`, keeps records rather than deleting them.
+            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule) ?? DeleteRule.none)
         }
         relationInfo = loaded
         return loaded
