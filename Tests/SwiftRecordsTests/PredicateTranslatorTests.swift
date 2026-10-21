@@ -5,18 +5,18 @@ import Testing
 @Suite struct PredicateTranslatorTests {
     @Test func translatesComparisonsAndLogic() throws {
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { !$0.done && $0.priority >= 3 })
-        #expect(clause.sql == #"((NOT "done") AND ("priority" >= ?))"#)
+        #expect(clause.sql == #"((NOT "ToDo"."done") AND ("ToDo"."priority" >= ?))"#)
         #expect(clause.bindings == [.integer(3)])
     }
 
     @Test func translatesNilChecks() throws {
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { $0.due != nil })
-        #expect(clause.sql == #"("due" IS NOT NULL)"#)
+        #expect(clause.sql == #"("ToDo"."due" IS NOT NULL)"#)
     }
 
     @Test func translatesContainsToIn() throws {
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { [1, 5].contains($0.priority) })
-        #expect(clause.sql == #"("priority" IN (?, ?))"#)
+        #expect(clause.sql == #"("ToDo"."priority" IN (?, ?))"#)
         #expect(clause.bindings == [.integer(1), .integer(5)])
     }
 
@@ -38,6 +38,28 @@ import Testing
     @Test @available(macOS 15, iOS 18, *)
     func translatesStringContains() throws {
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { $0.title.contains("lp") })
-        #expect(clause.sql == #"(instr("title", ?) > 0)"#)
+        #expect(clause.sql == #"(instr("ToDo"."title", ?) > 0)"#)
+    }
+
+    @Test func translatesRelationshipContainsToExists() throws {
+        let clause = try PredicateTranslator.translate(#Predicate<ToDo> { todo in
+            todo.notes.contains { $0.text == "hello world" }
+        })
+        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "ToDo.notes" AS "j1" JOIN "Note" AS "t1" ON "t1"."id" = "j1".target WHERE "j1".owner = "ToDo"."id" AND ("t1"."text" IS ?))"#)
+        #expect(clause.bindings == [.text("hello world")])
+        #expect(clause.relations == ["ToDo.notes"])
+    }
+
+    @Test func nestedClosuresCanReadTheOuterRecord() throws {
+        let clause = try PredicateTranslator.translate(#Predicate<ToDo> { todo in
+            todo.notes.contains { $0.text == todo.title }
+        })
+        #expect(clause.sql.hasSuffix(#"("t1"."text" IS "ToDo"."title"))"#))
+    }
+
+    @Test func rejectsContainsOnNonRelationships() {
+        #expect(throws: PredicateTranslator.Unsupported.self) {
+            try PredicateTranslator.translate(#Predicate<ToDo> { $0.tags.contains { $0 == "home" } })
+        }
     }
 }

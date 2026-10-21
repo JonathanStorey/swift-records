@@ -60,7 +60,15 @@ in several zones. To open a file somewhere else, use `RecordStore(url:)`.
 
 Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`,
 `||`, `!`, `nil` checks, `[values].contains(\.property)`, `String.contains` (iOS 18 / macOS 15) and
-`localizedStandardContains`. Anything else is evaluated in memory, so every predicate works.
+`localizedStandardContains`. Searching inside a to-many relationship also runs as SQL:
+
+```swift
+let greeted = try store.fetch(ToDo.self, where: #Predicate { todo in
+    todo.notes.contains { $0.text == "hello world" }
+})
+```
+
+Anything else is evaluated in memory, so every predicate works.
 
 ## Relationships
 

@@ -4,40 +4,73 @@ import Foundation
 ///
 /// Supported: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, comparisons with `nil`,
 /// `String.contains` (iOS 18 and macOS 15), `localizedStandardContains`, and `[values].contains(\.property)` on a record's own
-/// stored properties. `RecordStore` evaluates anything else in memory.
+/// stored properties, plus `$0.relationship.contains { ... }` over a to-many relationship, which becomes an
+/// `EXISTS` subquery. `RecordStore` evaluates anything else in memory.
 enum PredicateTranslator {
     struct Clause {
         var sql: String
         var bindings: [SQLiteValue]
-        var columns: [String]
+        /// Columns the clause reads, by table, so the store can add any that do not exist yet.
+        var columns: [(table: String, column: String)]
+        /// Join tables the clause reads. If one does not exist, the store filters in memory instead.
+        var relations: [String]
     }
 
     struct Unsupported: Error {}
 
     static func translate<R: Record>(_ predicate: Predicate<R>) throws -> Clause {
-        var builder = SQLBuilder(columnName: { keyPath in
-            guard let field = R.schema.field(for: keyPath), field.inverse == nil else { return nil }
-            return field.name
-        })
+        var builder = SQLBuilder()
+        builder.scopes[predicate.variable.key] = SQLBuilder.Scope(R.self, alias: R.table)
         let sql = try builder.expression(predicate.expression)
-        return Clause(sql: sql, bindings: builder.bindings, columns: builder.columns)
+        return Clause(sql: sql, bindings: builder.bindings, columns: builder.columns, relations: builder.relations)
     }
 }
 
 struct SQLBuilder {
-    let columnName: (AnyKeyPath) -> String?
+    /// The table a predicate variable ranges over: the outer record, or a related record inside `contains { }`.
+    struct Scope {
+        let alias: String
+        let table: String
+        let fieldName: (AnyKeyPath) -> String?
+
+        init<R: Record>(_ type: R.Type, alias: String) {
+            self.alias = alias
+            table = R.table
+            fieldName = { keyPath in
+                guard let field = R.schema.field(for: keyPath), field.inverse == nil else { return nil }
+                return field.name
+            }
+        }
+    }
+
+    var scopes: [PredicateExpressions.VariableID: Scope] = [:]
     var bindings: [SQLiteValue] = []
-    var columns: [String] = []
+    var columns: [(table: String, column: String)] = []
+    var relations: [String] = []
+    private var aliasCount = 0
 
     mutating func expression(_ expression: Any) throws -> String {
         guard let sqlExpression = expression as? SQLExpressible else { throw PredicateTranslator.Unsupported() }
         return try sqlExpression.sql(&self)
     }
 
-    mutating func column(for keyPath: AnyKeyPath) throws -> String {
-        guard let name = columnName(keyPath) else { throw PredicateTranslator.Unsupported() }
-        columns.append(name)
-        return quoted(name)
+    /// Resolves `$0.property` to a qualified column, or to the scope and field name for a relationship.
+    func field(_ keyPath: any KeyPathExpression) throws -> (scope: Scope, name: String) {
+        guard let scope = scopes[try keyPath.variableKey], let name = scope.fieldName(keyPath.anyKeyPath) else {
+            throw PredicateTranslator.Unsupported()
+        }
+        return (scope, name)
+    }
+
+    mutating func column(_ keyPath: any KeyPathExpression) throws -> String {
+        let (scope, name) = try field(keyPath)
+        columns.append((scope.table, name))
+        return "\(quoted(scope.alias)).\(quoted(name))"
+    }
+
+    mutating func nextAlias() -> Int {
+        aliasCount += 1
+        return aliasCount
     }
 
     mutating func bind(_ value: Any) throws -> String {
@@ -51,14 +84,50 @@ protocol SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String
 }
 
-/// Marks the predicate's input variable so key paths can check they start from it.
-protocol PredicateVariable {}
-extension PredicateExpressions.Variable: PredicateVariable {}
+/// A key path applied directly to a predicate variable, such as `$0.title`.
+protocol KeyPathExpression {
+    var variableKey: PredicateExpressions.VariableID { get throws }
+    var anyKeyPath: AnyKeyPath { get }
+}
+
+extension PredicateExpressions.KeyPath: KeyPathExpression {
+    var variableKey: PredicateExpressions.VariableID {
+        get throws {
+            guard let variable = root as? PredicateExpressions.Variable<Root.Output> else {
+                throw PredicateTranslator.Unsupported()
+            }
+            return variable.key
+        }
+    }
+
+    var anyKeyPath: AnyKeyPath { keyPath }
+}
 
 extension PredicateExpressions.KeyPath: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
-        guard root is PredicateVariable else { throw PredicateTranslator.Unsupported() }
-        return try builder.column(for: keyPath)
+        try builder.column(self)
+    }
+}
+
+// `$0.notes.contains { $0.text == "x" }` becomes an EXISTS subquery over the `ToDo.notes` join table.
+extension PredicateExpressions.SequenceContainsWhere: SQLExpressible {
+    func sql(_ builder: inout SQLBuilder) throws -> String {
+        guard let path = sequence as? any KeyPathExpression,
+              let targetType = LHS.Output.Element.self as? any Record.Type else {
+            throw PredicateTranslator.Unsupported()
+        }
+        let (outer, field) = try builder.field(path)
+        let relation = outer.table + "." + field
+        let n = builder.nextAlias()
+        let join = quoted("j\(n)")
+        let target = SQLBuilder.Scope(targetType, alias: "t\(n)")
+        builder.relations.append(relation)
+        builder.columns.append((target.table, "id"))
+        builder.scopes[variable.key] = target
+        let test = try builder.expression(test)
+        return "EXISTS (SELECT 1 FROM \(quoted(relation)) AS \(join) "
+            + "JOIN \(quoted(target.table)) AS \(quoted(target.alias)) ON \(quoted(target.alias)).\"id\" = \(join).target "
+            + "WHERE \(join).owner = \(quoted(outer.alias)).\"id\" AND \(test))"
     }
 }
 
