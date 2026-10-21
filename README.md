@@ -129,8 +129,12 @@ struct ContentView: View {
 ```
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through `RecordsContext`,
-which batches them into one transaction on the next turn of the main actor. Without sort
-descriptors, the array's order is stored, so moves persist.
+which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
+default). Without sort descriptors, the array's order is stored, so moves persist.
+
+Typing into a bound field stays cheap: the context keeps only the latest pending change to each
+record, the container writes only rows, links and positions that actually changed, and a `@Records`
+view whose own edit was saved keeps its cached array instead of fetching again.
 
 ## Requirements
 

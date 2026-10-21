@@ -22,6 +22,11 @@ public final class RecordContainer: @unchecked Sendable {
     private var decoding: Set<String> = []
     /// Asset files written and released by each open transaction, innermost last.
     private var fileChanges: [(created: [URL], released: [String])] = []
+    /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
+    /// of the edited records could not already show.
+    private var structuralChanges = 0
+
+    var structureVersion: Int { locked { structuralChanges } }
 
     struct RelationInfo: Equatable {
         let ownerTable: String
@@ -195,6 +200,7 @@ public final class RecordContainer: @unchecked Sendable {
         // An asset already held by another record gets its own copy, so deleting one leaves the other.
         let name = owner == nil ? asset.name : Asset.makeName(fileExtension: asset.fileExtension)
         let destination = assetURL(named: name)
+        structuralChanges += 1
         try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
         let manager = FileManager.default
         switch asset.source {
@@ -247,6 +253,11 @@ public final class RecordContainer: @unchecked Sendable {
             row[column] = .null
         }
         let names = row.keys.sorted()
+        // Skip the write when nothing changed, which is the common case when an edited array is saved.
+        if let existing = try db.run("SELECT * FROM \(quoted(table)) WHERE id = ?", [id]).first,
+           names.allSatisfy({ existing[$0, default: .null] == row[$0] }) {
+            return
+        }
         let insertColumns = (["id"] + names + ["_position"]).map(quoted).joined(separator: ", ")
         let placeholders = (["?"] + names.map { _ in "?" }).joined(separator: ", ")
         let nextPosition = "(SELECT COALESCE(MAX(\"_position\"), 0) + 1 FROM \(quoted(table)))"
@@ -263,9 +274,13 @@ public final class RecordContainer: @unchecked Sendable {
     private func link(_ info: RelationInfo, ownerID: SQLiteValue, targets: [SQLiteValue]) throws {
         let table = quoted(info.table)
         var inversePositions: [SQLiteValue: SQLiteValue] = [:]
-        for row in try db.run("SELECT target, inverse_position FROM \(table) WHERE owner = ?", [ownerID]) {
+        var current: [SQLiteValue] = []
+        for row in try db.run("SELECT target, inverse_position FROM \(table) WHERE owner = ? ORDER BY position", [ownerID]) {
             inversePositions[row["target"]!] = row["inverse_position"]!
+            current.append(row["target"]!)
         }
+        guard current != targets else { return }
+        structuralChanges += 1
         try db.run("DELETE FROM \(table) WHERE owner = ?", [ownerID])
 
         for (position, target) in targets.enumerated() {
@@ -291,8 +306,8 @@ public final class RecordContainer: @unchecked Sendable {
               let info = try inverseRelation(keyPath), tableExists(info.table) else { return }
         for (position, ownerID) in ownerIDs.enumerated() {
             try db.run(
-                "UPDATE \(quoted(info.table)) SET inverse_position = ? WHERE owner = ? AND target = ?",
-                [.integer(Int64(position)), ownerID, targetID]
+                "UPDATE \(quoted(info.table)) SET inverse_position = ? WHERE owner = ? AND target = ? AND inverse_position IS NOT ?",
+                [.integer(Int64(position)), ownerID, targetID, .integer(Int64(position))]
             )
         }
     }
@@ -301,11 +316,15 @@ public final class RecordContainer: @unchecked Sendable {
     public func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
         try transaction {
             guard tableExists(R.table) else { return }
+            var current: [SQLiteValue: SQLiteValue] = [:]
+            for row in try db.run("SELECT id, \"_position\" FROM \(quoted(R.table))") {
+                current[row["id"]!] = row["_position"] ?? .null
+            }
             for (position, id) in ids.enumerated() {
-                try db.run(
-                    "UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?",
-                    [.integer(Int64(position)), try ValueCoding.encode(id)]
-                )
+                let id = try ValueCoding.encode(id)
+                let position = SQLiteValue.integer(Int64(position))
+                guard let stored = current[id], stored != position else { continue }
+                try db.run("UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?", [position, id])
             }
         }
     }
@@ -325,6 +344,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// Deletes by table name, so cascades work for types this process has never loaded.
     private func deleteRow(_ table: String, id: SQLiteValue) throws {
         guard tableExists(table) else { return }
+        structuralChanges += 1
         let owned = relations().filter { $0.ownerTable == table }
 
         for info in owned {
