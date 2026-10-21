@@ -36,7 +36,7 @@ struct Subtask {
 
 @Record
 struct Folder {
-    var id: Int
+    var id = UUID()
     var name: String
     @Reference var items: [Subtask] = []  // a bare @Reference is the default, .cascade
 }
@@ -174,7 +174,7 @@ struct Folder {
     }
 
     @Test func relationshipSearchBeforeAnyLinksExist() throws {
-        try store.save(Folder(id: 1, name: "Inbox"))
+        try store.save(Folder(name: "Inbox"))
         let matches = try store.fetch(Folder.self, where: #Predicate { folder in
             folder.items.contains { $0.title == "x" }
         })

@@ -4,6 +4,7 @@ import Foundation
 ///
 /// Values that encode as one primitive (numbers, strings, `UUID`, `Date`, `URL`, `Data`, raw-value
 /// enums) get a native column value so they can be queried. Anything structured is stored as JSON text.
+/// A `UUID` is stored as its 16 bytes, which keeps keys and join tables compact.
 enum ValueCoding {
     static func encode(_ value: some Encodable) throws -> SQLiteValue {
         if let special = specialValue(value) { return special }
@@ -47,7 +48,7 @@ enum ValueCoding {
 
     private static func specialValue(_ value: Any) -> SQLiteValue? {
         switch value {
-        case let uuid as UUID: .text(uuid.uuidString)
+        case let uuid as UUID: .blob(withUnsafeBytes(of: uuid.uuid) { Data($0) })
         case let date as Date: .real(date.timeIntervalSince1970)
         case let url as URL: .text(url.absoluteString)
         case let data as Data: .blob(data)
@@ -60,8 +61,17 @@ enum ValueCoding {
             .typeMismatch(T.self, .init(codingPath: [], debugDescription: "Cannot decode \(T.self) from \(value)"))
         }
         if T.self == UUID.self {
-            guard case .text(let text) = value, let uuid = UUID(uuidString: text) else { throw mismatch() }
-            return uuid as? T
+            switch value {
+            case .blob(let data) where data.count == 16:
+                var bytes = UUID().uuid
+                withUnsafeMutableBytes(of: &bytes) { $0.copyBytes(from: data) }
+                return UUID(uuid: bytes) as? T
+            case .text(let text):
+                guard let uuid = UUID(uuidString: text) else { throw mismatch() }
+                return uuid as? T
+            default:
+                throw mismatch()
+            }
         }
         if T.self == Date.self {
             switch value {

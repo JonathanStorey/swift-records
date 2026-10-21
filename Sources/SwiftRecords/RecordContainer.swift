@@ -19,7 +19,7 @@ public final class RecordContainer: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var columns: [String: Set<String>] = [:]
     private var relationInfo: [RelationInfo]?
-    private var decoding: Set<String> = []
+    private var decoding: Set<RowKey> = []
     /// Asset files written and released by each open transaction, innermost last.
     private var fileChanges: [(created: [URL], released: [String])] = []
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
@@ -129,16 +129,16 @@ public final class RecordContainer: @unchecked Sendable {
 
     public func save<R: Record>(_ records: [R]) throws {
         try transaction {
-            var visited: Set<String> = []
+            var visited: Set<RowKey> = []
             for record in records {
                 try saveRecord(record, visited: &visited)
             }
         }
     }
 
-    private func saveRecord<R: Record>(_ record: R, visited: inout Set<String>) throws {
+    private func saveRecord<R: Record>(_ record: R, visited: inout Set<RowKey>) throws {
         let id = try record.sqlID
-        guard visited.insert("\(R.table)|\(id)").inserted else { return }
+        guard visited.insert(RowKey(table: R.table, id: id)).inserted else { return }
         var encoded = try RecordEncoder.encode(record)
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
 
@@ -520,8 +520,8 @@ public final class RecordContainer: @unchecked Sendable {
         var links: [String: [SQLiteValue: [SQLiteValue]]] = [:]
         /// Each target's owners in inverse order, by join table.
         var owners: [String: [SQLiteValue: [SQLiteValue]]] = [:]
-        /// `table|id` pairs whose relationships are loaded.
-        var visited: Set<String> = []
+        /// Rows whose relationships are loaded.
+        var visited: Set<RowKey> = []
     }
 
     private var prefetched: Prefetch?
@@ -543,7 +543,7 @@ public final class RecordContainer: @unchecked Sendable {
         }
         var frontier = [(table, rows.map { $0["id"]! })]
         while let (table, ids) = frontier.popLast() {
-            let ids = ids.filter { cache.visited.insert("\(table)|\($0)").inserted }
+            let ids = ids.filter { cache.visited.insert(RowKey(table: table, id: $0)).inserted }
             guard !ids.isEmpty else { continue }
             for info in relations() where tableExists(info.table) {
                 if info.ownerTable == table {
@@ -587,7 +587,7 @@ public final class RecordContainer: @unchecked Sendable {
     }
 
     private func decodeRow<R: Record>(_ type: R.Type, row: [String: SQLiteValue]) throws -> R {
-        let key = "\(R.table)|\(row["id"] ?? .null)"
+        let key = RowKey(table: R.table, id: row["id"] ?? .null)
         guard decoding.insert(key).inserted else { throw RecordContainerError.cycle(table: R.table) }
         defer { decoding.remove(key) }
         return try R(from: RecordDecoder<R>(row: row, loader: self))
@@ -726,4 +726,10 @@ extension Array {
     func chunked(into size: Int) -> [ArraySlice<Element>] {
         stride(from: 0, to: count, by: size).map { self[$0..<Swift.min($0 + size, count)] }
     }
+}
+
+/// A row's identity across tables, for tracking rows already saved or being decoded.
+struct RowKey: Hashable {
+    let table: String
+    let id: SQLiteValue
 }
