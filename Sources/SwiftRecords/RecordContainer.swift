@@ -22,6 +22,8 @@ public final class RecordContainer: @unchecked Sendable {
     private var decoding: Set<RowKey> = []
     /// Asset files written and released by each open transaction, innermost last.
     private var fileChanges: [(created: [URL], released: [String])] = []
+    /// Records logged by each open transaction, innermost last, so a record's version goes up once per save.
+    private var logged: [[RowKey: RecordChange.Kind]] = []
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.
     private var structuralChanges = 0
@@ -76,6 +78,10 @@ public final class RecordContainer: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS "_records_assets" (
                 name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS "_records_assets.owner" ON "_records_assets" (owner_table, owner_id);
+            CREATE TABLE IF NOT EXISTS "_records_changes" (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, record_table TEXT NOT NULL, record_id NOT NULL,
+                kind TEXT NOT NULL, version INTEGER NOT NULL, time REAL NOT NULL,
+                UNIQUE (record_table, record_id));
             """)
     }
 
@@ -91,17 +97,21 @@ public final class RecordContainer: @unchecked Sendable {
     public func transaction<T>(_ body: () throws -> T) throws -> T {
         try locked {
             fileChanges.append(([], []))
+            logged.append([:])
             do {
                 let result = try db.transaction(body)
                 let changes = fileChanges.removeLast()
+                let records = logged.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
                 } else {
                     fileChanges[fileChanges.count - 1].created += changes.created
                     fileChanges[fileChanges.count - 1].released += changes.released
+                    logged[logged.count - 1].merge(records) { $1 }
                 }
                 return result
             } catch {
+                logged.removeLast()
                 // Files written by the rolled-back work go with it, and released ones stay.
                 for url in fileChanges.removeLast().created {
                     try? FileManager.default.removeItem(at: url)
@@ -255,12 +265,12 @@ public final class RecordContainer: @unchecked Sendable {
             row[name] = value
         }
         // Columns missing from the encoding (nil optionals) are cleared.
-        for column in columns[table, default: []] where column != "id" && column != "_position" && row[column] == nil {
+        for column in columns[table, default: []] where !Self.internalColumns.contains(column) && row[column] == nil {
             row[column] = .null
         }
         let names = row.keys.sorted()
         // Skip the write when nothing changed, which is the common case when an edited array is saved.
-        if let existing = try db.run("SELECT * FROM \(quoted(table)) WHERE id = ?", [id]).first,
+        if let existing = try db.run("SELECT \(recordColumns(table)) FROM \(quoted(table)) WHERE id = ?", [id]).first,
            names.allSatisfy({ existing[$0, default: .null] == row[$0] }) {
             return
         }
@@ -274,6 +284,7 @@ public final class RecordContainer: @unchecked Sendable {
             "INSERT INTO \(quoted(table)) (\(insertColumns)) VALUES (\(placeholders), \(nextPosition)) ON CONFLICT(\"id\") \(conflict)",
             [id] + names.map { row[$0]! }
         )
+        try logChange(table, id: id)
     }
 
     /// Replaces an owner's links, keeping each target's existing place in its inverse order.
@@ -287,6 +298,8 @@ public final class RecordContainer: @unchecked Sendable {
         }
         guard current != targets else { return }
         structuralChanges += 1
+        // In a synced store the links belong to the owner, so changing them is a change to the owner.
+        try logChange(info.ownerTable, id: ownerID)
         try db.run("DELETE FROM \(table) WHERE owner = ?", [ownerID])
 
         for (position, target) in targets.enumerated() {
@@ -310,11 +323,19 @@ public final class RecordContainer: @unchecked Sendable {
     private func reorderInverse<R: Record>(of type: R.Type, field: String, targetID: SQLiteValue, ownerIDs: [SQLiteValue]) throws {
         guard let keyPath = R.schema.field(named: field)?.inverse,
               let info = try inverseRelation(keyPath), tableExists(info.table) else { return }
+        var current: [SQLiteValue: SQLiteValue] = [:]
+        for row in try db.run("SELECT owner, inverse_position FROM \(quoted(info.table)) WHERE target = ?", [targetID]) {
+            current[row["owner"]!] = row["inverse_position"]!
+        }
         for (position, ownerID) in ownerIDs.enumerated() {
+            let position = SQLiteValue.integer(Int64(position))
+            guard let stored = current[ownerID], stored != position else { continue }
             try db.run(
-                "UPDATE \(quoted(info.table)) SET inverse_position = ? WHERE owner = ? AND target = ? AND inverse_position IS NOT ?",
-                [.integer(Int64(position)), ownerID, targetID, .integer(Int64(position))]
+                "UPDATE \(quoted(info.table)) SET inverse_position = ? WHERE owner = ? AND target = ?",
+                [position, ownerID, targetID]
             )
+            // The inverse order is the target's own data, so reordering it changes the target.
+            try logChange(R.table, id: targetID)
         }
     }
 
@@ -331,6 +352,7 @@ public final class RecordContainer: @unchecked Sendable {
                 let position = SQLiteValue.integer(Int64(position))
                 guard let stored = current[id], stored != position else { continue }
                 try db.run("UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?", [position, id])
+                try logChange(R.table, id: id)
             }
         }
     }
@@ -362,6 +384,10 @@ public final class RecordContainer: @unchecked Sendable {
             }
         }
         for info in relations() where info.targetTable == table {
+            // Owners that still link here lose a link, which changes them.
+            for row in try db.run("SELECT owner FROM \(quoted(info.table)) WHERE target = ?", [id]) {
+                try logChange(info.ownerTable, id: row["owner"]!)
+            }
             try db.run("DELETE FROM \(quoted(info.table)) WHERE target = ?", [id])
         }
         let assets = try db.run(
@@ -369,6 +395,9 @@ public final class RecordContainer: @unchecked Sendable {
         )
         for case .text(let name)? in assets.map({ $0["name"] }) {
             try releaseAsset(named: name)
+        }
+        if try !db.run("SELECT 1 FROM \(quoted(table)) WHERE id = ?", [id]).isEmpty {
+            try logChange(table, id: id, kind: .delete)
         }
         try db.run("DELETE FROM \(quoted(table)) WHERE id = ?", [id])
     }
@@ -400,7 +429,7 @@ public final class RecordContainer: @unchecked Sendable {
             let ids = try ids.map { try ValueCoding.encode($0) }
             var rows: [SQLiteValue: [String: SQLiteValue]] = [:]
             for chunk in ids.chunked(into: Self.batchSize) {
-                for row in try db.run("SELECT * FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
+                for row in try db.run("SELECT \(recordColumns(R.table)) FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
                     rows[row["id"]!] = row
                 }
             }
@@ -480,7 +509,7 @@ public final class RecordContainer: @unchecked Sendable {
     private func fetchRecords<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [R] {
         guard tableExists(R.table) else { return [] }
         let translated = try whereClause(predicate)
-        var sql = "SELECT * FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", rowid"
+        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", rowid"
         var bindings = translated?.1 ?? []
         if let page, translated != nil {
             sql += " LIMIT ? OFFSET ?"
@@ -505,7 +534,7 @@ public final class RecordContainer: @unchecked Sendable {
         if let row = prefetched?.rows[R.table]?[id] {
             return try decodeRow(R.self, row: row)
         }
-        guard let row = try db.run("SELECT * FROM \(quoted(R.table)) WHERE id = ?", [id]).first else { return nil }
+        guard let row = try db.run("SELECT \(recordColumns(R.table)) FROM \(quoted(R.table)) WHERE id = ?", [id]).first else { return nil }
         return try decodeRow(R.self, row: row)
     }
 
@@ -562,7 +591,7 @@ public final class RecordContainer: @unchecked Sendable {
                     if tableExists(info.targetTable) {
                         for chunk in missing.chunked(into: Self.batchSize) {
                             for row in try db.run(
-                                "SELECT * FROM \(quoted(info.targetTable)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)
+                                "SELECT \(recordColumns(info.targetTable)) FROM \(quoted(info.targetTable)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)
                             ) {
                                 cache.rows[info.targetTable, default: [:]][row["id"]!] = row
                             }
@@ -607,9 +636,26 @@ public final class RecordContainer: @unchecked Sendable {
     }
 
     private func ensureTable(_ table: String) throws {
-        guard !tableExists(table) else { return }
-        try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY, \"_position\" INTEGER)")
-        columns[table] = ["id", "_position"]
+        if !tableExists(table) {
+            try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY, \"_position\" INTEGER)")
+            columns[table] = ["id", "_position"]
+        }
+        // Tables created before change tracking get its columns the first time they're written.
+        for column in ["_version", "_modified", "_tag"] where !columns[table, default: []].contains(column) {
+            let definition = column == "_version" ? " INTEGER NOT NULL DEFAULT 0" : ""
+            try db.execute("ALTER TABLE \(quoted(table)) ADD COLUMN \(quoted(column))\(definition)")
+            columns[table, default: []].insert(column)
+        }
+    }
+
+    /// Columns records never see: their version, last change and sync tag.
+    static let trackingColumns: Set<String> = ["_version", "_modified", "_tag"]
+    private static let internalColumns: Set<String> = Set(["id", "_position"]).union(trackingColumns)
+
+    /// The columns a record decodes from, which leaves out the tracking columns so a fetch never loads tags.
+    private func recordColumns(_ table: String) -> String {
+        columns[table, default: []].subtracting(Self.trackingColumns).sorted()
+            .map { quoted(table) + "." + quoted($0) }.joined(separator: ", ")
     }
 
     /// Adds any missing columns. Columns have no declared type, so SQLite stores each value as given.
@@ -732,4 +778,97 @@ extension Array {
 struct RowKey: Hashable {
     let table: String
     let id: SQLiteValue
+}
+
+// MARK: Change tracking
+
+extension RecordContainer {
+    /// Bumps a record's version and moves its log entry to the end, once per transaction.
+    fileprivate func logChange(_ table: String, id: SQLiteValue, kind: RecordChange.Kind = .save) throws {
+        let key = RowKey(table: table, id: id)
+        if kind == .save, logged.last(where: { $0[key] != nil })?[key] == .save { return }
+        logged[logged.count - 1][key] = kind
+
+        let previous = try db.run(
+            "SELECT version FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
+        ).first?["version"]
+        guard case .integer(let last) = previous ?? .integer(0) else { return }
+        let version = SQLiteValue.integer(last + 1)
+        let now = SQLiteValue.real(Date().timeIntervalSince1970)
+        if kind == .save {
+            try db.run("UPDATE \(quoted(table)) SET \"_version\" = ?, \"_modified\" = ? WHERE id = ?", [version, now, id])
+        }
+        // Replacing the entry gives it a new sequence number at the end of the log.
+        try db.run(
+            "INSERT OR REPLACE INTO \"_records_changes\" (record_table, record_id, kind, version, time) VALUES (?, ?, ?, ?, ?)",
+            [.text(table), id, .text(kind.rawValue), version, now]
+        )
+    }
+
+    /// The token of the latest change, to store before you start reading changes.
+    public var changeToken: ChangeToken {
+        get throws {
+            try locked {
+                let row = try db.run("SELECT seq FROM sqlite_sequence WHERE name = '_records_changes'").first
+                guard case .integer(let seq) = row?["seq"] else { return .initial }
+                return ChangeToken(rawValue: seq)
+            }
+        }
+    }
+
+    /// Each record's latest change after `token`, oldest first. Store the last change's token and pass it
+    /// next time.
+    public func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
+        try locked {
+            try db.run(
+                "SELECT * FROM \"_records_changes\" WHERE seq > ? ORDER BY seq", [.integer(token.rawValue)]
+            ).compactMap { row in
+                guard case .integer(let seq) = row["seq"], case .text(let table) = row["record_table"],
+                      case .text(let kind) = row["kind"], let kind = RecordChange.Kind(rawValue: kind),
+                      case .integer(let version) = row["version"], case .real(let time) = row["time"] else { return nil }
+                return RecordChange(
+                    recordType: table, id: try ValueCoding.decode(UUID.self, from: row["record_id"] ?? .null), kind: kind,
+                    version: Int(version), date: Date(timeIntervalSince1970: time), token: ChangeToken(rawValue: seq)
+                )
+            }
+        }
+    }
+
+    /// Removes the log entries of deleted records from before `token`. Entries for existing records stay,
+    /// because there is only one per record. A sync layer calls this once the server has the deletes.
+    public func pruneChanges(before token: ChangeToken) throws {
+        try transaction {
+            _ = try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete' AND seq < ?", [.integer(token.rawValue)])
+        }
+    }
+
+    /// A record's version, last change and tag, or `nil` if it isn't stored.
+    public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
+        try locked {
+            guard tableExists(R.table), columns[R.table, default: []].contains("_version") else {
+                return try fetch(type, id: id) == nil ? nil : RecordMetadata(version: 0, modified: nil, tag: nil)
+            }
+            guard let row = try db.run(
+                "SELECT \"_version\", \"_modified\", \"_tag\" FROM \(quoted(R.table)) WHERE id = ?", [try ValueCoding.encode(id)]
+            ).first else { return nil }
+            var version = 0
+            if case .integer(let stored) = row["_version"] { version = Int(stored) }
+            var modified: Date?
+            if case .real(let time) = row["_modified"] { modified = Date(timeIntervalSince1970: time) }
+            var tag: Data?
+            if case .blob(let data) = row["_tag"] { tag = data }
+            return RecordMetadata(version: version, modified: modified, tag: tag)
+        }
+    }
+
+    /// Stores opaque sync data with a record without changing its version or logging a change.
+    public func setTag<R: Record>(_ tag: Data?, for type: R.Type, id: R.ID) throws {
+        try transaction {
+            guard tableExists(R.table) else { return }
+            try ensureTable(R.table)
+            _ = try db.run(
+                "UPDATE \(quoted(R.table)) SET \"_tag\" = ? WHERE id = ?", [tag.map { .blob($0) } ?? .null, try ValueCoding.encode(id)]
+            )
+        }
+    }
 }
