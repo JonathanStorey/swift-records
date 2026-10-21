@@ -66,7 +66,8 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
         #if canImport(Darwin)
         var values = URLResourceValues()
         values.isExcludedFromBackup = false
-        var directory = directory
+        // A fresh URL, so a cached value from the caller's URL can't stand in for the file's real state.
+        var directory = URL(fileURLWithPath: directory.path, isDirectory: true)
         try directory.setResourceValues(values)
         #endif
     }

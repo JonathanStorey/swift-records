@@ -55,8 +55,7 @@ import Testing
         try marked.setResourceValues(excluded)
 
         _ = try RecordContainer(zone: "local", directory: directory)
-        var reread = directory
-        reread.removeAllCachedResourceValues()
+        let reread = URL(fileURLWithPath: directory.path, isDirectory: true)
         let values = try reread.resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(values.isExcludedFromBackup == false)
     }
