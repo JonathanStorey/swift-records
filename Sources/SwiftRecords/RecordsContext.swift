@@ -1,11 +1,17 @@
 import Foundation
 import Observation
+#if canImport(UIKit) && !os(watchOS)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// The main-actor front door to a `RecordContainer`, in the role SwiftData gives `ModelContext`.
 ///
 /// Inserts, updates and deletes are collected and committed together in one transaction, either when
-/// you call `save()` or automatically on the next turn of the main actor. Views using `@Records` refresh
-/// after each save.
+/// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
+/// change to each record is kept, so rapid edits such as typing cost one write. Views using `@Records`
+/// refresh after each save.
 @MainActor
 @Observable
 public final class RecordsContext {
@@ -14,17 +20,37 @@ public final class RecordsContext {
     /// Incremented after every save. `@Records` observes it to know when to fetch again.
     public private(set) var changeCount = 0
 
-    /// When true (the default), pending changes are saved on the next turn of the main actor.
+    /// When true (the default), pending changes are saved automatically after `autosaveDelay`.
     public var autosaveEnabled = true
+
+    /// How long edits must pause before an autosave. Each new change restarts the wait. The default is
+    /// half a second; `.zero` saves on the next turn of the main actor. Pending changes are also saved
+    /// by `save()`, by every fetch, and when the app moves to the background.
+    public var autosaveDelay: Duration = .milliseconds(500)
 
     /// The error from the most recent autosave, if it failed.
     public private(set) var lastSaveError: Error?
 
-    @ObservationIgnored private var pending: [(RecordContainer) throws -> Void] = []
-    @ObservationIgnored private var autosaveScheduled = false
+    private struct Change {
+        let sequence: Int
+        let source: ObjectIdentifier?
+        let run: (RecordContainer) throws -> Void
+    }
+
+    /// Pending changes keyed by what they change, such as one record, so a newer change replaces an older one.
+    @ObservationIgnored private var pending: [String: Change] = [:]
+    @ObservationIgnored private var sequence = 0
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+    @ObservationIgnored private var lifecycle: LifecycleObserver?
+    /// The single source of every change in the most recent save, when there was one and the save changed
+    /// nothing structural. `@Records` uses it to skip fetching again after its own edits.
+    @ObservationIgnored private(set) var lastSaveSource: ObjectIdentifier?
 
     public init(container: RecordContainer) {
         self.container = container
+        lifecycle = LifecycleObserver { [weak self] in
+            self?.autosave()
+        }
     }
 
     /// Opens the zone's container. With no arguments this is the default zone.
@@ -43,29 +69,36 @@ public final class RecordsContext {
 
     /// Inserts the record, or updates it if one with the same ID exists.
     public func save<R: Record>(_ record: R) {
-        enqueue { try $0.save(record) }
+        enqueue(key: Self.key(record), source: nil) { try $0.save(record) }
     }
 
     public func delete<R: Record>(_ record: R) {
-        enqueue { try $0.delete(record) }
+        enqueue(key: Self.key(record), source: nil) { try $0.delete(record) }
     }
 
     /// Commits every pending change in one transaction.
     public func save() throws {
+        autosaveTask?.cancel()
+        autosaveTask = nil
         guard !pending.isEmpty else { return }
-        let changes = pending
-        pending = []
+        let changes = pending.values.sorted { $0.sequence < $1.sequence }
+        pending = [:]
+        let structure = container.structureVersion
         try container.transaction {
             for change in changes {
-                try change(container)
+                try change.run(container)
             }
         }
+        let sources = Set(changes.map(\.source))
+        lastSaveSource = sources.count == 1 && container.structureVersion == structure ? sources.first! : nil
         changeCount += 1
     }
 
     /// Drops pending changes that have not been saved.
     public func rollback() {
-        pending = []
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        pending = [:]
     }
 
     // MARK: Fetching
@@ -96,33 +129,76 @@ public final class RecordsContext {
     /// rest are updated. With `keepOrder`, the array's order becomes the stored order. This is what
     /// the `@Records` binding calls when SwiftUI writes to it.
     public func apply<R: Record>(_ records: [R], replacing previous: [R], keepOrder: Bool) {
+        apply(records, replacing: previous, keepOrder: keepOrder, source: nil)
+    }
+
+    func apply<R: Record>(_ records: [R], replacing previous: [R], keepOrder: Bool, source: ObjectIdentifier?) {
         let kept = Set(records.map(\.id))
-        let removed = previous.filter { !kept.contains($0.id) }
-        enqueue { container in
-            for record in removed {
-                try container.delete(record)
+        for record in previous where !kept.contains(record.id) {
+            enqueue(key: Self.key(record), source: source) { try $0.delete(record) }
+        }
+        for record in records {
+            enqueue(key: Self.key(record), source: source) { try $0.save(record) }
+        }
+        if keepOrder {
+            let ids = records.map(\.id)
+            enqueue(key: "order|" + R.table, source: source) { try $0.setOrder(ids, for: R.self) }
+        }
+    }
+
+    private static func key<R: Record>(_ record: R) -> String {
+        "record|\(R.table)|\(record.id)"
+    }
+
+    private func enqueue(key: String, source: ObjectIdentifier?, _ run: @escaping (RecordContainer) throws -> Void) {
+        sequence += 1
+        pending[key] = Change(sequence: sequence, source: source, run: run)
+        guard autosaveEnabled else { return }
+        autosaveTask?.cancel()
+        let delay = autosaveDelay
+        autosaveTask = Task { @MainActor [weak self] in
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            } else {
+                await Task.yield()
             }
-            try container.save(records)
-            if keepOrder {
-                try container.setOrder(records.map(\.id), for: R.self)
+            guard !Task.isCancelled else { return }
+            self?.autosave()
+        }
+    }
+
+    private func autosave() {
+        guard autosaveEnabled, !pending.isEmpty else { return }
+        do {
+            try save()
+            lastSaveError = nil
+        } catch {
+            lastSaveError = error
+        }
+    }
+}
+
+/// Saves pending changes when the app stops being active, so a delayed autosave is never lost.
+private final class LifecycleObserver {
+    private var tokens: [NSObjectProtocol] = []
+
+    @MainActor
+    init(_ handler: @escaping @MainActor @Sendable () -> Void) {
+        #if canImport(UIKit) && !os(watchOS)
+        let names = [UIApplication.willResignActiveNotification, UIApplication.willTerminateNotification]
+        #elseif canImport(AppKit)
+        let names = [NSApplication.willResignActiveNotification, NSApplication.willTerminateNotification]
+        #else
+        let names: [Notification.Name] = []
+        #endif
+        tokens = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { handler() }
             }
         }
     }
 
-    private func enqueue(_ change: @escaping (RecordContainer) throws -> Void) {
-        pending.append(change)
-        guard autosaveEnabled, !autosaveScheduled else { return }
-        autosaveScheduled = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            autosaveScheduled = false
-            guard autosaveEnabled else { return }
-            do {
-                try save()
-                lastSaveError = nil
-            } catch {
-                lastSaveError = error
-            }
-        }
+    deinit {
+        tokens.forEach(NotificationCenter.default.removeObserver)
     }
 }

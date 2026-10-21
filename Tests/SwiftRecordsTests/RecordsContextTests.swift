@@ -26,6 +26,7 @@ import Testing
     }
 
     @Test func autosavesOnNextTurn() async throws {
+        context.autosaveDelay = .zero
         context.save(ToDo(title: "Auto"))
         #expect(context.changeCount == 0)
         for _ in 0..<100 where context.changeCount == 0 {
@@ -65,5 +66,42 @@ import Testing
         #expect(throws: (any Error).self) { try context.save() }
         #expect(try context.container.fetch(ToDo.self).isEmpty)
         #expect(try context.container.fetch(Folder.self, id: 7) != nil)
+    }
+
+    @Test func keepsOnlyTheLatestChangeToEachRecord() throws {
+        context.autosaveEnabled = false
+        var todo = ToDo(title: "T")
+        let other = ToDo(title: "Other")
+        context.save(todo)
+        context.save(other)
+        for title in ["Ty", "Typ", "Typed"] {
+            todo.title = title
+            context.save(todo)
+        }
+        try context.save()
+        #expect(try context.container.fetch(ToDo.self).map(\.title).sorted() == ["Other", "Typed"])
+
+        context.save(other)
+        context.delete(other)
+        try context.save()
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Typed"])
+    }
+
+    @Test func autosaveWaitsForEditsToPause() async throws {
+        context.autosaveDelay = .milliseconds(200)
+        var todo = ToDo(title: "")
+        for letter in "Hello" {
+            todo.title.append(letter)
+            context.save(todo)
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(context.changeCount == 0)
+        #expect(context.hasChanges)
+
+        for _ in 0..<100 where context.changeCount == 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(context.changeCount == 1)
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Hello"])
     }
 }

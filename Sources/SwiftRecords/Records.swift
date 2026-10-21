@@ -48,9 +48,11 @@ public struct Records<R: Record>: DynamicProperty {
                 MainActor.assumeIsolated {
                     guard let context else { return }
                     let previous = Self.records(context: context, cache: cache, predicate: predicate, sort: sortDescriptors)
-                    // Show the edit immediately; the context saves it on the next turn.
+                    // Show the edit immediately; the context saves it once edits pause.
                     cache.records = newValue
-                    context.apply(newValue, replacing: previous, keepOrder: sortDescriptors.isEmpty)
+                    context.apply(
+                        newValue, replacing: previous, keepOrder: sortDescriptors.isEmpty, source: ObjectIdentifier(cache)
+                    )
                 }
             }
         )
@@ -65,7 +67,20 @@ public struct Records<R: Record>: DynamicProperty {
         }
         // Reading changeCount registers the dependency, so the view updates after each save.
         let changeCount = context.changeCount
-        if cache.changeCount != changeCount || cache.records == nil {
+        if let records = cache.records, changeCount == cache.changeCount + 1,
+           context.lastSaveSource == ObjectIdentifier(cache) {
+            // The save only wrote this view's own edits, which the cache already shows. Filter and sort
+            // in memory so an edited record still leaves or moves, without reading the database again.
+            var updated = records
+            if let predicate {
+                updated = (try? updated.filter { try predicate.evaluate($0) }) ?? updated
+            }
+            if !sort.isEmpty {
+                updated.sort(using: sort)
+            }
+            cache.records = updated
+            cache.changeCount = changeCount
+        } else if cache.changeCount != changeCount || cache.records == nil {
             cache.records = (try? context.container.fetch(R.self, where: predicate, sortBy: sort)) ?? []
             cache.changeCount = changeCount
         }
