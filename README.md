@@ -342,7 +342,10 @@ struct ContentView: View {
 @Records(id: recipeID) var recipe: Recipe?                   // nil once the recipe is deleted
 ```
 
-Writing a record to `$recipe` saves it, and writing `nil` deletes it.
+Writing a record to `$recipe` saves it, and writing `nil` deletes it. The wrapper is bound to one ID, so
+writing a record with a different ID is a programmer error: it asserts in debug builds and is ignored in
+release builds. A list works differently. Assigning a different record at an index replaces the old one,
+which is deleted along with its cascades, while the new one brings only its own references.
 
 Without a container in the environment, `@Records` uses the default zone's shared container.
 `@Records("drafts")` reads another zone, through the environment's container if it belongs to that
