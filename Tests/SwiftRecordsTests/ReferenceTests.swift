@@ -207,16 +207,16 @@ struct MisplacedReference {
 @Suite struct ReferenceSyncTests {
     let server = TestServer()
 
-    @Test func referencesCrossAsSyncReferencesAndListsAsIDs() async throws {
+    @Test func referencesCrossAsReferencesAndListsAsIDs() async throws {
         let phone = try Device(server)
         let recipe = SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")])
         phone.context.save(recipe)
         try await phone.context.save()
 
         let step = try #require(server.record("SyncStep", recipe.steps[0].id))
-        #expect(step.fields?["recipe"] as? SyncReference == SyncReference(id: recipe.id, action: .deleteSelf))
+        #expect(step.fields?["recipe"] == .reference(recipe.id, action: .deleteSelf))
         #expect(step.parent == recipe.id)
-        #expect(server.record("SyncRecipe", recipe.id)?.fields?["steps"] as? [UUID] == [recipe.steps[0].id])
+        #expect(server.record("SyncRecipe", recipe.id)?.fields?["steps"] == .ids([recipe.steps[0].id]))
         #expect(server.record("SyncRecipe", recipe.id)?.parent == nil)
 
         let tablet = try Device(server)
@@ -235,7 +235,7 @@ struct MisplacedReference {
         // Another device moved the step to the stew, and its recipes' lists haven't arrived yet.
         let moved = SyncRecord(
             type: "SyncStep", id: soup.steps[0].id,
-            fields: ["text": "Chop", "recipe": SyncReference(id: stew.id, action: .deleteSelf)],
+            fields: ["text": "Chop", "recipe": .reference(stew.id, action: .deleteSelf)],
             tag: server.record("SyncStep", soup.steps[0].id)?.tag
         )
         _ = server.save(moved)

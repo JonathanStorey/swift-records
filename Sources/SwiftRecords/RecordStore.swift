@@ -527,7 +527,7 @@ final class RecordStore: @unchecked Sendable {
             return []
         }
         return try db.run(
-            "SELECT id FROM \(quoted(info.targetTable)) WHERE \(quoted(child)) = ? ORDER BY \"_position\", rowid", [ownerID]
+            "SELECT id FROM \(quoted(info.targetTable)) WHERE \(quoted(child)) = ? ORDER BY \"_position\", id", [ownerID]
         ).map { $0["id"]! }
     }
 
@@ -570,14 +570,14 @@ final class RecordStore: @unchecked Sendable {
     func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
         try transaction {
             guard tableExists(R.table) else { return }
-            var rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", rowid")
+            var rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", id")
             // Ties or gaps from older versions would make shared places ambiguous, so number the table first.
             let positions = rows.map { $0["_position"] ?? .null }
             if Set(positions).count != positions.count || positions.contains(.null) {
                 for (position, row) in rows.enumerated() {
                     try db.run("UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?", [.integer(Int64(position)), row["id"]!])
                 }
-                rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", rowid")
+                rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", id")
             }
             var current: [SQLiteValue: SQLiteValue] = [:]
             for row in rows {
@@ -587,10 +587,18 @@ final class RecordStore: @unchecked Sendable {
             let ordered = try ids.map { try ValueCoding.encode($0) }.filter { current[$0] != nil && seen.insert($0).inserted }
             let slots = ordered.map { current[$0]! }.sorted { $0.integerValue < $1.integerValue }
             for (id, position) in zip(ordered, slots) where current[id] != position {
-                try db.run("UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?", [position, id])
-                try logChange(R.table, id: id)
+                try setPosition(position, table: R.table, id: id)
             }
         }
+    }
+
+    /// Moves a record to a place in its type's stored order, which is a change to the record.
+    func setPosition(_ position: SQLiteValue, table: String, id: SQLiteValue) throws {
+        guard try db.run("SELECT \"_position\" FROM \(quoted(table)) WHERE id = ?", [id]).first?["_position"] != position else { return }
+        // Not structural: a view that moved the record already shows it there.
+        try snapshotBeforeChange(table, id: id)
+        try db.run("UPDATE \(quoted(table)) SET \"_position\" = ? WHERE id = ?", [position, id])
+        try logChange(table, id: id)
     }
 
     // MARK: Deleting
@@ -795,7 +803,7 @@ final class RecordStore: @unchecked Sendable {
         guard tableExists(R.table) else { return [] }
         try prepare(R.self)
         let translated = try whereClause(predicate)
-        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", rowid"
+        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", id"
         var bindings = translated?.1 ?? []
         if let page, translated != nil {
             sql += " LIMIT ? OFFSET ?"

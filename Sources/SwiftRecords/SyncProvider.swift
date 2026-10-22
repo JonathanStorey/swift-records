@@ -21,23 +21,15 @@ public protocol SyncProvider: AnyObject, Sendable {
 
 /// One record as it crosses to or from a server.
 ///
-/// `fields` is keyed by stored property name and holds only standard types: `String`, `Int64`, `Double`,
-/// `Bool`, `Date`, `UUID` and `Data`, with `Data` holding JSON for any other `Codable` value. A missing key
-/// means `nil`.
-///
-/// - A child's `@Reference(to:)` is a `SyncReference`, which a CloudKit provider stores as a
-///   `CKRecord.Reference` with the same action.
-/// - A relationship is a `[UUID]` in order, and a to-one relationship an array of zero or one. Store it as
-///   plain strings, such as a CloudKit `[String]` field, not as references: the children's references
-///   decide membership, and the list only keeps their order.
-/// - An asset is a file `URL`, such as a `CKAsset`'s.
-/// - Inverse relationships are never sent, because each device rebuilds them.
+/// `fields` is keyed by stored property name, and a missing key means `nil`. Each value is a `SyncValue`,
+/// which maps onto a `CKRecordValue`. Inverse relationships are never sent, because each device rebuilds
+/// them.
 public struct SyncRecord: Sendable, Identifiable {
     /// The record's stored type name, such as `"Recipe"`.
     public let type: String
     public let id: UUID
     /// The record's values, or `nil` for a deletion.
-    public var fields: [String: any Sendable]?
+    public var fields: [String: SyncValue]?
     /// The server's opaque data for this record, such as a `CKRecord`'s archived system fields. The
     /// container stores it and hands it back with the record's next change.
     public var tag: Data?
@@ -47,8 +39,12 @@ public struct SyncRecord: Sendable, Identifiable {
     /// which `CKShare` follows. It is one of the record's references: its first `.deleteSelf` one that is
     /// set, or else its first one that is set. The container sets it when sending and ignores it on receipt.
     public var parent: UUID?
+    /// The record's place in its type's stored order, such as the order of a `@Records` list. Lower comes
+    /// first, and records that tie are ordered by ID. Store it with the record and hand it back, so
+    /// reordering on one device reorders the others.
+    public var position: Int64?
 
-    public init(type: String, id: UUID, fields: [String: any Sendable]?, tag: Data? = nil, modified: Date? = nil) {
+    public init(type: String, id: UUID, fields: [String: SyncValue]?, tag: Data? = nil, modified: Date? = nil) {
         self.type = type
         self.id = id
         self.fields = fields
@@ -59,16 +55,38 @@ public struct SyncRecord: Sendable, Identifiable {
     public var isDeletion: Bool { fields == nil }
 }
 
-/// A child's `@Reference(to:)` as it crosses to or from a server: the parent's ID and what happens to the
-/// child when the parent goes. A provider may also hand back a plain `UUID` or its string.
-public struct SyncReference: Sendable, Hashable {
-    public let id: UUID
-    public let action: ReferenceAction
+/// One field value as it crosses to or from a server, with the `CKRecordValue` a CloudKit provider would
+/// store it as.
+public enum SyncValue: Hashable, Codable, Sendable {
+    /// A `String`, or a `UInt64` above `Int64.max`.
+    case string(String)
+    /// Any integer up to `Int64.max`.
+    case int(Int64)
+    /// A `Double` or `Float`.
+    case double(Double)
+    /// A `Bool`. CloudKit stores it as an `Int64` of 0 or 1.
+    case bool(Bool)
+    /// A `Date`, to the millisecond, as CloudKit keeps it.
+    case date(Date)
+    /// `Data`, or JSON for any other `Codable` value.
+    case data(Data)
+    /// A `UUID`. CloudKit stores it as its `uuidString`.
+    case uuid(UUID)
+    /// A `URL`, or an asset's file, which a CloudKit provider stores as a `CKAsset`.
+    case url(URL)
+    /// A relationship, in order. Store it as plain strings, such as a CloudKit `[String]` field, not as
+    /// references: the children's references decide membership, and the list only keeps their order.
+    case ids([UUID])
+    /// A child's `@Reference(to:)`: its parent's ID and what happens to it when the parent goes, stored as a
+    /// `CKRecord.Reference` with the same action. A `.uuid` or `.string` holding the ID is read the same way.
+    case reference(UUID, action: ReferenceAction)
+}
 
-    public init(id: UUID, action: ReferenceAction) {
-        self.id = id
-        self.action = action
-    }
+extension SyncValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral {
+    public init(stringLiteral value: String) { self = .string(value) }
+    public init(integerLiteral value: Int64) { self = .int(value) }
+    public init(floatLiteral value: Double) { self = .double(value) }
+    public init(booleanLiteral value: Bool) { self = .bool(value) }
 }
 
 /// What a provider reports. The container turns these into stored changes and its contexts' `status`.
