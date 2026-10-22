@@ -78,12 +78,16 @@ public final class RecordContext {
 
     private struct Change: Sendable {
         let zone: String?
+        /// The table of the record or order the change touches, so views can lay it over their results.
+        var table: String? = nil
         let sequence: Int
         let source: ObjectIdentifier?
         /// Stored orders run after every record change, so records inserted in the same save take their places.
         var isOrder = false
         /// What the change leaves a single record as, so `hasChanges(in:)` can see it before it commits.
         var latest: Latest? = nil
+        /// The IDs a `@Records` binding stored in this order.
+        var orderIDs: [UUID]? = nil
         let run: @Sendable (ZoneStorage) throws -> Void
     }
 
@@ -112,7 +116,10 @@ public final class RecordContext {
 
     /// Pending changes keyed by what they change, such as one record, so a newer change replaces an older one.
     @ObservationIgnored private var pending: [String: Change] = [:]
-    @ObservationIgnored private var sequence = 0
+    /// Numbers each change, so `@Records` can tell which pending changes it has already shown.
+    @ObservationIgnored private(set) var sequence = 0
+    /// Changes an async save took from `pending` and is committing now. Views keep showing them until it finishes.
+    @ObservationIgnored private var inFlight: [String: Change] = [:]
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var lifecycle: LifecycleObserver?
     /// The single source of every change in the most recent save, when there was one and the save changed
@@ -213,6 +220,10 @@ public final class RecordContext {
 
     private func didChange() {
         changeCount += 1
+        notifyHandlers()
+    }
+
+    private func notifyHandlers() {
         changeHandlers = changeHandlers.filter { $0.value.owner != nil }
         for handler in changeHandlers.values {
             handler.run()
@@ -242,7 +253,7 @@ public final class RecordContext {
     }
 
     func save<R: Record>(_ record: R, in zone: String?) {
-        enqueue(key: Self.key(record, in: zone), zone: zone, source: nil, latest: .saved(record)) { try $0.save(record) }
+        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .saved(record)) { try $0.save(record) }
     }
 
     public func delete<R: Record>(_ record: R) {
@@ -250,11 +261,11 @@ public final class RecordContext {
     }
 
     func delete<R: Record>(_ record: R, in zone: String?) {
-        enqueue(key: Self.key(record, in: zone), zone: zone, source: nil, latest: .deleted) { try $0.delete(record) }
+        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(record) }
     }
 
     public func delete<R: Record>(_ type: R.Type, id: R.ID) {
-        enqueue(key: Self.key(type, id: id, in: zone), zone: zone, source: nil, latest: .deleted) { try $0.delete(type, id: id) }
+        enqueue(key: Self.key(type, id: id, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(type, id: id) }
     }
 
     /// Deletes every record that matches the predicate when the context saves, applying each one's
@@ -348,6 +359,7 @@ public final class RecordContext {
         guard !pending.isEmpty else { return nil }
         let taken = pending
         pending = [:]
+        inFlight.merge(taken) { _, newer in newer }
         let changes = taken.values.sorted { ($0.isOrder ? 1 : 0, $0.sequence) < ($1.isOrder ? 1 : 0, $1.sequence) }
         return Batch(taken: taken, changes: changes)
     }
@@ -392,6 +404,9 @@ public final class RecordContext {
     }
 
     private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: Bool) throws {
+        for (key, change) in batch.taken where inFlight[key]?.sequence == change.sequence {
+            inFlight[key] = nil
+        }
         let commit: Commit
         do {
             commit = try result.get()
@@ -557,6 +572,74 @@ public final class RecordContext {
         return try storage(for: zone).metadata(type, id: id)
     }
 
+    // MARK: Unsaved changes in views
+
+    /// Whether changes made after `sequence` by anything other than `source` aren't saved yet.
+    func hasPendingChanges(after sequence: Int, excluding source: ObjectIdentifier) -> Bool {
+        unsaved.contains { $0.change.sequence > sequence && $0.change.source != source }
+    }
+
+    /// Unsaved changes, including those a save is committing now, newest last.
+    private var unsaved: [(key: String, change: Change)] {
+        inFlight.merging(pending) { _, newer in newer }
+            .map { (key: $0.key, change: $0.value) }
+            .sorted { $0.change.sequence < $1.change.sequence }
+    }
+
+    /// Records as fetched, with this context's unsaved saves and deletes of the type laid over them, so views
+    /// show them before they commit. A saved record replaces its stored copy in place, or joins the end, as a
+    /// new record does when it commits, and leaves if `includes` rejects it. With a `source`, that view's
+    /// unsaved order applies too. Deletes by predicate show once they're saved.
+    func overlay<R: Record>(
+        _ stored: [R], in zone: String?, source: ObjectIdentifier? = nil, includes: (R) -> Bool
+    ) -> [R] {
+        let changes = unsaved.filter { $0.change.zone == zone && $0.change.table == R.table }
+        guard !changes.isEmpty else { return stored }
+        var records = stored
+        for (key, change) in changes {
+            switch change.latest {
+            case .saved(let any)?:
+                guard let record = any as? R else { continue }
+                let position = records.firstIndex { $0.id == record.id }
+                if !includes(record) {
+                    if let position { records.remove(at: position) }
+                } else if let position {
+                    records[position] = record
+                } else {
+                    records.append(record)
+                }
+            case .deleted?:
+                // A record change's key ends with the record's ID.
+                if let id = key.split(separator: "|").last.flatMap({ UUID(uuidString: String($0)) }) {
+                    records.removeAll { $0.id == id }
+                }
+            case nil:
+                break
+            }
+        }
+        let orderKey = Self.orderKey(R.self, in: zone, source: source)
+        if source != nil, let ids = changes.last(where: { $0.key == orderKey })?.change.orderIDs {
+            // The view's own order, among the records it holds, in the slots they already take.
+            let rank = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+            let slots = records.indices.filter { rank[records[$0].id] != nil }
+            let ordered = slots.map { records[$0] }.sorted { rank[$0.id]! < rank[$1.id]! }
+            for (slot, record) in zip(slots, ordered) {
+                records[slot] = record
+            }
+        }
+        return records
+    }
+
+    /// The record as views should show it: an unsaved save or delete if there is one, otherwise `stored`.
+    func overlay<R: Record>(_ stored: R?, id: UUID, in zone: String?) -> R? {
+        let key = Self.key(R.self, id: id, in: zone)
+        switch (pending[key] ?? inFlight[key])?.latest {
+        case .saved(let any)?: return (any as? R) ?? stored
+        case .deleted?: return nil
+        case nil: return stored
+        }
+    }
+
     // MARK: Arrays
 
     /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the rest
@@ -567,14 +650,15 @@ public final class RecordContext {
         let zone = zone ?? self.zone
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
-            enqueue(key: Self.key(record, in: zone), zone: zone, source: source, latest: .deleted) { try $0.delete(record) }
+            enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .deleted) { try $0.delete(record) }
         }
         for record in records {
-            enqueue(key: Self.key(record, in: zone), zone: zone, source: source, latest: .saved(record)) { try $0.save(record) }
+            enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
         }
         let ids = records.map(\.id)
-        let order = "\(zone ?? "")|order|\(R.table)|\(source.map { "\($0)" } ?? "")"
-        enqueue(key: order, zone: zone, source: source, isOrder: true) { try $0.setOrder(ids, for: R.self) }
+        enqueue(key: Self.orderKey(R.self, in: zone, source: source), zone: zone, table: R.table, source: source, isOrder: true, orderIDs: ids) {
+            try $0.setOrder(ids, for: R.self)
+        }
     }
 
     private static func key<R: Record>(_ record: R, in zone: String?) -> String {
@@ -585,14 +669,23 @@ public final class RecordContext {
         "\(zone ?? "")|record|\(R.table)|\(id)"
     }
 
+    private static func orderKey<R: Record>(_ type: R.Type, in zone: String?, source: ObjectIdentifier?) -> String {
+        "\(zone ?? "")|order|\(R.table)|\(source.map { "\($0)" } ?? "")"
+    }
+
     private func enqueue(
-        key: String, zone: String?, source: ObjectIdentifier?, isOrder: Bool = false, latest: Latest? = nil,
-        _ run: @escaping @Sendable (ZoneStorage) throws -> Void
+        key: String, zone: String?, table: String? = nil, source: ObjectIdentifier?, isOrder: Bool = false,
+        latest: Latest? = nil, orderIDs: [UUID]? = nil, _ run: @escaping @Sendable (ZoneStorage) throws -> Void
     ) {
         // Watch the zone from now on, so commits elsewhere refresh views.
         _ = try? storage(for: zone)
         sequence += 1
-        pending[key] = Change(zone: zone, sequence: sequence, source: source, isOrder: isOrder, latest: latest, run: run)
+        pending[key] = Change(
+            zone: zone, table: table, sequence: sequence, source: source, isOrder: isOrder, latest: latest,
+            orderIDs: orderIDs, run: run
+        )
+        // Views show unsaved changes at once.
+        notifyHandlers()
         guard autosaveEnabled else { return }
         autosaveTask?.cancel()
         let delay = autosaveDelay
