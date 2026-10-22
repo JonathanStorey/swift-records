@@ -209,6 +209,11 @@ extension Records.Query {
             refilter: nil,
             write: { context, new, previous, _ in
                 if let new {
+                    // The wrapper is bound to one ID, so a record with another one can only be a mistake.
+                    guard new.id == id else {
+                        assertionFailure("@Records(id:) is bound to \(id), so its record's id can't change to \(new.id)")
+                        return
+                    }
                     context.save(new)
                 } else if let previous {
                     context.delete(previous)
