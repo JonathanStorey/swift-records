@@ -1,5 +1,6 @@
 #if canImport(SwiftUI)
 import Foundation
+import SwiftUI
 @testable import SwiftRecords
 import Testing
 
