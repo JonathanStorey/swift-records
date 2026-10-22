@@ -16,7 +16,7 @@ final class RecordMacroTests: XCTestCase {
             public struct ToDo {
                 var id = UUID()
                 var title: String
-                @Reference(deleteRule: .none) var notes: [Note] = []
+                var notes: [Note] = []
                 var isEmpty: Bool { title.isEmpty }
                 static var sample = 1
             }
@@ -35,7 +35,7 @@ final class RecordMacroTests: XCTestCase {
                     RecordSchema(table: "ToDo", fields: [
                         .field("id", \\ToDo.id),
                         .field("title", \\ToDo.title),
-                        .field("notes", \\ToDo.notes, deleteRule: .none).defaulting(([]) as [Note])
+                        .field("notes", \\ToDo.notes).defaulting(([]) as [Note])
                     ])
                 }
             }
@@ -68,6 +68,70 @@ final class RecordMacroTests: XCTestCase {
                 }
             }
             """,
+            macros: macros
+        )
+    }
+
+    func testGeneratesReferences() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Note {
+                var id = UUID()
+                @Reference(to: \\ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?
+                @Reference(to: \\Folder.notes) var folder: Folder.ID? = nil
+            }
+            """,
+            expandedSource: """
+            struct Note {
+                var id = UUID()
+                var todo: ToDo.ID?
+                var folder: Folder.ID? = nil
+            }
+
+            extension Note: Record {
+                static var schema: RecordSchema<Note> {
+                    RecordSchema(table: "Note", fields: [
+                        .field("id", \\Note.id),
+                        .reference("todo", \\Note.todo, to: \\ToDo.notes, action: .deleteSelf),
+                        .reference("folder", \\Note.folder, to: \\Folder.notes)
+                    ])
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func testReferencesMustBeOptional() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Note {
+                var id = UUID()
+                @Reference(to: \\ToDo.notes) var todo: ToDo.ID
+            }
+            """,
+            expandedSource: """
+            struct Note {
+                var id = UUID()
+                var todo: ToDo.ID
+            }
+
+            extension Note: Record {
+                static var schema: RecordSchema<Note> {
+                    RecordSchema(table: "Note", fields: [
+                        .field("id", \\Note.id)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "A reference holds its parent's ID, or nil while it has none. Declare it as 'Parent.ID?'",
+                    line: 4, column: 37
+                ),
+            ],
             macros: macros
         )
     }
@@ -294,14 +358,14 @@ final class RecordMacroTests: XCTestCase {
             struct Settings {
                 @Indexed var name = ""
                 @Timestamp var updated: Date?
-                @Reference var items: [Item] = []
+                @Reference(to: \\Folder.items) var folder: Folder.ID?
             }
             """,
             expandedSource: """
             struct Settings {
                 var name = ""
                 var updated: Date?
-                var items: [Item] = []
+                var folder: Folder.ID?
             }
             """,
             diagnostics: [

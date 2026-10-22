@@ -11,16 +11,23 @@ struct ToDo {
     var id = UUID()
     var title: String
     var done = false
-    var owner: Person?                                   // to-one relationship
-    @Reference(deleteRule: .none) var notes: [Note] = []  // to-many, order kept
-    var tags: [String] = []                              // plain Codable, stored as JSON
+    var notes: [Note] = []                 // to-many, order kept
+    var labels: [Label] = []               // many-to-many
+    var tags: [String] = []                // plain Codable, stored as JSON
 }
 
 @Record
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todoIDs: Set<ToDo.ID>  // inverse, read-only
+    @Reference(to: \ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?   // its one parent
+}
+
+@Record
+struct Label {
+    var id = UUID()
+    var name: String
+    @Reference(from: \ToDo.labels) var todoIDs: Set<ToDo.ID>             // inverse, read-only
 }
 ```
 
@@ -90,13 +97,14 @@ automatically. It's optional for a local container and required for sync.
 Registering also checks the types before anything is written, and throws
 `RecordsError.invalidSchema(type:reason:)` for a setup mistake that would mix up data:
 - two types stored under one name
-- an inverse whose key path isn't a relationship back to its type
+- a relationship whose target has neither a `@Reference(to:)` nor a `@Reference(from:)` for it
+- a reference or inverse whose key path isn't a relationship back to its type
 - an `@Renamed` old name that is still a property's name, or is shared by two properties
 - with a sync provider, a type or property name a server can't take: it must be letters, digits and
   underscores, starting with a letter
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self, Folder.self])
+let container = try RecordContainer(for: [ToDo.self])
 ```
 
 ## Zones
@@ -167,20 +175,39 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 
 ## Relationships
 
-- Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
-  It is stored in a join table named `Owner.property` that keeps the owner's order. A forward
-  relationship is fully readable and writable, and it is how you link and unlink records.
-- Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
-  deletes records nothing else still references, and it also applies when a record is removed from
-  an array.
-- An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs, so name it for that, such as `todoIDs`. Loading full records would recurse
-  forever with value types, so fetch them with `context.fetch(_:ids:)`, which returns them in stored
-  order. It is read-only, with no initial value: the container fills it from the owners' links, so
-  link or unlink from the owner's side.
-- Deleting a record removes it from every owner's relationship, so a deleted recipe leaves each
-  cookbook that held it.
-- `#Predicate { $0.todoIDs.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward
+Relationships follow CloudKit's model: the child says how it belongs. Any property whose type is a
+`@Record`, an optional `@Record` or an array of them is a relationship, stored in a join table named
+`Owner.property` that keeps the owner's order. Its target type declares one of two things for it.
+
+**One parent: `@Reference(to:action:)`.** A note belongs to one to-do, a step to one recipe, a reply to
+one comment. The child holds its parent's ID, which is a column you can query and set.
+
+- Saving the parent sets each child in its array to point at it. Setting a child's reference and
+  saving the child moves it to the end of its new parent's array, so you can link from either side.
+- The action says what happens when the parent goes, named after `CKRecord.ReferenceAction`.
+  `.deleteSelf` deletes the child when the parent is deleted, when it's removed from the array, or when
+  its reference is cleared. `.none`, the default, keeps the child and clears its reference.
+- Moving a child between two arrays in one save keeps it. A `.deleteSelf` child is only deleted if it
+  ends the transaction without a parent.
+- `#Predicate { $0.todo == todoID }` runs as SQL.
+- A record with references to several parents, such as a `Membership` that belongs to a `Person` and a
+  `Team`, declares one for each. That is how to give a many-to-many link properties of its own. Saving
+  it through one parent's array never clears its reference to another.
+
+**Several owners: `@Reference(from:)`.** A label can be on many to-dos. The inverse is a `Set` of the
+owners' IDs, so name it for that, such as `todoIDs`.
+
+- Deleting an owner, or removing the label from its array, only unlinks it.
+- Loading full records would recurse forever with value types, so fetch the owners with
+  `context.fetch(_:ids:)`, which returns them in stored order.
+- It is read-only, with no initial value: the container fills it from the owners' links, so link or
+  unlink from the owner's side.
+- `#Predicate { $0.todoIDs.contains(todo.id) }` runs as SQL, like `contains { }` on a forward
   relationship, so searches work at full speed in both directions.
+
+Deleting any record removes it from every owner's relationship, so a deleted recipe leaves each
+cookbook that held it. The container checks that every relationship's target declares one of these
+when you register the types.
 
 ## Assets
 
@@ -293,8 +320,12 @@ errors, and changes wait on the device until they can go.
 
 The provider is transport only. It has three requirements, `open(state:report:)`, `send(_:)` and
 `fetch()`, and answers through `SyncEvent`s such as `.received`, `.sent` and `.accountChanged`. Records
-cross as `SyncRecord`s holding standard types, so anyone can write a provider. The container owns the
-rules:
+cross as `SyncRecord`s holding standard types, so anyone can write a provider. For CloudKit, each record
+type is a `recordType` and each ID a `recordName`. A child's reference crosses as a `SyncReference`,
+which becomes a `CKRecord.Reference` with the same action, and `SyncRecord.parent` names the record for
+`CKRecord.parent`, which `CKShare` follows. A relationship crosses as a `[UUID]` in order, which belongs in
+a plain `[String]` field, and an asset as a file URL for a `CKAsset`. Inverses aren't sent. The container
+owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
@@ -304,6 +335,9 @@ rules:
 - **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`.
 - **Order doesn't matter.** A record can arrive before the records it links to, and its links appear
   when they do.
+- **A child's reference decides where it belongs.** If a parent's list and a child's reference
+  disagree, such as when the child moved on another device, the child goes to the parent it names, and
+  the parent's list only sets the order. A child the list doesn't have yet goes at the end.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.

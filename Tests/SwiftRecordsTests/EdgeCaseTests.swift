@@ -23,6 +23,7 @@ struct TreeFolder: Equatable {
     var id = UUID()
     var name: String
     var subfolders: [TreeFolder] = []
+    @Reference(to: \TreeFolder.subfolders, action: .deleteSelf) var parent: TreeFolder.ID?
 }
 
 @Record(name: "Dish")
@@ -93,7 +94,12 @@ struct DishV3 {
         ])
         try container.save(tree)
         let fetched = try #require(try container.fetch(TreeFolder.self, id: tree.id))
-        #expect(fetched == tree)
+        // Saving through the parents sets each child's reference.
+        var expected = tree
+        expected.subfolders[0].parent = tree.id
+        expected.subfolders[0].subfolders[0].parent = tree.subfolders[0].id
+        expected.subfolders[1].parent = tree.id
+        #expect(fetched == expected)
     }
 
     @Test func trueCyclesThrowOnFetch() throws {

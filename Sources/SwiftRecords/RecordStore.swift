@@ -5,7 +5,8 @@ import Foundation
 /// store, so they never disagree about the schema and every context hears about every commit.
 ///
 /// Each record type gets its own table. Each relationship property gets a join table named
-/// `Owner.property` that keeps the order of both sides.
+/// `Owner.property` that keeps the owner's order. A child's `@Reference(to:)` is a column on the child's
+/// table, kept in step with its parent's join table.
 final class RecordStore: @unchecked Sendable {
     let db: SQLiteDatabase
     private let lock = NSRecursiveLock()
@@ -40,6 +41,9 @@ final class RecordStore: @unchecked Sendable {
     /// True when a container with a sync provider is open on this file, which turns on snapshots and
     /// keeps links whose targets haven't arrived.
     var syncEnabled = false
+    /// Children whose `.deleteSelf` reference was cleared by the open transaction. Any still without a
+    /// parent when it ends are deleted, since a `.deleteSelf` child can't outlive its parent.
+    private var orphans: [(table: String, id: SQLiteValue, column: String)] = []
 
     var structureVersion: Int { locked { structuralChanges } }
 
@@ -47,8 +51,11 @@ final class RecordStore: @unchecked Sendable {
         let ownerTable: String
         let field: String
         let targetTable: String
-        /// `nil` keeps related records.
-        var deleteRule: DeleteRule?
+        /// The target's `@Reference(to:)` column that points back at the owner, or `nil` for a relationship
+        /// the target doesn't declare a parent for.
+        var childField: String?
+        /// What happens to a child when its owner is deleted or drops it.
+        var action: ReferenceAction = .none
         var table: String { ownerTable + "." + field }
     }
 
@@ -119,6 +126,10 @@ final class RecordStore: @unchecked Sendable {
                 record_table TEXT NOT NULL, record_id NOT NULL, record BLOB NOT NULL,
                 PRIMARY KEY (record_table, record_id));
             """)
+        // Files from before child references.
+        if try !db.run("PRAGMA table_info(\"_records_relations\")").contains(where: { $0["name"] == .text("child_field") }) {
+            try db.execute("ALTER TABLE \"_records_relations\" ADD COLUMN child_field TEXT")
+        }
         // Files from before synced timestamps.
         if try !db.run("PRAGMA table_info(\"_records_sync\")").contains(where: { $0["name"] == .text("synced_at") }) {
             try db.execute("ALTER TABLE \"_records_sync\" ADD COLUMN synced_at REAL")
@@ -139,7 +150,13 @@ final class RecordStore: @unchecked Sendable {
             fileChanges.append(([], []))
             logged.append([:])
             do {
-                let result = try db.transaction(body)
+                let result = try db.transaction {
+                    let result = try body()
+                    if fileChanges.count == 1 {
+                        try deleteOrphans()
+                    }
+                    return result
+                }
                 let changes = fileChanges.removeLast()
                 let records = logged.removeLast()
                 if fileChanges.isEmpty {
@@ -159,6 +176,7 @@ final class RecordStore: @unchecked Sendable {
                 logged.removeLast()
                 if fileChanges.count == 1 {
                     changedData = false
+                    orphans = []
                 }
                 // Files written by the rolled-back work go with it, and released ones stay.
                 for url in fileChanges.removeLast().created {
@@ -227,27 +245,42 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    private func saveRecord<R: Record>(_ record: R, visited: inout Set<RowKey>) throws {
+    /// Saves one record. `parent` sets a child's reference, for a child saved through its parent's array.
+    private func saveRecord<R: Record>(
+        _ record: R, visited: inout Set<RowKey>, parent: (column: String, id: SQLiteValue)? = nil
+    ) throws {
         let id = try record.sqlID
         guard visited.insert(RowKey(table: R.table, id: id)).inserted else { return }
         var encoded = try RecordEncoder.encode(record)
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
+        // Timestamps are the container's to set, so a save keeps the stored ones.
+        var preserving = Set(R.schema.fields.filter { $0.timestamp != nil }.map(\.name))
+        if let parent {
+            encoded.columns.removeAll { $0.name == parent.column }
+            encoded.columns.append((parent.column, parent.id))
+            // A copy saved through one parent may not know its other parents, so it never clears them.
+            for field in R.schema.fields where field.parent != nil && field.name != parent.column {
+                if !encoded.columns.contains(where: { $0.name == field.name && $0.value != .null }) {
+                    encoded.columns.removeAll { $0.name == field.name }
+                    preserving.insert(field.name)
+                }
+            }
+        }
 
         try ensureTable(R.table)
         try prepare(R.self)
         try ensureColumns(encoded.columns.map(\.name), in: R.table)
-        // Timestamps are the container's to set, so a save keeps the stored ones.
-        try upsert(encoded.columns, id: id, into: R.table, preserving: Set(R.schema.fields.filter { $0.timestamp != nil }.map(\.name)))
+        let references = try referenceValues(R.self, id: id)
+        try upsert(encoded.columns, id: id, into: R.table, preserving: preserving)
+        try reconcileReferences(R.self, id: id, before: references)
 
         var linked: Set<String> = []
         for relation in encoded.relations {
             linked.insert(relation.name)
-            let info = try ensureRelation(
-                owner: R.table, field: relation.name, target: relation.targetType.table,
-                deleteRule: R.schema.field(named: relation.name).map(\.deleteRule) ?? .cascade
-            )
+            guard let field = R.schema.field(named: relation.name) else { continue }
+            let info = try ensureRelation(R.self, field: field, target: relation.targetType)
             for target in relation.targets {
-                try saveRecord(target, visited: &visited)
+                try saveRecord(target, visited: &visited, parent: info.childField.map { ($0, id) })
             }
             try link(info, ownerID: id, targets: relation.targets.map { try $0.sqlID })
         }
@@ -371,11 +404,21 @@ final class RecordStore: @unchecked Sendable {
         try logChange(table, id: id)
     }
 
-    /// Replaces an owner's links.
+    /// Replaces an owner's links. Locally the owner's array decides, and its children's references follow
+    /// it. From a server each child's reference decides, and the owner's list only orders the children.
     func link(_ info: RelationInfo, ownerID: SQLiteValue, targets: [SQLiteValue]) throws {
         let table = quoted(info.table)
         let current = try db.run("SELECT target FROM \(table) WHERE owner = ? ORDER BY position", [ownerID]).map { $0["target"]! }
         var targets = targets
+        if let child = info.childField, applyingSynced > 0 {
+            // A child that points elsewhere has moved, and one that points here belongs even if the list lacks it.
+            targets = try targets.filter { target in
+                try referenceValue(info.targetTable, column: child, id: target).map { $0 == ownerID } ?? true
+            }
+            for target in try children(of: ownerID, in: info) where !targets.contains(target) {
+                targets.append(target)
+            }
+        }
         if syncEnabled, applyingSynced == 0 {
             // Links a server delivered before their targets stay, in place, until the targets arrive.
             for (index, target) in current.enumerated() where !targets.contains(target) {
@@ -399,11 +442,125 @@ final class RecordStore: @unchecked Sendable {
             )
         }
 
-        guard info.deleteRule == .cascade else { return }
+        guard let child = info.childField, applyingSynced == 0 else { return }
+        try ensureColumns([child], in: info.targetTable)
+        let linked = Set(current)
+        for target in targets where !linked.contains(target) {
+            guard let previous = try referenceValue(info.targetTable, column: child, id: target), previous != ownerID else { continue }
+            // A child linked here leaves its previous parent.
+            if previous != .null {
+                try unlink(info, ownerID: previous, target: target)
+            }
+            try setReference(info.targetTable, column: child, id: target, to: ownerID)
+        }
         let kept = Set(targets)
-        for removed in Set(current) where !kept.contains(removed) {
-            if try !isReferenced(info.targetTable, id: removed) {
-                try deleteRow(info.targetTable, id: removed)
+        for removed in current where !kept.contains(removed) {
+            guard try referenceValue(info.targetTable, column: child, id: removed) == ownerID else { continue }
+            try setReference(info.targetTable, column: child, id: removed, to: .null)
+            if info.action == .deleteSelf {
+                orphans.append((info.targetTable, removed, child))
+            }
+        }
+    }
+
+    // MARK: Child references
+
+    /// The current values of a record's `@Reference(to:)` columns, or `nil` if it isn't stored yet.
+    func referenceValues<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> [String: SQLiteValue]? {
+        let names = R.schema.fields.filter { $0.parent != nil }.map(\.name)
+        guard !names.isEmpty else { return [:] }
+        try ensureColumns(names, in: R.table)
+        let columns = names.map(quoted).joined(separator: ", ")
+        return try db.run("SELECT \(columns) FROM \(quoted(R.table)) WHERE id = ?", [id]).first
+    }
+
+    /// Moves a record in its parents' join tables after its `@Reference(to:)` columns change: out of the
+    /// old parent's array and onto the end of the new one's. A `.deleteSelf` child left without a parent is
+    /// deleted when the transaction ends.
+    func reconcileReferences<R: Record>(_ type: R.Type, id: SQLiteValue, before: [String: SQLiteValue]?) throws {
+        for field in R.schema.fields {
+            guard let parent = field.parent, let parentType = Swift.type(of: parent).rootType as? any Record.Type,
+                  let parentField = Self.fieldName(of: parentType, for: parent) else { continue }
+            let old = before?[field.name] ?? .null
+            let new = try referenceValue(R.table, column: field.name, id: id) ?? .null
+            guard old != new else { continue }
+            let info = try ensureRelation(
+                owner: parentType.table, field: parentField, target: R.table, child: (field.name, field.action)
+            )
+            if old != .null {
+                try unlink(info, ownerID: old, target: id)
+            }
+            if new != .null, tableExists(info.table),
+               try db.run("SELECT 1 FROM \(quoted(info.table)) WHERE owner = ? AND target = ?", [new, id]).isEmpty {
+                try noteLinkChange(info, ownerID: new)
+                try db.run(
+                    """
+                    INSERT INTO \(quoted(info.table)) (owner, target, position, inverse_position)
+                    VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM \(quoted(info.table)) WHERE owner = ?1), 0)
+                    """,
+                    [new, id]
+                )
+            }
+            if new == .null, field.action == .deleteSelf, applyingSynced == 0 {
+                orphans.append((R.table, id, field.name))
+            }
+        }
+    }
+
+    /// The stored name of the property at `keyPath` on `type`.
+    private static func fieldName<T: Record>(of type: T.Type, for keyPath: AnyKeyPath) -> String? {
+        T.fieldName(for: keyPath)
+    }
+
+    /// A child's reference column, `.null` when it has no parent, or `nil` when the child isn't stored.
+    private func referenceValue(_ table: String, column: String, id: SQLiteValue) throws -> SQLiteValue? {
+        guard tableExists(table) else { return nil }
+        guard columns[table, default: []].contains(column) else {
+            return try rowExists(table, id: id) ? .null : nil
+        }
+        return try db.run("SELECT \(quoted(column)) FROM \(quoted(table)) WHERE id = ?", [id]).first.map { $0[column] ?? .null }
+    }
+
+    /// The records whose reference points at `ownerID` through this relationship, in stored order.
+    private func children(of ownerID: SQLiteValue, in info: RelationInfo) throws -> [SQLiteValue] {
+        guard let child = info.childField, tableExists(info.targetTable), columns[info.targetTable, default: []].contains(child) else {
+            return []
+        }
+        return try db.run(
+            "SELECT id FROM \(quoted(info.targetTable)) WHERE \(quoted(child)) = ? ORDER BY \"_position\", rowid", [ownerID]
+        ).map { $0["id"]! }
+    }
+
+    /// Sets a child's reference column, which is a change to the child.
+    private func setReference(_ table: String, column: String, id: SQLiteValue, to value: SQLiteValue) throws {
+        try snapshotBeforeChange(table, id: id)
+        structuralChanges += 1
+        try db.run("UPDATE \(quoted(table)) SET \(quoted(column)) = ? WHERE id = ?", [value, id])
+        try logChange(table, id: id)
+    }
+
+    /// Removes one target from an owner's links, which is a change to the owner.
+    private func unlink(_ info: RelationInfo, ownerID: SQLiteValue, target: SQLiteValue) throws {
+        guard tableExists(info.table),
+              try !db.run("SELECT 1 FROM \(quoted(info.table)) WHERE owner = ? AND target = ?", [ownerID, target]).isEmpty else { return }
+        try noteLinkChange(info, ownerID: ownerID)
+        try db.run("DELETE FROM \(quoted(info.table)) WHERE owner = ? AND target = ?", [ownerID, target])
+    }
+
+    /// Records that an owner's links are about to change, if the owner is stored.
+    private func noteLinkChange(_ info: RelationInfo, ownerID: SQLiteValue) throws {
+        structuralChanges += 1
+        guard try rowExists(info.ownerTable, id: ownerID) else { return }
+        try snapshotBeforeChange(info.ownerTable, id: ownerID)
+        try logChange(info.ownerTable, id: ownerID)
+    }
+
+    /// Deletes the `.deleteSelf` children the transaction left without a parent.
+    private func deleteOrphans() throws {
+        while !orphans.isEmpty {
+            let orphan = orphans.removeFirst()
+            if try referenceValue(orphan.table, column: orphan.column, id: orphan.id) == .null {
+                try deleteRow(orphan.table, id: orphan.id)
             }
         }
     }
@@ -501,11 +658,14 @@ final class RecordStore: @unchecked Sendable {
         let owned = relations().filter { $0.ownerTable == table }
 
         for info in owned {
-            let targets = try db.run("SELECT target FROM \(quoted(info.table)) WHERE owner = ?", [id]).map { $0["target"]! }
             try db.run("DELETE FROM \(quoted(info.table)) WHERE owner = ?", [id])
-            guard info.deleteRule == .cascade else { continue }
-            for target in targets where try !isReferenced(info.targetTable, id: target) {
-                try deleteRow(info.targetTable, id: target)
+            // Children go with their parent or lose their reference to it, by their action.
+            for child in try children(of: id, in: info) {
+                if info.action == .deleteSelf {
+                    try deleteRow(info.targetTable, id: child)
+                } else {
+                    try setReference(info.targetTable, column: info.childField!, id: child, to: .null)
+                }
             }
         }
         for info in relations() where info.targetTable == table {
@@ -530,19 +690,6 @@ final class RecordStore: @unchecked Sendable {
     func rowExists(_ table: String, id: SQLiteValue) throws -> Bool {
         guard tableExists(table) else { return false }
         return try !db.run("SELECT 1 FROM \(quoted(table)) WHERE id = ?", [id]).isEmpty
-    }
-
-    private func isReferenced(_ table: String, id: SQLiteValue) throws -> Bool {
-        for info in relations() where info.targetTable == table {
-            if try count(in: info.table, where: "target", is: id) > 0 { return true }
-        }
-        return false
-    }
-
-    private func count(in table: String, where column: String, is value: SQLiteValue) throws -> Int {
-        let rows = try db.run("SELECT COUNT(*) AS n FROM \(quoted(table)) WHERE \(quoted(column)) = ?", [value])
-        guard case .integer(let n) = rows.first?["n"] else { return 0 }
-        return Int(n)
     }
 
     // MARK: Fetching
@@ -857,20 +1004,41 @@ final class RecordStore: @unchecked Sendable {
         let rows = (try? db.run("SELECT * FROM \"_records_relations\"")) ?? []
         let loaded = rows.compactMap { row -> RelationInfo? in
             guard case .text(let owner) = row["owner_table"], case .text(let field) = row["field"],
-                  case .text(let target) = row["target_table"], case .text(let rule) = row["delete_rule"] else { return nil }
-            // Any rule but cascade, including the earlier `nullify` and `deny`, keeps records rather than deleting them.
-            return RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: DeleteRule(rawValue: rule))
+                  case .text(let target) = row["target_table"], case .text(let action) = row["delete_rule"] else { return nil }
+            var child: String?
+            if case .text(let name) = row["child_field"] { child = name }
+            // Actions from before child references, such as `cascade`, read as `.none`.
+            return RelationInfo(
+                ownerTable: owner, field: field, targetTable: target, childField: child,
+                action: child == nil ? .none : ReferenceAction(rawValue: action) ?? .none
+            )
         }
         relationInfo = loaded
         return loaded
     }
 
-    func ensureRelation(owner: String, field: String, target: String, deleteRule: DeleteRule?) throws -> RelationInfo {
-        let info = RelationInfo(ownerTable: owner, field: field, targetTable: target, deleteRule: deleteRule)
+    /// The relationship behind an owner's forward property, with the child reference its target declares for it.
+    func ensureRelation<R: Record>(_ type: R.Type, field: RecordSchema<R>.Field, target: any Record.Type) throws -> RelationInfo {
+        try ensureRelation(owner: R.table, field: field.name, target: target.table, child: Self.childReference(in: target, to: field.keyPath))
+    }
+
+    /// The `@Reference(to:)` property of `target` that points at `parent`, such as `Note.todo` for `\ToDo.notes`.
+    static func childReference(in target: any Record.Type, to parent: AnyKeyPath) -> (name: String, action: ReferenceAction)? {
+        func find<T: Record>(_ type: T.Type) -> (name: String, action: ReferenceAction)? {
+            T.schema.fields.first { $0.parent == parent }.map { ($0.name, $0.action) }
+        }
+        return find(target)
+    }
+
+    func ensureRelation(owner: String, field: String, target: String, child: (name: String, action: ReferenceAction)?) throws -> RelationInfo {
+        let info = RelationInfo(ownerTable: owner, field: field, targetTable: target, childField: child?.name, action: child?.action ?? .none)
         if relations().contains(info) { return info }
         try db.run(
-            "INSERT OR REPLACE INTO \"_records_relations\" (owner_table, field, target_table, delete_rule) VALUES (?, ?, ?, ?)",
-            [.text(owner), .text(field), .text(target), .text(deleteRule?.rawValue ?? "none")]
+            """
+            INSERT OR REPLACE INTO "_records_relations" (owner_table, field, target_table, delete_rule, child_field)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [.text(owner), .text(field), .text(target), .text(info.action.rawValue), child.map { .text($0.name) } ?? .null]
         )
         let table = quoted(info.table)
         try db.execute("""

@@ -11,6 +11,7 @@ enum SyncValue: Hashable, Codable, Sendable {
     case uuid(UUID)
     case url(URL)
     case ids([UUID])
+    case reference(UUID, ReferenceAction)
 
     /// A value from a provider's `SyncRecord`, or `nil` for a type fields can't hold.
     init?(fieldValue value: any Sendable) {
@@ -25,6 +26,7 @@ enum SyncValue: Hashable, Codable, Sendable {
         case let value as UUID: self = .uuid(value)
         case let value as URL: self = .url(value)
         case let value as [UUID]: self = .ids(value)
+        case let value as SyncReference: self = .reference(value.id, value.action)
         default: return nil
         }
     }
@@ -41,6 +43,7 @@ enum SyncValue: Hashable, Codable, Sendable {
         case .uuid(let value): value
         case .url(let value): value
         case .ids(let value): value
+        case .reference(let id, let action): SyncReference(id: id, action: action)
         }
     }
 
@@ -83,6 +86,7 @@ enum SyncValue: Hashable, Codable, Sendable {
             case .uuid(let value): try ValueCoding.encode(value)
             case .url(let value): .text(value.absoluteString)
             case .ids(let value): .text(String(decoding: try CanonicalJSON.encode(value), as: UTF8.self))
+            case .reference(let id, _): try ValueCoding.encode(id)
             }
         }
     }
@@ -161,18 +165,19 @@ extension RecordStore {
         }
     }
 
-    /// The types a type's relationships and inverses name.
+    /// The types a type's relationships, references and inverses name.
     private static func relatedTypes<R: Record>(_ type: R.Type) -> [any Record.Type] {
         R.schema.fields.compactMap { field in
-            if let inverse = field.inverse {
+            if let inverse = field.inverse ?? field.parent {
                 return Swift.type(of: inverse).rootType as? any Record.Type
             }
             return relationTarget(field)
         }
     }
 
-    /// Checks what the macro can't see from inside one type: inverses that point back, renames that don't
-    /// collide, and with sync, names a server accepts.
+    /// Checks what the macro can't see from inside one type: relationships whose targets say how they
+    /// belong, references and inverses that point back, renames that don't collide, and with sync, names a
+    /// server accepts.
     private static func validate<R: Record>(_ type: R.Type, syncSafe: Bool) throws {
         func invalid(_ reason: String) -> RecordsError {
             .invalidSchema(type: R.table, reason: reason)
@@ -180,6 +185,22 @@ extension RecordStore {
         let names = Set(R.schema.fields.map(\.name))
         var oldNames: [String: String] = [:]
         for field in R.schema.fields {
+            if let target = relationTarget(field), !declaresRelationship(target, field.keyPath) {
+                throw invalid(
+                    "\(field.name) links to \(target), which doesn't say how it belongs. Give \(target) "
+                        + "@Reference(to: \\\(R.self).\(field.name)) if each one has one parent, or "
+                        + "@Reference(from: \\\(R.self).\(field.name)) if it can have several."
+                )
+            }
+            if let parent = field.parent {
+                guard let owner = Swift.type(of: parent).rootType as? any Record.Type,
+                      let target = forwardTarget(of: owner, keyPath: parent), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
+                    throw invalid("\(field.name) is a reference to \(parent), which isn't a relationship to \(R.self).")
+                }
+                if R.schema.fields.contains(where: { $0.parent == parent && $0.name != field.name }) {
+                    throw invalid("Two properties are references to \(parent). Keep one.")
+                }
+            }
             if let inverse = field.inverse {
                 guard let owner = Swift.type(of: inverse).rootType as? any Record.Type else {
                     throw invalid("\(field.name) is an inverse of \(inverse), which isn't a property of a @Record type.")
@@ -205,6 +226,14 @@ extension RecordStore {
         }
     }
 
+    /// True when `target` has a `@Reference(to:)` or `@Reference(from:)` property for the relationship at `keyPath`.
+    private static func declaresRelationship(_ target: any Record.Type, _ keyPath: AnyKeyPath) -> Bool {
+        func check<T: Record>(_ type: T.Type) -> Bool {
+            T.schema.fields.contains { $0.parent == keyPath || $0.inverse == keyPath }
+        }
+        return check(target)
+    }
+
     /// The related type of the forward relationship a key path names, or `nil` if it names none.
     private static func forwardTarget<O: Record>(of owner: O.Type, keyPath: AnyKeyPath) -> (any Record.Type)? {
         O.schema.field(for: keyPath).flatMap(relationTarget)
@@ -224,7 +253,7 @@ extension RecordStore {
         try prepare(R.self)
         for field in R.schema.fields {
             guard let target = Self.relationTarget(field) else { continue }
-            _ = try ensureRelation(owner: R.table, field: field.name, target: target.table, deleteRule: field.deleteRule)
+            _ = try ensureRelation(R.self, field: field, target: target)
         }
     }
 
@@ -266,6 +295,10 @@ extension RecordStore {
             } else if field.isAsset {
                 if case .text(let name)? = row[field.name] {
                     fields[field.name] = .url(assetURL(named: name))
+                }
+            } else if field.parent != nil {
+                if let value = row[field.name], value != .null {
+                    fields[field.name] = .reference(try ValueCoding.decode(UUID.self, from: value), field.action)
                 }
             } else if let value = row[field.name], value != .null {
                 fields[field.name] = try Self.syncValue(of: value, as: Swift.type(of: field.keyPath).valueType)
@@ -342,10 +375,11 @@ extension RecordStore {
         try prepare(R.self)
         columns += try storeAssets(of: R.self, id: sqlID, assets: assets)
         try ensureColumns(columns.map(\.name), in: R.table)
+        let references = try referenceValues(R.self, id: sqlID)
         try upsert(columns, id: sqlID, into: R.table)
+        try reconcileReferences(R.self, id: sqlID, before: references)
         for (field, target, ids) in links {
-            let info = try ensureRelation(owner: R.table, field: field.name, target: target.table, deleteRule: field.deleteRule)
-            try link(info, ownerID: sqlID, targets: ids)
+            try link(try ensureRelation(R.self, field: field, target: target), ownerID: sqlID, targets: ids)
         }
         let extra = fields.filter { !known.contains($0.key) }
         if extra.isEmpty {
@@ -445,8 +479,36 @@ extension RecordStore {
             if case .blob(let data)? = row?["_tag"] { tag = data }
             var modified: Date?
             if case .real(let time)? = row?["_modified"] { modified = Date(timeIntervalSince1970: time) }
-            return (SyncRecord(type: change.table, id: change.id, fields: fields.fieldValues, tag: tag, modified: modified), fields)
+            var record = SyncRecord(type: change.table, id: change.id, fields: fields.fieldValues, tag: tag, modified: modified)
+            record.parent = registered[change.table].flatMap { Self.parent(of: $0, in: fields) }
+            return (record, fields)
         }
+    }
+
+    /// The parent a server should file a record under, such as a `CKRecord`'s `parent`: its first `.deleteSelf`
+    /// reference that is set, or else its first reference that is set.
+    private static func parent<R: Record>(of type: R.Type, in fields: SyncFields) -> UUID? {
+        let references = R.schema.fields.filter { $0.parent != nil }
+        let ordered = references.filter { $0.action == .deleteSelf } + references.filter { $0.action != .deleteSelf }
+        for field in ordered {
+            if case .reference(let id, _)? = fields[field.name] { return id }
+        }
+        return nil
+    }
+
+    /// A server's fields with each child reference as a `.reference`, whichever form the provider handed
+    /// back, so it compares equal to the same reference sent from here.
+    private static func normalizingReferences<R: Record>(of type: R.Type, in fields: SyncFields) -> SyncFields {
+        var fields = fields
+        for field in R.schema.fields where field.parent != nil {
+            switch fields[field.name] {
+            case .uuid(let id)?: fields[field.name] = .reference(id, field.action)
+            case .string(let text)?: fields[field.name] = UUID(uuidString: text).map { .reference($0, field.action) }
+            case .reference(let id, _)?: fields[field.name] = .reference(id, field.action)
+            default: break
+            }
+        }
+        return fields
     }
 
     /// Records that the server has a change. A later local edit stays pending, with what was sent as its ancestor.
@@ -510,7 +572,7 @@ extension RecordStore {
             try db.run("DELETE FROM \"_records_sync\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
             return
         }
-        guard registered[table] != nil, let server = SyncFields(fieldValues: values) else {
+        guard let type = registered[table], let server = SyncFields(fieldValues: values).map({ Self.normalizingReferences(of: type, in: $0) }) else {
             throw RecordsError.incompatibleRecord(type: table, id: record.id)
         }
 
