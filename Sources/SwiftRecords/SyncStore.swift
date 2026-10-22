@@ -1,52 +1,6 @@
 import Foundation
 
-/// A field value in the package's own terms, so values can be compared, merged and kept with a snapshot.
-enum SyncValue: Hashable, Codable, Sendable {
-    case string(String)
-    case int(Int64)
-    case double(Double)
-    case bool(Bool)
-    case date(Date)
-    case data(Data)
-    case uuid(UUID)
-    case url(URL)
-    case ids([UUID])
-    case reference(UUID, ReferenceAction)
-
-    /// A value from a provider's `SyncRecord`, or `nil` for a type fields can't hold.
-    init?(fieldValue value: any Sendable) {
-        switch value {
-        case let value as String: self = .string(value)
-        case let value as Bool: self = .bool(value)
-        case let value as Int64: self = .int(value)
-        case let value as Int: self = .int(Int64(value))
-        case let value as Double: self = .double(value)
-        case let value as Date: self = .date(value)
-        case let value as Data: self = .data(value)
-        case let value as UUID: self = .uuid(value)
-        case let value as URL: self = .url(value)
-        case let value as [UUID]: self = .ids(value)
-        case let value as SyncReference: self = .reference(value.id, value.action)
-        default: return nil
-        }
-    }
-
-    /// The value as a provider sees it.
-    var fieldValue: any Sendable {
-        switch self {
-        case .string(let value): value
-        case .int(let value): value
-        case .double(let value): value
-        case .bool(let value): value
-        case .date(let value): value
-        case .data(let value): value
-        case .uuid(let value): value
-        case .url(let value): value
-        case .ids(let value): value
-        case .reference(let id, let action): SyncReference(id: id, action: action)
-        }
-    }
-
+extension SyncValue {
     /// A decoded property value. Scalars keep their type, and anything else becomes JSON. `nil` for an
     /// optional that holds nothing.
     init?(property value: Any) throws {
@@ -59,7 +13,8 @@ enum SyncValue: Hashable, Codable, Sendable {
         switch value {
         case let value as String: self = .string(value)
         case let value as Bool: self = .bool(value)
-        case let value as Date: self = .date(value)
+        // CloudKit keeps dates to the millisecond, so a date that has been there and back still compares equal.
+        case let value as Date: self = .date(Date(timeIntervalSince1970: (value.timeIntervalSince1970 * 1000).rounded() / 1000))
         case let value as Data: self = .data(value)
         case let value as UUID: self = .uuid(value)
         case let value as URL: self = .url(value)
@@ -94,18 +49,11 @@ enum SyncValue: Hashable, Codable, Sendable {
 
 typealias SyncFields = [String: SyncValue]
 
+/// The key a record's place in its type's stored order goes under in the container's own copies of its
+/// fields, so it merges like a property. It crosses to a provider as `SyncRecord.position` instead.
+let positionField = "_position"
+
 extension SyncFields {
-    init?(fieldValues: [String: any Sendable]) {
-        var fields: SyncFields = [:]
-        for (key, value) in fieldValues {
-            guard let value = SyncValue(fieldValue: value) else { return nil }
-            fields[key] = value
-        }
-        self = fields
-    }
-
-    var fieldValues: [String: any Sendable] { mapValues(\.fieldValue) }
-
     func encoded() throws -> Data { try JSONEncoder().encode(self) }
 
     static func decoded(_ value: SQLiteValue?) -> SyncFields? {
@@ -121,6 +69,7 @@ private struct ParkedRecord: Codable {
     let fields: SyncFields?
     let tag: Data?
     let modified: Date?
+    let position: Int64?
 }
 
 /// A change the server doesn't have yet.
@@ -283,6 +232,9 @@ extension RecordStore {
             return nil
         }
         var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
+        if case .integer(let position)? = row["_position"] {
+            fields[positionField] = .int(position)
+        }
         for field in R.schema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
             fields[field.name] = nil
             if Self.relationTarget(field) != nil {
@@ -298,7 +250,7 @@ extension RecordStore {
                 }
             } else if field.parent != nil {
                 if let value = row[field.name], value != .null {
-                    fields[field.name] = .reference(try ValueCoding.decode(UUID.self, from: value), field.action)
+                    fields[field.name] = .reference(try ValueCoding.decode(UUID.self, from: value), action: field.action)
                 }
             } else if let value = row[field.name], value != .null {
                 fields[field.name] = try Self.syncValue(of: value, as: Swift.type(of: field.keyPath).valueType)
@@ -344,7 +296,7 @@ extension RecordStore {
 
     private func applySyncFields<R: Record>(_ type: R.Type, id: UUID, fields: SyncFields) throws {
         let sqlID = try ValueCoding.encode(id)
-        var known: Set<String> = ["id"]
+        var known: Set<String> = ["id", positionField]
         var columns: [(name: String, value: SQLiteValue)] = []
         var links: [(field: RecordSchema<R>.Field, target: any Record.Type, ids: [SQLiteValue])] = []
         var assets: [String: Asset] = [:]
@@ -378,6 +330,9 @@ extension RecordStore {
         let references = try referenceValues(R.self, id: sqlID)
         try upsert(columns, id: sqlID, into: R.table)
         try reconcileReferences(R.self, id: sqlID, before: references)
+        if case .int(let position)? = fields[positionField] {
+            try setPosition(.integer(position), table: R.table, id: sqlID)
+        }
         for (field, target, ids) in links {
             try link(try ensureRelation(R.self, field: field, target: target), ownerID: sqlID, targets: ids)
         }
@@ -479,8 +434,11 @@ extension RecordStore {
             if case .blob(let data)? = row?["_tag"] { tag = data }
             var modified: Date?
             if case .real(let time)? = row?["_modified"] { modified = Date(timeIntervalSince1970: time) }
-            var record = SyncRecord(type: change.table, id: change.id, fields: fields.fieldValues, tag: tag, modified: modified)
+            var values = fields
+            let position = values.removeValue(forKey: positionField)
+            var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag, modified: modified)
             record.parent = registered[change.table].flatMap { Self.parent(of: $0, in: fields) }
+            if case .int(let place)? = position { record.position = place }
             return (record, fields)
         }
     }
@@ -502,9 +460,9 @@ extension RecordStore {
         var fields = fields
         for field in R.schema.fields where field.parent != nil {
             switch fields[field.name] {
-            case .uuid(let id)?: fields[field.name] = .reference(id, field.action)
-            case .string(let text)?: fields[field.name] = UUID(uuidString: text).map { .reference($0, field.action) }
-            case .reference(let id, _)?: fields[field.name] = .reference(id, field.action)
+            case .uuid(let id)?: fields[field.name] = .reference(id, action: field.action)
+            case .string(let text)?: fields[field.name] = UUID(uuidString: text).map { .reference($0, action: field.action) }
+            case .reference(let id, _)?: fields[field.name] = .reference(id, action: field.action)
             default: break
             }
         }
@@ -572,8 +530,12 @@ extension RecordStore {
             try db.run("DELETE FROM \"_records_sync\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
             return
         }
-        guard let type = registered[table], let server = SyncFields(fieldValues: values).map({ Self.normalizingReferences(of: type, in: $0) }) else {
+        guard let type = registered[table] else {
             throw RecordsError.incompatibleRecord(type: table, id: record.id)
+        }
+        var server = Self.normalizingReferences(of: type, in: values)
+        if let position = record.position {
+            server[positionField] = .int(position)
         }
 
         if pending, let entry {
@@ -619,8 +581,8 @@ extension RecordStore {
 
     private func park(_ record: SyncRecord) throws {
         let parked = ParkedRecord(
-            type: record.type, id: record.id, fields: record.fields.flatMap { SyncFields(fieldValues: $0) }, tag: record.tag,
-            modified: record.modified
+            type: record.type, id: record.id, fields: record.fields, tag: record.tag,
+            modified: record.modified, position: record.position
         )
         try db.run(
             "INSERT OR REPLACE INTO \"_records_parked\" (record_table, record_id, record) VALUES (?, ?, ?)",
@@ -635,7 +597,9 @@ extension RecordStore {
                 guard case .blob(let data)? = row["record"], let parked = try? JSONDecoder().decode(ParkedRecord.self, from: data) else {
                     return nil
                 }
-                return SyncRecord(type: parked.type, id: parked.id, fields: parked.fields?.fieldValues, tag: parked.tag, modified: parked.modified)
+                var record = SyncRecord(type: parked.type, id: parked.id, fields: parked.fields, tag: parked.tag, modified: parked.modified)
+                record.position = parked.position
+                return record
             }
             guard !records.isEmpty else { return [] }
             try db.run("DELETE FROM \"_records_parked\"")

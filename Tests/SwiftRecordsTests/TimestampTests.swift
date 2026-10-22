@@ -94,11 +94,14 @@ struct Journal {
         let sent = try #require(try await phone.fetch(Journal.self, id: entry.id))
         #expect(sent.synced != nil)
 
-        // The other device gets the same created and modified times, and its own synced time.
+        // The other device gets the same created and modified times, to the millisecond a server keeps,
+        // and its own synced time.
         try await tablet.refresh()
         let received = try #require(try await tablet.fetch(Journal.self, id: entry.id))
-        #expect(received.created == sent.created)
-        #expect(received.modified == sent.modified)
+        let milliseconds = { (date: Date?) in date.map { ($0.timeIntervalSince1970 * 1000).rounded() } }
+        #expect(milliseconds(received.created) == milliseconds(sent.created))
+        #expect(milliseconds(received.modified) == milliseconds(sent.modified))
+        #expect(received.created?.timeIntervalSince1970 == milliseconds(sent.created).map { $0 / 1000 })
         #expect(received.synced != nil)
         #expect(server.record("Journal", entry.id)?.fields?["synced"] == nil)
     }

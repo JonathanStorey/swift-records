@@ -82,12 +82,12 @@ struct Device {
         #expect(server.count == 4)
 
         let sent = try #require(server.record("SyncRecipe", recipe.id)?.fields)
-        #expect(sent["title"] as? String == "Soup")
-        #expect(sent["servings"] as? Int64 == 4)
-        #expect(sent["updated"] as? Date == Date(timeIntervalSince1970: 1_000))
-        #expect(sent["steps"] as? [UUID] == recipe.steps.map(\.id))
-        #expect(sent["cook"] as? [UUID] == [recipe.cook!.id])
-        #expect(sent["tags"] is Data)
+        #expect(sent["title"] == "Soup")
+        #expect(sent["servings"] == 4)
+        #expect(sent["updated"] == .date(Date(timeIntervalSince1970: 1_000)))
+        #expect(sent["steps"] == .ids(recipe.steps.map(\.id)))
+        #expect(sent["cook"] == .ids([recipe.cook!.id]))
+        #expect(sent["tags"] == .data(Data(#"["winter"]"#.utf8)))
         #expect(server.record("SyncStep", recipe.steps[0].id)?.fields?["recipes"] == nil)
 
         try await tablet.context.refresh()
@@ -290,7 +290,7 @@ struct Device {
         let step = SyncStep(text: "Whisk")
         let recipeID = UUID()
         await phone.provider.emit(.received([
-            SyncRecord(type: "SyncRecipe", id: recipeID, fields: ["title": "Omelette", "steps": [step.id]]),
+            SyncRecord(type: "SyncRecipe", id: recipeID, fields: ["title": "Omelette", "steps": .ids([step.id])]),
         ], state: nil))
         var recipe = try #require(try await phone.recipes().first)
         #expect(recipe.steps.isEmpty)
@@ -310,7 +310,7 @@ struct Device {
         _ = try await phone.recipes()
         let id = UUID()
         await phone.provider.emit(.received([
-            SyncRecord(type: "SyncRecipe", id: id, fields: ["title": "Curry", "spice": Int64(3)], tag: nil),
+            SyncRecord(type: "SyncRecipe", id: id, fields: ["title": "Curry", "spice": 3], tag: nil),
         ], state: nil))
         var recipe = try #require(try await phone.recipes().first)
         recipe.title = "Green curry"
@@ -318,8 +318,8 @@ struct Device {
         try await phone.context.save()
 
         let sent = try #require(server.record("SyncRecipe", id)?.fields)
-        #expect(sent["title"] as? String == "Green curry")
-        #expect(sent["spice"] as? Int64 == 3)
+        #expect(sent["title"] == "Green curry")
+        #expect(sent["spice"] == 3)
     }
 
     @Test func oldPropertyNamesAreReadFromFields() async throws {
@@ -483,5 +483,36 @@ struct Device {
         #expect(relaunched.provider.sentBatches.first?.map(\.id) == [recipe.id])
         #expect(try relaunched.container.store.pendingChanges().isEmpty)
         #expect(try await relaunched.recipes().map(\.title) == ["Unacknowledged"])
+    }
+}
+
+@MainActor
+@Suite struct SyncedOrderTests {
+    let server = TestServer()
+
+    @Test func reorderingOnOneDeviceReordersTheOthers() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        let recipes = ["Soup", "Stew", "Salad"].map { SyncRecipe(title: $0) }
+        for recipe in recipes { phone.context.save(recipe) }
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["Soup", "Stew", "Salad"])
+
+        try phone.container.setOrder([recipes[2].id, recipes[0].id, recipes[1].id], for: SyncRecipe.self)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["Salad", "Soup", "Stew"])
+    }
+
+    @Test func datesCrossToTheMillisecond() async throws {
+        let phone = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", updated: Date(timeIntervalSince1970: 1_000.123_456))
+        phone.context.save(recipe)
+        try await phone.context.save()
+        #expect(server.record("SyncRecipe", recipe.id)?.fields?["updated"] == .date(Date(timeIntervalSince1970: 1_000.123)))
+
+        try await phone.context.refresh()
+        #expect(try phone.container.store.pendingChanges().isEmpty)
     }
 }

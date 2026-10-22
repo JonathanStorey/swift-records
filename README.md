@@ -321,7 +321,7 @@ errors, and changes wait on the device until they can go.
 The provider is transport only. It has three requirements, `open(state:report:)`, `send(_:)` and
 `fetch()`, and answers through `SyncEvent`s such as `.received`, `.sent` and `.accountChanged`. Records
 cross as `SyncRecord`s holding standard types, so anyone can write a provider. For CloudKit, each record
-type is a `recordType` and each ID a `recordName`. A child's reference crosses as a `SyncReference`,
+type is a `recordType` and each ID a `recordName`. A child's reference crosses as a `SyncValue.reference`,
 which becomes a `CKRecord.Reference` with the same action, and `SyncRecord.parent` names the record for
 `CKRecord.parent`, which `CKShare` follows. A relationship crosses as a `[UUID]` in order, which belongs in
 a plain `[String]` field, and an asset as a file URL for a `CKAsset`. Inverses aren't sent. The container
