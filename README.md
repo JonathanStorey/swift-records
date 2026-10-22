@@ -36,11 +36,11 @@ stored as 16-byte blobs, which keeps primary keys and join tables compact.
 
 ## Containers and contexts
 
-The shape follows SwiftData. A `RecordContainer` owns a zone's file, its assets and the schema. You
-read and write through a context.
+The shape follows SwiftData. A `RecordContainer` owns a folder of zone files, their assets and the
+schema. You read and write through a context.
 
 ```swift
-let container = try RecordContainer()                // the default zone
+let container = try RecordContainer()                // Application Support/Records
 let context = container.mainContext                  // one per container, on the main actor
 
 try context.append(todo)                             // a new ToDo, its Person and every Note
@@ -90,8 +90,9 @@ try await container.performBackgroundTask { context in
 The container serializes access to its file, so the main context waits while a transaction runs. Keep
 each transaction to a few hundred records and split a large import into several, as above.
 
-`container.deleteAllData()` removes every record, asset file and piece of sync state in the zone and
-discards the main context's pending changes, for signing out or resetting the app. It touches this
+`container.deleteAllData()` removes every record, asset file and piece of sync state in the default
+zone and discards the main context's pending changes there, and `deleteAllData(in: "drafts")` does the
+same for another zone, for signing out or resetting the app. It touches this
 device only: a sync server keeps its copy, and the next sign-in brings it back.
 
 Listing the record types up front, as SwiftData's `ModelContainer(for:)` does, creates their tables and
@@ -113,27 +114,36 @@ let container = try RecordContainer(for: [ToDo.self])
 
 ## Zones
 
-A zone is a named database file. The name is the file name without its extension.
+A container is a folder, and a zone is a database file in it, named by a `String?`. The context's `zone`
+decides where saves, deletes and fetches go. It starts as `nil`, the default zone.
 
 ```swift
-extension Zone {
-    static let drafts: Zone = "drafts"
-}
+let container = try RecordContainer()     // Application Support/Records
+let context = container.mainContext
 
-let main = try RecordContainer()                     // Application Support/Records/default.sqlite
-let drafts = try RecordContainer(zone: .drafts)      // Application Support/Records/drafts.sqlite
-let scratch = try RecordContainer(zone: .inMemory)   // nothing on disk
+context.save(recipe)                      // _default.sqlite
+context.zone = "drafts"
+context.save(draft)                       // drafts.sqlite, opened on first use
+let drafts = try context.fetch(Recipe.self)
+context.zone = nil                        // back to the default zone
+
+try await container.performBackgroundTask(in: "drafts") { try $0.save(imported) }
+let scratch = try RecordContainer(inMemory: true)   // every zone lives in memory
 ```
 
-Zone files are local to the device and never sync through iCloud. They are included in the device's
-own backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the folder sits inside one named for the
-app's bundle identifier. Relationships stay within one zone, and the same record type can be stored
-in several zones. To open a file somewhere else, use `RecordContainer(url:)`.
+Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay
+with the zone they were made in, and a save commits each zone it touches in a transaction of its own.
+Relationships stay within one zone, and the same record type can be stored in several. Names starting
+with an underscore are reserved, which keeps `_default` free for the default zone.
+
+Zone files are local to the device unless the container syncs. They are included in the device's own
+backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
+folder sits inside one named for the app's bundle identifier.
 
 To share a zone with a widget or other app extension, open it in the App Group's container from both:
 
 ```swift
-let directory = Zone.directory(appGroup: "group.com.example.todo")!
+let directory = RecordContainer.directory(appGroup: "group.com.example.todo")!
 let container = try RecordContainer(directory: directory)
 ```
 
@@ -233,7 +243,7 @@ let bytes = photo?.image         // read from disk on first access, then cached
 
 - Fetching never reads asset files. The bytes load the first time the property is read, so prefer
   `$image.url` where a URL will do.
-- Files live in a folder named after the database file, such as `Records/default.assets/`, so they
+- Files live in a folder named after the database file, such as `Records/_default.assets/`, so they
   are included in device backups along with the zone.
 - Assigning new data or `nil` removes the old file when the record is saved, and deleting a record
   (directly or by cascade) removes its files. Rolled-back transactions leave no files behind.
@@ -308,11 +318,15 @@ written by a background context or a sync provider.
 
 ## Sync
 
-A `SyncProvider` keeps a zone in step with a server. Pass one when the container opens. The same app
-code works with or without it: sync adds to saving, it doesn't replace it.
+A `SyncProvider` keeps a zone in step with a server. Pass a closure when the container opens, and it's
+called once for each zone as the zone opens. Return a provider to sync that zone with its zone on the
+server, or `nil` to keep it on the device. The same app code works with or without it: sync adds to
+saving, it doesn't replace it.
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self], syncProvider: provider)
+let container = try RecordContainer(for: [ToDo.self], syncProvider: { zone in
+    zone == "drafts" ? nil : MyProvider(zone: zone)     // keep drafts on the device
+})
 
 try await context.save()       // commits, then sends what the server doesn't have
 try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
@@ -364,7 +378,7 @@ Inverses aren't sent. The container owns the rules:
 ```swift
 @main
 struct ToDoApp: App {
-    let container = try! RecordContainer()   // the default zone
+    let container = try! RecordContainer()   // Application Support/Records
 
     var body: some Scene {
         WindowGroup { ContentView().recordContainer(container) }
@@ -405,10 +419,10 @@ writing a record with a different ID is a programmer error: it asserts in debug 
 release builds. A list works differently. Assigning a different record at an index replaces the old one,
 which is deleted along with its cascades, while the new one brings only its own references.
 
-Without a container in the environment, `@Records` uses the default zone's shared container.
-`@Records("drafts")` reads another zone, through the environment's container if it belongs to that
-zone and otherwise through `RecordContainer.shared(_:)`, which returns the most recently opened
-container for a zone's file. Either way it reads and writes through that container's `mainContext`.
+`@Records` reads and writes through the main context of the environment's container, or without one, the
+most recently opened container on the default folder. It follows `context.zone`, so setting the zone
+switches every list at once. `@Records("pantry")` pins a property to one zone instead, and `@Records(nil)`
+to the default zone.
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by

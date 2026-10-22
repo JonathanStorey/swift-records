@@ -3,7 +3,7 @@ import SwiftRecords
 import Testing
 
 @Suite struct ChangeLogTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     private func version<R: Record>(_ record: R) throws -> Int? {
         try container.metadata(R.self, id: record.id)?.version
@@ -142,7 +142,7 @@ import Testing
 
 @MainActor
 @Suite struct ContextChangeLogTests {
-    let context = try! RecordContainer(zone: .inMemory).mainContext
+    let context = try! RecordContainer(inMemory: true).mainContext
 
     @Test func readingChangesSavesPendingEditsFirst() throws {
         let start = try context.changeToken

@@ -3,7 +3,7 @@ import SwiftRecords
 import Testing
 
 @Suite struct PagingTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     init() throws {
         try container.save((0..<10).map { ToDo(title: "Item \($0)", priority: $0 % 3) })

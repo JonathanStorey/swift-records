@@ -75,7 +75,7 @@ struct MisplacedReference {
 }
 
 @Suite struct ReferenceTests {
-    let container = try! RecordContainer(for: [Board.self, Shelf.self], zone: .inMemory)
+    let container = try! RecordContainer(for: [Board.self, Shelf.self], inMemory: true)
 
     private func cards() throws -> [String: Board.ID?] {
         Dictionary(uniqueKeysWithValues: try container.fetch(Card.self).map { ($0.text, $0.board) })
@@ -198,8 +198,8 @@ struct MisplacedReference {
     // MARK: Schema
 
     @Test func relationshipsMustSayHowTheirTargetsBelong() {
-        #expect(throws: RecordsError.self) { try RecordContainer(for: [LooseBoard.self], zone: .inMemory) }
-        #expect(throws: RecordsError.self) { try RecordContainer(for: [MisplacedReference.self], zone: .inMemory) }
+        #expect(throws: RecordsError.self) { try RecordContainer(for: [LooseBoard.self], inMemory: true) }
+        #expect(throws: RecordsError.self) { try RecordContainer(for: [MisplacedReference.self], inMemory: true) }
     }
 }
 

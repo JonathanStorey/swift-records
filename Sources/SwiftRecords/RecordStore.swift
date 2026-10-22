@@ -63,7 +63,7 @@ final class RecordStore: @unchecked Sendable {
     let url: URL?
 
     /// Where asset files are stored: beside the database file and named after it, such as
-    /// `default.assets`. An in-memory store uses a temporary folder that is removed with it.
+    /// `_default.assets`. An in-memory store uses a temporary folder that is removed with it.
     let assetsDirectory: URL
 
     private struct OpenStore {

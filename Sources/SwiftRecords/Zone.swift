@@ -1,54 +1,28 @@
 import Foundation
 
-/// A named database file. The name is the file name without its extension, so the zone `"drafts"`
-/// is stored as `drafts.sqlite`.
-///
-/// Zone files live in the app's Application Support directory under `Records/`. They never sync
-/// through iCloud, but they are included in the device's own backups and in phone-to-phone transfers.
-///
-/// ```swift
-/// extension Zone {
-///     static let drafts: Zone = "drafts"
-/// }
-///
-/// let container = try RecordContainer(zone: .drafts)
-/// ```
-public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomStringConvertible {
-    /// The file name without extension, or `nil` for an in-memory zone.
-    public let name: String?
-
-    public init(_ name: String) {
-        self.name = name
-    }
-
-    public init(stringLiteral name: String) {
-        self.init(name)
-    }
-
-    private init(inMemory: Void) {
-        name = nil
-    }
-
-    /// The zone used when none is given: `default.sqlite`.
-    public static let `default`: Zone = "default"
-
-    /// A database that lives only as long as its container. Useful for tests and previews.
-    public static let inMemory = Zone(inMemory: ())
-
-    public var description: String { name ?? "in-memory" }
-
-    /// The zone's file inside `directory`, or `nil` for an in-memory zone.
-    func url(in directory: URL) throws -> URL? {
-        guard let name else { return nil }
-        guard !name.isEmpty, !name.hasPrefix("."), name.rangeOfCharacter(from: Self.disallowed) == nil else {
-            throw RecordsError.invalidZoneName(name)
+/// Zone names and the files they map to. A zone is a `String?` naming a database file inside a container's
+/// folder: the zone `"drafts"` is stored as `drafts.sqlite`, and `nil`, the default zone, as `_default.sqlite`.
+/// Names starting with an underscore are reserved for SwiftRecords.
+enum ZoneFile {
+    /// Throws unless the name is usable as a zone's file name.
+    static func validate(_ zone: String?) throws {
+        guard let zone else { return }
+        guard !zone.isEmpty, !zone.hasPrefix("."), !zone.hasPrefix("_"), zone.rangeOfCharacter(from: disallowed) == nil else {
+            throw RecordsError.invalidZoneName(zone)
         }
-        return directory.appendingPathComponent(name + ".sqlite")
+    }
+
+    /// The zone's file inside `directory`.
+    static func url(for zone: String?, in directory: URL) throws -> URL {
+        try validate(zone)
+        return directory.appendingPathComponent((zone ?? "_default") + ".sqlite")
     }
 
     private static let disallowed = CharacterSet(charactersIn: "/\\:").union(.newlines).union(.controlCharacters)
+}
 
-    /// Where zone files are stored: `Application Support/Records`. On macOS the folder sits inside one
+extension RecordContainer {
+    /// The folder a container uses when given none: `Application Support/Records`. On macOS the folder sits inside one
     /// named for the app's bundle identifier, because Application Support is shared by every app there.
     public static var defaultDirectory: URL {
         var directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -62,7 +36,7 @@ public struct Zone: Hashable, Sendable, ExpressibleByStringLiteral, CustomString
     #if canImport(Darwin)
     /// The folder for zone files shared with an app extension, such as a widget: `Library/Application
     /// Support/Records` inside the App Group's container. Returns `nil` when the app doesn't have the
-    /// App Group entitlement. Pass it as the `directory` when opening each container.
+    /// App Group entitlement. Pass it as the container's `directory`.
     public static func directory(appGroup identifier: String) -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)?
             .appendingPathComponent("Library/Application Support/Records", isDirectory: true)

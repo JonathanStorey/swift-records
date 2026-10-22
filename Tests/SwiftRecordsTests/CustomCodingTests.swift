@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// A record whose own Codable groups properties into nested containers.
@@ -46,7 +46,7 @@ struct Place {
 }
 
 @Suite struct CustomCodingTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     @Test func nestedContainersRoundTripAsJSONColumns() throws {
         let place = Place(name: "Cafe", street: "1 Main St", city: "Springfield", tags: ["coffee", "wifi"])
@@ -61,16 +61,18 @@ struct Place {
 
 @MainActor
 @Suite struct SharedContainerTests {
-    @Test func sharedReturnsTheLatestContainerForAFile() throws {
-        let mine = try RecordContainer(zone: .inMemory)
-        #expect(try RecordContainer.shared(.inMemory) === mine)
+    @Test func sharedReturnsTheLatestContainerForAFolder() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shared-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mine = try RecordContainer(directory: directory)
+        #expect(try RecordContainer.shared(in: directory) === mine)
 
-        let newer = try RecordContainer(zone: .inMemory)
-        #expect(try RecordContainer.shared(.inMemory) === newer)
+        let newer = try RecordContainer(directory: directory)
+        #expect(try RecordContainer.shared(in: directory) === newer)
     }
 
     @Test func eachContainerHasOneMainContext() throws {
-        let container = try RecordContainer(zone: .inMemory)
+        let container = try RecordContainer(inMemory: true)
         #expect(container.mainContext === container.mainContext)
         #expect(container.mainContext.container === container)
     }

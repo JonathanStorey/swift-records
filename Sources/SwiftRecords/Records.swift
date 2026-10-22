@@ -26,16 +26,17 @@ import SwiftUI
 ///
 /// Writing a record to `$recipe` saves it, and writing `nil` deletes it.
 ///
-/// Without a zone, the wrapper uses the environment's container, or the default zone's shared container
-/// when there is none. With a zone, such as `@Records("pantry")`, it uses the environment's container if
-/// that container belongs to the zone, and otherwise the zone's shared container.
+/// It reads through the main context of the environment's container, or of a shared container on the
+/// default folder when the environment has none. Without a zone it follows the context's `zone`, so setting
+/// `context.zone` switches it and it fetches again. A zone, such as `@Records("pantry")`, pins it to that
+/// zone whatever the context's is, and `@Records(nil)` pins it to the default zone.
 @MainActor
 @propertyWrapper
 public struct Records<Value: Sendable>: DynamicProperty {
     @Environment(\.recordContainer) private var container
     @State private var cache = Cache()
 
-    private let zone: Zone?
+    private let zone: ZoneChoice
     private let query: Query
     private let animation: Animation?
 
@@ -45,104 +46,112 @@ public struct Records<Value: Sendable>: DynamicProperty {
         /// Identifies the query's arguments, such as the IDs, so changing them fetches again.
         let key: AnyHashable?
         let empty: Value
-        let fetch: @MainActor (RecordContainer) throws -> Value
+        let fetch: @MainActor (ZoneStorage) throws -> Value
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
-        let write: @MainActor (RecordContext, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
+        let write: @MainActor (RecordContext, _ zone: String?, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
     }
 
-    private init(zone: Zone?, query: Query, animation: Animation?) {
+    /// Whether the wrapper follows the context's zone or stays in one.
+    enum ZoneChoice {
+        case following
+        case fixed(String?)
+
+        @MainActor
+        func zone(in context: RecordContext) -> String? {
+            switch self {
+            case .following: context.zone
+            case .fixed(let zone): zone
+            }
+        }
+    }
+
+    private init(zone: ZoneChoice, query: Query, animation: Animation?) {
         self.zone = zone
         self.query = query
         self.animation = animation
     }
 
-    /// Records from the environment's container, or from the default zone when there is none, in their
-    /// stored order. With an animation, the view animates as records arrive, change and leave.
+    /// Records from the context's current zone, in their stored order. With an animation, the view animates as records arrive, change and leave.
     public init<R: Record>(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: nil, query: .list(predicate), animation: animation)
+        self.init(zone: .following, query: .list(predicate), animation: animation)
     }
 
     /// Every record of the element type, so `@Records var recipes: [Recipe]` needs no arguments and stays
     /// out of the view's memberwise initializer.
     public init() where Value: RecordArray {
-        self.init(zone: nil, query: Value.allRecordsQuery(), animation: nil)
+        self.init(zone: .following, query: Value.allRecordsQuery(), animation: nil)
     }
 
-    /// Records from a zone, such as `@Records(.pantry)`.
-    public init<R: Record>(_ zone: Zone, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: zone, query: .list(predicate), animation: animation)
-    }
-
-    /// Records from a zone by name, such as `@Records("pantry")`.
-    public init<R: Record>(_ zone: String, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(Zone(zone), filter: predicate, animation: animation)
+    /// Records from one zone whatever the context's is, such as `@Records("pantry")`. `nil` is the default zone.
+    public init<R: Record>(_ zone: String?, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
+        self.init(zone: .fixed(zone), query: .list(predicate), animation: animation)
     }
 
     /// The records with these IDs in their stored order, such as an inverse's owners:
     /// `@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]`.
     public init<R: Record>(ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: nil, query: .list(ids: ids), animation: animation)
+        self.init(zone: .following, query: .list(ids: ids), animation: animation)
     }
 
     /// The records with these IDs in a zone.
-    public init<R: Record>(_ zone: Zone, ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: zone, query: .list(ids: ids), animation: animation)
+    public init<R: Record>(_ zone: String?, ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
+        self.init(zone: .fixed(zone), query: .list(ids: ids), animation: animation)
     }
 
     /// The record with this ID, or `nil` once it's deleted: `@Records(id: recipeID) var recipe: Recipe?`.
     public init<R: Record>(id: UUID, animation: Animation? = nil) where Value == R? {
-        self.init(zone: nil, query: .single(id: id), animation: animation)
+        self.init(zone: .following, query: .single(id: id), animation: animation)
     }
 
     /// The record with this ID in a zone.
-    public init<R: Record>(_ zone: Zone, id: UUID, animation: Animation? = nil) where Value == R? {
-        self.init(zone: zone, query: .single(id: id), animation: animation)
+    public init<R: Record>(_ zone: String?, id: UUID, animation: Animation? = nil) where Value == R? {
+        self.init(zone: .fixed(zone), query: .single(id: id), animation: animation)
     }
 
-    /// The main context of the environment's container when it fits the requested zone, otherwise of the
-    /// zone's shared container.
+    /// The main context of the environment's container, otherwise of the shared one.
     private var resolvedContext: RecordContext? {
-        if let container, zone == nil || container.zone == zone {
+        if let container {
             return container.mainContext
         }
         do {
-            return try RecordContainer.shared(zone ?? .default).mainContext
+            return try RecordContainer.shared().mainContext
         } catch {
-            assertionFailure("@Records could not open zone \(zone ?? .default): \(error)")
+            assertionFailure("@Records could not open the default folder: \(error)")
             return nil
         }
     }
 
     public var wrappedValue: Value {
         cache.animation = animation
-        return Self.value(context: resolvedContext, cache: cache, query: query)
+        return Self.value(context: resolvedContext, cache: cache, query: query, zone: zone)
     }
 
     public var projectedValue: Binding<Value> {
         let context = resolvedContext
         let cache = cache
         let query = query
+        let choice = zone
         return Binding(
             get: {
                 MainActor.assumeIsolated {
-                    Self.value(context: context, cache: cache, query: query)
+                    Self.value(context: context, cache: cache, query: query, zone: choice)
                 }
             },
             set: { newValue in
                 MainActor.assumeIsolated {
                     guard let context else { return }
-                    let previous = Self.value(context: context, cache: cache, query: query)
+                    let previous = Self.value(context: context, cache: cache, query: query, zone: choice)
                     // Show the edit immediately; the context saves it once edits pause.
                     cache.value = newValue
                     cache.version += 1
-                    query.write(context, newValue, previous, ObjectIdentifier(cache))
+                    query.write(context, choice.zone(in: context), newValue, previous, ObjectIdentifier(cache))
                 }
             }
         )
     }
 
-    private static func value(context: RecordContext?, cache: Cache, query: Query) -> Value {
+    private static func value(context: RecordContext?, cache: Cache, query: Query, zone choice: ZoneChoice) -> Value {
         guard let context else { return query.empty }
         // Reading the cache's version registers the dependency. The context bumps it after each change,
         // inside the view's animation.
@@ -155,7 +164,9 @@ public struct Records<Value: Sendable>: DynamicProperty {
             }
         }
         let changeCount = context.changeCount
-        if let value = cache.value, cache.key == query.key, changeCount == cache.changeCount + 1,
+        let zone = choice.zone(in: context)
+        let key = CacheKey(query: query.key, zone: zone)
+        if let value = cache.value, cache.key == key, changeCount == cache.changeCount + 1,
            context.lastSaveSource == ObjectIdentifier(cache) {
             // The save only wrote this view's own edits, which the cache already shows. Filter in memory
             // so an edited record still leaves, without reading the database again.
@@ -163,12 +174,18 @@ public struct Records<Value: Sendable>: DynamicProperty {
                 cache.value = refilter(value)
             }
             cache.changeCount = changeCount
-        } else if cache.changeCount != changeCount || cache.value == nil || cache.key != query.key {
-            cache.value = (try? query.fetch(context.container)) ?? query.empty
+        } else if cache.changeCount != changeCount || cache.value == nil || cache.key != key {
+            cache.value = (try? query.fetch(context.storage(for: zone))) ?? query.empty
             cache.changeCount = changeCount
-            cache.key = query.key
+            cache.key = key
         }
         return cache.value ?? query.empty
+    }
+
+    /// What the cached value was fetched for.
+    struct CacheKey: Hashable {
+        let query: AnyHashable?
+        let zone: String?
     }
 
     @MainActor
@@ -176,7 +193,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
     final class Cache {
         var version = 0
         @ObservationIgnored var value: Value?
-        @ObservationIgnored var key: AnyHashable?
+        @ObservationIgnored var key: CacheKey?
         @ObservationIgnored var changeCount = -1
         @ObservationIgnored weak var context: RecordContext?
         @ObservationIgnored var animation: Animation?
@@ -194,7 +211,7 @@ extension Records.Query {
             empty: [],
             fetch: { try $0.fetch(R.self, where: predicate) },
             refilter: refilter,
-            write: { context, new, previous, source in context.apply(new, replacing: previous, source: source) }
+            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) }
         )
     }
 
@@ -204,7 +221,7 @@ extension Records.Query {
             empty: [],
             fetch: { try $0.fetch(R.self, ids: ids) },
             refilter: { records in records.filter { ids.contains($0.id) } },
-            write: { context, new, previous, source in context.apply(new, replacing: previous, source: source) }
+            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) }
         )
     }
 
@@ -214,16 +231,16 @@ extension Records.Query {
             empty: nil,
             fetch: { try $0.fetch(R.self, id: id) },
             refilter: nil,
-            write: { context, new, previous, _ in
+            write: { context, zone, new, previous, _ in
                 if let new {
                     // The wrapper is bound to one ID, so a record with another one can only be a mistake.
                     guard new.id == id else {
                         assertionFailure("@Records(id:) is bound to \(id), so its record's id can't change to \(new.id)")
                         return
                     }
-                    context.save(new)
+                    context.save(new, in: zone)
                 } else if let previous {
-                    context.delete(previous)
+                    context.delete(previous, in: zone)
                 }
             }
         )
@@ -246,13 +263,13 @@ extension RecordArray {
     static func allRecordsQuery() -> Records<Self>.Query {
         typealias R = RecordElement
         let query = Records<[R]>.Query.list(nil)
-        let fetch: @MainActor (RecordContainer) throws -> Self = { try query.fetch($0) as! Self }
+        let fetch: @MainActor (ZoneStorage) throws -> Self = { try query.fetch($0) as! Self }
         var refilter: (@MainActor (Self) -> Self)?
         if let filter = query.refilter {
             refilter = { filter($0 as! [R]) as! Self }
         }
-        let write: @MainActor (RecordContext, Self, Self, ObjectIdentifier) -> Void = { context, new, previous, source in
-            query.write(context, new as! [R], previous as! [R], source)
+        let write: @MainActor (RecordContext, String?, Self, Self, ObjectIdentifier) -> Void = { context, zone, new, previous, source in
+            query.write(context, zone, new as! [R], previous as! [R], source)
         }
         return Records<Self>.Query(key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write)
     }

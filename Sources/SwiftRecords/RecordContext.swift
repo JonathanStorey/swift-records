@@ -6,13 +6,14 @@ import UIKit
 import AppKit
 #endif
 
-/// A container's main-actor context, in the role SwiftData gives `ModelContext`. Get it from
-/// `RecordContainer.mainContext`, which every view and caller shares.
+/// A zone's main-actor context, in the role SwiftData gives `ModelContext`. Get it from
+/// `RecordContainer.mainContext`, which every view and caller shares. Its `zone` picks which of the
+/// container's zones it reads and writes.
 ///
 /// Inserts, updates and deletes are collected and committed together in one transaction, either when
 /// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
 /// change to each record is kept, so rapid edits such as typing cost one write. Views using `@Records`
-/// refresh after each save, and after changes written to the container some other way, such as by a
+/// refresh after each save, and after changes written to the zone some other way, such as by a
 /// background import, a sync engine or an app extension.
 ///
 /// Saving and fetching have `async` versions, which do the database work off the main actor. Use them in
@@ -20,9 +21,23 @@ import AppKit
 @MainActor
 @Observable
 public final class RecordContext {
+    /// The container this context belongs to.
     public let container: RecordContainer
 
-    /// Incremented after every save, after a rollback, and after the container commits changes this
+    /// The zone that saves, deletes and fetches use: `nil`, the default zone, until you set it. Setting it switches every
+    /// `@Records` view that doesn't name a zone of its own, and they fetch again from the new zone. Changes
+    /// already pending stay with the zone they were made in. A zone's file opens the first time it's used.
+    public var zone: String? = nil {
+        didSet {
+            guard zone != oldValue else { return }
+            _ = try? storage(for: zone)
+            lastSaveSource = nil
+            updateStatus()
+            didChange()
+        }
+    }
+
+    /// Incremented after every save, after a rollback, and after the zone commits changes this
     /// context didn't make. `@Records` compares it with its cache to know when to fetch again, and learns
     /// of each change through `onChange(for:_:)`.
     @ObservationIgnored private(set) var changeCount = 0
@@ -62,13 +77,14 @@ public final class RecordContext {
     @ObservationIgnored private var saveFailure: RecordsError?
 
     private struct Change: Sendable {
+        let zone: String?
         let sequence: Int
         let source: ObjectIdentifier?
         /// Stored orders run after every record change, so records inserted in the same save take their places.
         var isOrder = false
         /// What the change leaves a single record as, so `hasChanges(in:)` can see it before it commits.
         var latest: Latest? = nil
-        let run: @Sendable (RecordContainer) throws -> Void
+        let run: @Sendable (ZoneStorage) throws -> Void
     }
 
     enum Latest: Sendable {
@@ -84,8 +100,8 @@ public final class RecordContext {
 
     /// What a committed batch reports back to the main actor.
     private struct Commit: Sendable {
-        /// The container's commit count just before this batch committed.
-        let base: Int
+        /// Each zone's commit count just before this batch committed to it.
+        let bases: [String?: Int]
         let changedStructure: Bool
     }
 
@@ -102,9 +118,10 @@ public final class RecordContext {
     /// The single source of every change in the most recent save, when there was one and the save changed
     /// nothing structural. `@Records` uses it to skip fetching again after its own edits.
     @ObservationIgnored private(set) var lastSaveSource: ObjectIdentifier?
-    /// The container's commit count as of the last change this context has accounted for.
-    @ObservationIgnored private var knownCommits: Int
-    @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
+    /// Each zone's commit count as of the last change this context has accounted for.
+    @ObservationIgnored private var knownCommits: [String?: Int] = [:]
+    /// The zones this context has used, and its commit observer on each.
+    @ObservationIgnored private nonisolated(unsafe) var observed: [String?: (storage: ZoneStorage, token: UUID)] = [:]
     @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
     /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
     @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordContext")
@@ -115,27 +132,44 @@ public final class RecordContext {
 
     init(container: RecordContainer) {
         self.container = container
-        knownCommits = container.commitCount
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
             self?.autosave()
         }, becomeActive: { [weak self] in
             guard let self else { return }
-            if container.sync == nil {
+            if observed.values.allSatisfy({ $0.storage.sync == nil }) {
                 refresh()
             } else {
                 Task { try? await self.refresh() }
             }
         })
-        commitObserver = container.observeCommits { [weak self] in
-            Task { @MainActor in self?.containerDidCommit() }
-        }
+        observe(container.defaultStorage)
         updateStatus()
     }
 
     deinit {
-        if let commitObserver {
-            container.removeCommitObserver(commitObserver)
+        for (storage, token) in observed.values {
+            storage.removeCommitObserver(token)
         }
+    }
+
+    /// The zone's storage, which this context then watches for commits it didn't make.
+    func storage(for zone: String?) throws -> ZoneStorage {
+        if let storage = observed[zone]?.storage {
+            return storage
+        }
+        let storage = try container.storage(for: zone)
+        observe(storage)
+        return storage
+    }
+
+    private func observe(_ storage: ZoneStorage) {
+        let zone = storage.zone
+        knownCommits[zone] = storage.commitCount
+        storage.context = self
+        let token = storage.observeCommits { [weak self] in
+            Task { @MainActor in self?.zoneDidCommit(zone) }
+        }
+        observed[zone] = (storage, token)
     }
 
     func syncPhaseChanged() {
@@ -148,7 +182,7 @@ public final class RecordContext {
         } else if let saveFailure {
             .failed(saveFailure)
         } else {
-            switch container.syncPhase {
+            switch observed[zone]?.storage.syncPhase ?? .idle {
             case .idle: .saved
             case .syncing: .syncing
             case .offline: .offline
@@ -162,11 +196,11 @@ public final class RecordContext {
     }
 
     /// Refreshes views after commits this context didn't make. Its own saves are already counted.
-    private func containerDidCommit() {
-        guard savesInFlight == 0 else { return }
-        let commits = container.commitCount
-        guard commits != knownCommits else { return }
-        knownCommits = commits
+    private func zoneDidCommit(_ zone: String?) {
+        guard savesInFlight == 0, let storage = observed[zone]?.storage else { return }
+        let commits = storage.commitCount
+        guard commits != knownCommits[zone] else { return }
+        knownCommits[zone] = commits
         lastSaveSource = nil
         didChange()
     }
@@ -196,7 +230,7 @@ public final class RecordContext {
     /// Adds a new record at the end of its type's stored order. It throws `RecordsError.duplicateID` when a
     /// record with the same ID is already stored or waiting to be saved, so it never overwrites one.
     public func append<R: Record>(_ record: R) throws {
-        if case .saved? = try current(R.self, id: record.id) {
+        if case .saved? = try current(R.self, id: record.id, in: zone) {
             throw RecordsError.duplicateID(type: R.table, id: record.id)
         }
         save(record)
@@ -204,36 +238,44 @@ public final class RecordContext {
 
     /// Inserts the record, or updates it if one with the same ID exists.
     public func save<R: Record>(_ record: R) {
-        enqueue(key: Self.key(record), source: nil, latest: .saved(record)) { try $0.save(record) }
+        save(record, in: zone)
+    }
+
+    func save<R: Record>(_ record: R, in zone: String?) {
+        enqueue(key: Self.key(record, in: zone), zone: zone, source: nil, latest: .saved(record)) { try $0.save(record) }
     }
 
     public func delete<R: Record>(_ record: R) {
-        enqueue(key: Self.key(record), source: nil, latest: .deleted) { try $0.delete(record) }
+        delete(record, in: zone)
+    }
+
+    func delete<R: Record>(_ record: R, in zone: String?) {
+        enqueue(key: Self.key(record, in: zone), zone: zone, source: nil, latest: .deleted) { try $0.delete(record) }
     }
 
     public func delete<R: Record>(_ type: R.Type, id: R.ID) {
-        enqueue(key: Self.key(type, id: id), source: nil, latest: .deleted) { try $0.delete(type, id: id) }
+        enqueue(key: Self.key(type, id: id, in: zone), zone: zone, source: nil, latest: .deleted) { try $0.delete(type, id: id) }
     }
 
     /// Deletes every record that matches the predicate when the context saves, applying each one's
     /// delete rules. Without a predicate it deletes every record of the type.
     public func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) {
-        enqueue(key: "delete|\(R.table)|\(sequence + 1)", source: nil) { try $0.delete(type, where: predicate) }
+        enqueue(key: "\(zone ?? "")|delete|\(R.table)|\(sequence + 1)", zone: zone, source: nil) { try $0.delete(type, where: predicate) }
     }
 
-    /// Commits every pending change in one transaction. If the save fails, the changes stay pending so
-    /// you can fix the cause and save again, or discard them with `rollback()`.
+    /// Commits every pending change, in one transaction for each zone they touch. If the save fails, the
+    /// changes stay pending so you can fix the cause and save again, or discard them with `rollback()`.
     public func save() throws {
         guard let batch = takePending() else {
             waitForSaves()
             return
         }
         let container = container
-        let result = writer.sync { Result { try Self.commit(batch.changes, to: container) } }
+        let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
         try finish(batch, result, keepingFailures: true)
     }
 
-    /// Commits every pending change in one transaction off the main actor, so the interface keeps running
+    /// Commits every pending change off the main actor, so the interface keeps running
     /// while it waits for the file. If the save fails, the changes stay pending, as with `save()`.
     ///
     /// With a sync provider, this also sends what the server doesn't have yet. Autosave does too. The
@@ -242,9 +284,16 @@ public final class RecordContext {
         if let batch = takePending() {
             try await commit(batch, keepingFailures: true)
         } else {
-            try await read { _ in }
+            try await onWriter {}
         }
-        await container.sync?.send()
+        await send()
+    }
+
+    /// Sends what each zone's server doesn't have yet.
+    private func send() async {
+        for (storage, _) in observed.values {
+            await storage.sync?.send()
+        }
     }
 
     /// Drops pending changes that have not been saved. Views refresh, so edits made through a `@Records`
@@ -258,11 +307,18 @@ public final class RecordContext {
         didChange()
     }
 
+    /// Drops one zone's pending changes, before its data is deleted.
+    func rollback(in zone: String?) {
+        pending = pending.filter { $0.value.zone != zone }
+    }
+
     /// Picks up changes another process, such as a widget or app extension, wrote to the zone's file, and
     /// refreshes views if there are any. The context also checks when the app becomes active, and every
     /// save and fetch reads the latest data whether or not you call this.
     public func refresh() {
-        container.checkForExternalChanges()
+        for (storage, _) in observed.values {
+            storage.checkForExternalChanges()
+        }
     }
 
     /// Saves, picks up changes other processes wrote, and with a sync provider, sends what is pending and
@@ -270,8 +326,15 @@ public final class RecordContext {
     /// throws only what leaves `status` at `failed`: being offline or signed out isn't an error.
     public func refresh() async throws {
         try await save()
-        try await read { $0.checkForExternalChanges() }
-        try await container.sync?.refresh()
+        let storages = observed.values.map(\.storage)
+        try await onWriter {
+            for storage in storages {
+                storage.checkForExternalChanges()
+            }
+        }
+        for storage in storages {
+            try await storage.sync?.refresh()
+        }
     }
 
     /// Blocks until async saves already started have committed.
@@ -295,23 +358,37 @@ public final class RecordContext {
         let changes = batch.changes
         let result = await withCheckedContinuation { continuation in
             writer.async {
-                continuation.resume(returning: Result { try Self.commit(changes, to: container) })
+                continuation.resume(returning: Result { try Self.commit(changes, in: container) })
             }
         }
         savesInFlight -= 1
         try finish(batch, result, keepingFailures: keepingFailures)
     }
 
-    private nonisolated static func commit(_ changes: [Change], to container: RecordContainer) throws -> Commit {
-        let structure = container.structureVersion
-        var base = 0
-        try container.transaction {
-            base = container.commitCount
-            for change in changes {
-                try change.run(container)
+    /// Commits each zone's changes in a transaction of its own, zone by zone in the order they were first made.
+    private nonisolated static func commit(_ changes: [Change], in container: RecordContainer) throws -> Commit {
+        var zones: [String?] = []
+        var byZone: [String?: [Change]] = [:]
+        for change in changes {
+            if byZone[change.zone] == nil {
+                zones.append(change.zone)
             }
+            byZone[change.zone, default: []].append(change)
         }
-        return Commit(base: base, changedStructure: container.structureVersion != structure)
+        var bases: [String?: Int] = [:]
+        var changedStructure = false
+        for zone in zones {
+            let storage = try container.storage(for: zone)
+            let structure = storage.structureVersion
+            try storage.transaction {
+                bases[zone] = storage.commitCount
+                for change in byZone[zone]! {
+                    try change.run(storage)
+                }
+            }
+            changedStructure = changedStructure || storage.structureVersion != structure
+        }
+        return Commit(bases: bases, changedStructure: changedStructure)
     }
 
     private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: Bool) throws {
@@ -333,20 +410,28 @@ public final class RecordContext {
         }
         updateStatus()
         // Commits from elsewhere since the last refresh, or right after this one, mean views must fetch.
-        let commits = container.commitCount
-        let outside = commit.base != knownCommits || commits > commit.base + 1
-        knownCommits = commits
+        var outside = false
+        for (zone, base) in commit.bases {
+            let commits = observed[zone]?.storage.commitCount ?? base + 1
+            outside = outside || base != knownCommits[zone] || commits > base + 1
+            knownCommits[zone] = commits
+        }
         let sources = Set(batch.changes.map(\.source))
         lastSaveSource = !outside && sources.count == 1 && !commit.changedStructure ? sources.first! : nil
         didChange()
     }
 
+    /// Runs `body` with the current zone's storage after every save already started, off the main actor.
+    private func read<T: Sendable>(_ body: @escaping @Sendable (ZoneStorage) throws -> T) async throws -> T {
+        let storage = try storage(for: zone)
+        return try await onWriter { try body(storage) }
+    }
+
     /// Runs `body` after every save already started, off the main actor.
-    private func read<T: Sendable>(_ body: @escaping @Sendable (RecordContainer) throws -> T) async throws -> T {
-        let container = container
-        return try await withCheckedThrowingContinuation { continuation in
+    private func onWriter<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
             writer.async {
-                continuation.resume(with: Result { try body(container) })
+                continuation.resume(with: Result { try body() })
             }
         }
     }
@@ -358,7 +443,7 @@ public final class RecordContext {
     /// in memory.
     public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
         try save()
-        return try container.fetch(type, where: predicate)
+        return try storage(for: zone).fetch(type, where: predicate)
     }
 
     /// Saves pending changes, then fetches one page: at most `limit` records, starting `offset` records
@@ -371,41 +456,41 @@ public final class RecordContext {
         offset: Int = 0
     ) throws -> RecordSlice<R> {
         try save()
-        return try container.fetch(type, where: predicate, limit: limit, offset: offset)
+        return try storage(for: zone).fetch(type, where: predicate, limit: limit, offset: offset)
     }
 
     /// Saves pending changes, then counts in SQL when the predicate translates.
     public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
         try save()
-        return try container.count(type, where: predicate)
+        return try storage(for: zone).count(type, where: predicate)
     }
 
     /// The record as this context holds it: its pending change if it has one, otherwise the stored copy.
     /// Unlike a fetch, it doesn't save, so a view can call it while it updates.
-    func current<R: Record>(_ type: R.Type, id: R.ID) throws -> Latest? {
-        if let latest = pending[Self.key(type, id: id)]?.latest {
+    func current<R: Record>(_ type: R.Type, id: R.ID, in zone: String?) throws -> Latest? {
+        if let latest = pending[Self.key(type, id: id, in: zone)]?.latest {
             return latest
         }
-        return try container.fetch(type, id: id).map { .saved($0) }
+        return try storage(for: zone).fetch(type, id: id).map { .saved($0) }
     }
 
     public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
         try save()
-        return try container.fetch(type, id: id)
+        return try storage(for: zone).fetch(type, id: id)
     }
 
     /// Saves pending changes, then fetches records by ID in the order given, skipping any that no longer
     /// exist.
     public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
         try save()
-        return try container.fetch(type, ids: ids)
+        return try storage(for: zone).fetch(type, ids: ids)
     }
 
     /// Saves pending changes, then fetches records by ID in their stored order, skipping any that no longer
     /// exist. Use it to load an inverse relationship: `context.fetch(Cookbook.self, ids: recipe.cookbookIDs)`.
     public func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
         try save()
-        return try container.fetch(type, ids: ids)
+        return try storage(for: zone).fetch(type, ids: ids)
     }
 
     // MARK: Fetching off the main actor
@@ -454,7 +539,7 @@ public final class RecordContext {
     package var changeToken: ChangeToken {
         get throws {
             try save()
-            return try container.changeToken
+            return try storage(for: zone).changeToken
         }
     }
 
@@ -462,14 +547,14 @@ public final class RecordContext {
     /// the last change's token and pass it next time.
     package func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
         try save()
-        return try container.changes(since: token)
+        return try storage(for: zone).changes(since: token)
     }
 
     /// Saves pending changes, then returns a record's version, modification time and tag, or `nil` when
     /// the record doesn't exist.
     public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
         try save()
-        return try container.metadata(type, id: id)
+        return try storage(for: zone).metadata(type, id: id)
     }
 
     // MARK: Arrays
@@ -477,32 +562,37 @@ public final class RecordContext {
     /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the rest
     /// are updated. The array's order becomes the stored order among these records, leaving others in
     /// place. This is what the `@Records` binding calls when SwiftUI writes to it.
-    func apply<R: Record>(_ records: [R], replacing previous: [R], source: ObjectIdentifier? = nil) {
+    /// Without a zone it applies to the context's current one.
+    func apply<R: Record>(_ records: [R], replacing previous: [R], in zone: String?? = nil, source: ObjectIdentifier? = nil) {
+        let zone = zone ?? self.zone
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
-            enqueue(key: Self.key(record), source: source, latest: .deleted) { try $0.delete(record) }
+            enqueue(key: Self.key(record, in: zone), zone: zone, source: source, latest: .deleted) { try $0.delete(record) }
         }
         for record in records {
-            enqueue(key: Self.key(record), source: source, latest: .saved(record)) { try $0.save(record) }
+            enqueue(key: Self.key(record, in: zone), zone: zone, source: source, latest: .saved(record)) { try $0.save(record) }
         }
         let ids = records.map(\.id)
-        enqueue(key: "order|\(R.table)|\(source.map { "\($0)" } ?? "")", source: source, isOrder: true) { try $0.setOrder(ids, for: R.self) }
+        let order = "\(zone ?? "")|order|\(R.table)|\(source.map { "\($0)" } ?? "")"
+        enqueue(key: order, zone: zone, source: source, isOrder: true) { try $0.setOrder(ids, for: R.self) }
     }
 
-    private static func key<R: Record>(_ record: R) -> String {
-        key(R.self, id: record.id)
+    private static func key<R: Record>(_ record: R, in zone: String?) -> String {
+        key(R.self, id: record.id, in: zone)
     }
 
-    private static func key<R: Record>(_ type: R.Type, id: R.ID) -> String {
-        "record|\(R.table)|\(id)"
+    private static func key<R: Record>(_ type: R.Type, id: R.ID, in zone: String?) -> String {
+        "\(zone ?? "")|record|\(R.table)|\(id)"
     }
 
     private func enqueue(
-        key: String, source: ObjectIdentifier?, isOrder: Bool = false, latest: Latest? = nil,
-        _ run: @escaping @Sendable (RecordContainer) throws -> Void
+        key: String, zone: String?, source: ObjectIdentifier?, isOrder: Bool = false, latest: Latest? = nil,
+        _ run: @escaping @Sendable (ZoneStorage) throws -> Void
     ) {
+        // Watch the zone from now on, so commits elsewhere refresh views.
+        _ = try? storage(for: zone)
         sequence += 1
-        pending[key] = Change(sequence: sequence, source: source, isOrder: isOrder, latest: latest, run: run)
+        pending[key] = Change(zone: zone, sequence: sequence, source: source, isOrder: isOrder, latest: latest, run: run)
         guard autosaveEnabled else { return }
         autosaveTask?.cancel()
         let delay = autosaveDelay
@@ -524,7 +614,7 @@ public final class RecordContext {
     private func autosave() {
         guard autosaveEnabled, let batch = takePending() else { return }
         let container = container
-        let result = writer.sync { Result { try Self.commit(batch.changes, to: container) } }
+        let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
         do {
             try finish(batch, result, keepingFailures: false)
             lastSaveError = nil
@@ -541,7 +631,7 @@ public final class RecordContext {
         } catch {
             lastSaveError = error
         }
-        await container.sync?.send()
+        await send()
     }
 }
 

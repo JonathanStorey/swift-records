@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 @Suite struct SyncSupportTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     @Test func syncedWritesAreNotLoggedOrVersioned() throws {
         var person = Person(name: "From server")
@@ -64,7 +64,7 @@ import Testing
 
 @MainActor
 @Suite struct OutsideChangeTests {
-    let context = try! RecordContainer(zone: .inMemory).mainContext
+    let context = try! RecordContainer(inMemory: true).mainContext
 
     private func settle() async {
         for _ in 0..<5 { await Task.yield() }

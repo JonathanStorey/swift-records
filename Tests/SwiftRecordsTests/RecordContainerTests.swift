@@ -45,7 +45,7 @@ struct Folder {
 }
 
 @Suite struct RecordContainerTests {
-    let store = try! RecordContainer(zone: .inMemory)
+    let store = try! RecordContainer(inMemory: true)
 
     @Test func roundTripsScalarsAndJSON() throws {
         let due = Date(timeIntervalSince1970: 1_000_000)
@@ -206,14 +206,14 @@ struct Folder {
     }
 
     @Test func persistsToDisk() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("records-\(UUID()).sqlite")
-        defer { try? FileManager.default.removeItem(at: url) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("records-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
         let todo = ToDo(title: "Saved", notes: [Note(text: "On disk")])
         do {
-            let store = try RecordContainer(url: url)
+            let store = try RecordContainer(directory: directory)
             try store.save(todo)
         }
-        let reopened = try RecordContainer(url: url)
+        let reopened = try RecordContainer(directory: directory)
         let fetched = try #require(try reopened.fetch(ToDo.self, id: todo.id))
         #expect(fetched.notes.map(\.text) == ["On disk"])
         // Delete rules survive a relaunch because they are stored with the schema.

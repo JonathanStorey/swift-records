@@ -21,7 +21,7 @@ struct DraftStep {
 
 @MainActor
 @Suite struct HasChangesTests {
-    let container = try! RecordContainer(for: [Draft.self], zone: .inMemory)
+    let container = try! RecordContainer(for: [Draft.self], inMemory: true)
     var context: RecordContext {
         container.mainContext
     }
