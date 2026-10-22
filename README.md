@@ -20,7 +20,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: [ToDo.ID] = []  // inverse, order kept
+    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID> = []  // inverse
 }
 ```
 
@@ -172,9 +172,14 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 - Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
-- An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
-  recurse forever with value types, so fetch them with `context.fetch(_:ids:)`. Reordering the IDs and
-  saving persists the new order.
+- An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs. Loading full records would recurse
+  forever with value types, so fetch them with `context.fetch(_:ids:)`, which returns them in stored
+  order. The container reads an inverse from the owners' links, so editing it and saving changes
+  nothing. Link or unlink from the owner's side.
+- Deleting a record removes it from every owner's relationship, so a deleted recipe leaves each
+  cookbook that held it.
+- `#Predicate { $0.todos.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward
+  relationship, so searches work at full speed in both directions.
 
 ## Assets
 

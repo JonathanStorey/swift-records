@@ -24,13 +24,13 @@ struct ClashOwner {
 @Record
 struct WrongInverse {
     var id = UUID()
-    @Reference(from: \ToDo.tags) var todos: [ToDo.ID] = []
+    @Reference(from: \ToDo.tags) var todos: Set<ToDo.ID> = []
 }
 
 @Record
 struct InverseOfAnotherType {
     var id = UUID()
-    @Reference(from: \ToDo.notes) var todos: [ToDo.ID] = []
+    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID> = []
 }
 
 @Record

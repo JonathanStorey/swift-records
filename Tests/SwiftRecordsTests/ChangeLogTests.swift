@@ -33,7 +33,7 @@ import Testing
         #expect(try version(todo) == 1)
     }
 
-    @Test func linkingChangesTheOwnerAndReorderingTheInverseChangesTheTarget() throws {
+    @Test func linkingChangesTheOwnerAndTheInverseIsReadOnly() throws {
         let note = Note(text: "Shared")
         var first = ToDo(title: "First")
         let second = ToDo(title: "Second", notes: [note])
@@ -45,11 +45,13 @@ import Testing
         #expect(try version(first) == 2)
         #expect(try version(note) == 1)
 
+        // The inverse is read from the owners' links, so editing it and saving changes nothing.
         var fetched = try #require(try container.fetch(Note.self, id: note.id))
-        fetched.todos.reverse()
+        fetched.todos = []
         try container.save(fetched)
-        #expect(try version(note) == 2)
+        #expect(try version(note) == 1)
         #expect(try version(first) == 2)
+        #expect(try container.fetch(Note.self, id: note.id)?.todos == [first.id, second.id])
     }
 
     @Test func logKeepsOneEntryPerRecordInOrder() throws {

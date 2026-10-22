@@ -255,10 +255,6 @@ final class RecordStore: @unchecked Sendable {
         for info in relations() where info.ownerTable == R.table && !linked.contains(info.field) {
             try link(info, ownerID: id, targets: [])
         }
-
-        for (field, ownerIDs) in encoded.inverseOrders {
-            try reorderInverse(of: R.self, field: field, targetID: id, ownerIDs: ownerIDs)
-        }
     }
 
     // MARK: Assets
@@ -375,15 +371,10 @@ final class RecordStore: @unchecked Sendable {
         try logChange(table, id: id)
     }
 
-    /// Replaces an owner's links, keeping each target's existing place in its inverse order.
+    /// Replaces an owner's links.
     func link(_ info: RelationInfo, ownerID: SQLiteValue, targets: [SQLiteValue]) throws {
         let table = quoted(info.table)
-        var inversePositions: [SQLiteValue: SQLiteValue] = [:]
-        var current: [SQLiteValue] = []
-        for row in try db.run("SELECT target, inverse_position FROM \(table) WHERE owner = ? ORDER BY position", [ownerID]) {
-            inversePositions[row["target"]!] = row["inverse_position"]!
-            current.append(row["target"]!)
-        }
+        let current = try db.run("SELECT target FROM \(table) WHERE owner = ? ORDER BY position", [ownerID]).map { $0["target"]! }
         var targets = targets
         if syncEnabled, applyingSynced == 0 {
             // Links a server delivered before their targets stay, in place, until the targets arrive.
@@ -400,40 +391,20 @@ final class RecordStore: @unchecked Sendable {
         try logChange(info.ownerTable, id: ownerID)
         try db.run("DELETE FROM \(table) WHERE owner = ?", [ownerID])
 
+        // Inverses are unordered, so `inverse_position` is always 0. The column stays for older files.
         for (position, target) in targets.enumerated() {
-            let inversePosition = try inversePositions[target]
-                ?? db.run("SELECT COALESCE(MAX(inverse_position), -1) + 1 AS next FROM \(table) WHERE target = ?", [target])[0]["next"]!
             try db.run(
-                "INSERT INTO \(table) (owner, target, position, inverse_position) VALUES (?, ?, ?, ?)",
-                [ownerID, target, .integer(Int64(position)), inversePosition]
+                "INSERT INTO \(table) (owner, target, position, inverse_position) VALUES (?, ?, ?, 0)",
+                [ownerID, target, .integer(Int64(position))]
             )
         }
 
         guard info.deleteRule == .cascade else { return }
         let kept = Set(targets)
-        for removed in inversePositions.keys where !kept.contains(removed) {
+        for removed in Set(current) where !kept.contains(removed) {
             if try !isReferenced(info.targetTable, id: removed) {
                 try deleteRow(info.targetTable, id: removed)
             }
-        }
-    }
-
-    private func reorderInverse<R: Record>(of type: R.Type, field: String, targetID: SQLiteValue, ownerIDs: [SQLiteValue]) throws {
-        guard let keyPath = R.schema.field(named: field)?.inverse,
-              let info = try inverseRelation(keyPath), tableExists(info.table) else { return }
-        var current: [SQLiteValue: SQLiteValue] = [:]
-        for row in try db.run("SELECT owner, inverse_position FROM \(quoted(info.table)) WHERE target = ?", [targetID]) {
-            current[row["owner"]!] = row["inverse_position"]!
-        }
-        for (position, ownerID) in ownerIDs.enumerated() {
-            let position = SQLiteValue.integer(Int64(position))
-            guard let stored = current[ownerID], stored != position else { continue }
-            try db.run(
-                "UPDATE \(quoted(info.table)) SET inverse_position = ? WHERE owner = ? AND target = ?",
-                [position, ownerID, targetID]
-            )
-            // The inverse order is the target's own data, so reordering it changes the target.
-            try logChange(R.table, id: targetID)
         }
     }
 
@@ -580,9 +551,18 @@ final class RecordStore: @unchecked Sendable {
         try fetch(type, ids: [id]).first
     }
 
-    /// Fetches records by ID in the order given, skipping any that no longer exist. Use it to load an
-    /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbooks)`.
+    /// Fetches records by ID in the order given, skipping any that no longer exist.
     func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
+        try fetch(type, ids: ids, storedOrder: false)
+    }
+
+    /// Fetches records by ID in their stored order, skipping any that no longer exist. Use it to load an
+    /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbooks)`.
+    func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
+        try fetch(type, ids: Array(ids), storedOrder: true)
+    }
+
+    private func fetch<R: Record>(_ type: R.Type, ids: [R.ID], storedOrder: Bool) throws -> [R] {
         try locked {
             guard tableExists(R.table) else { return [] }
             try prepare(R.self)
@@ -593,7 +573,16 @@ final class RecordStore: @unchecked Sendable {
                     rows[row["id"]!] = row
                 }
             }
-            let found = ids.compactMap { rows[$0] }
+            var found = ids.compactMap { rows[$0] }
+            if storedOrder {
+                var places: [SQLiteValue: Int64] = [:]
+                for chunk in ids.chunked(into: Self.batchSize) {
+                    for row in try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
+                        if case .integer(let place)? = row["_position"] { places[row["id"]!] = place }
+                    }
+                }
+                found.sort { places[$0["id"]!, default: .max] < places[$1["id"]!, default: .max] }
+            }
             return try prefetching(R.table, rows: found) {
                 try found.map { try decodeRow(R.self, row: $0) }
             }
@@ -698,7 +687,7 @@ final class RecordStore: @unchecked Sendable {
         var rows: [String: [SQLiteValue: [String: SQLiteValue]]] = [:]
         /// Each owner's targets in order, by join table.
         var links: [String: [SQLiteValue: [SQLiteValue]]] = [:]
-        /// Each target's owners in inverse order, by join table.
+        /// Each target's owners, by join table.
         var owners: [String: [SQLiteValue: [SQLiteValue]]] = [:]
         /// Rows whose relationships are loaded.
         var visited: Set<RowKey> = []
@@ -754,7 +743,7 @@ final class RecordStore: @unchecked Sendable {
                     for id in ids { cache.owners[info.table, default: [:]][id] = [] }
                     for chunk in ids.chunked(into: Self.batchSize) {
                         for link in try db.run(
-                            "SELECT owner, target FROM \(quoted(info.table)) WHERE target IN (\(placeholders(chunk.count))) ORDER BY target, inverse_position",
+                            "SELECT owner, target FROM \(quoted(info.table)) WHERE target IN (\(placeholders(chunk.count)))",
                             Array(chunk)
                         ) {
                             cache.owners[info.table]![link["target"]!]!.append(link["owner"]!)
@@ -926,7 +915,7 @@ extension RecordStore: RelationLoader {
             return owners
         }
         return try db.run(
-            "SELECT owner FROM \(quoted(info.table)) WHERE target = ? ORDER BY inverse_position", [targetID]
+            "SELECT owner FROM \(quoted(info.table)) WHERE target = ?", [targetID]
         ).map { $0["owner"]! }
     }
 

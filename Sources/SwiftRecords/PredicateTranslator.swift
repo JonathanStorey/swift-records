@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Supported: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, comparisons with `nil`,
 /// `String.contains` (iOS 18 and macOS 15), `localizedStandardContains`, and `[values].contains(\.property)` on a record's own
-/// stored properties, plus `$0.relationship.contains { ... }` over a to-many relationship, which becomes an
-/// `EXISTS` subquery. `RecordContainer` evaluates anything else in memory.
+/// stored properties, plus `$0.relationship.contains { ... }` over a to-many relationship and
+/// `$0.inverse.contains(owner.id)` over an inverse, which become `EXISTS` subqueries. `RecordContainer` evaluates anything else in memory.
 enum PredicateTranslator {
     struct Clause {
         var sql: String
@@ -32,6 +32,8 @@ struct SQLBuilder {
         let alias: String
         let table: String
         let fieldName: (AnyKeyPath) -> String?
+        /// The join table behind an inverse property, such as `Cookbook.recipes` for `\Recipe.cookbooks`.
+        let inverseRelation: (AnyKeyPath) -> String?
 
         init<R: Record>(_ type: R.Type, alias: String) {
             self.alias = alias
@@ -39,6 +41,12 @@ struct SQLBuilder {
             fieldName = { keyPath in
                 guard let field = R.schema.field(for: keyPath), field.inverse == nil else { return nil }
                 return field.name
+            }
+            inverseRelation = { keyPath in
+                guard let inverse = R.schema.field(for: keyPath)?.inverse,
+                      let owner = Swift.type(of: inverse).rootType as? any Record.Type,
+                      let field = owner.fieldName(for: inverse) else { return nil }
+                return owner.table + "." + field
             }
         }
     }
@@ -189,9 +197,19 @@ extension PredicateExpressions.Negation: SQLExpressible {
     }
 }
 
-// `[a, b].contains($0.property)` becomes `property IN (?, ?)`.
+// `[a, b].contains($0.property)` becomes `property IN (?, ?)`, and `$0.cookbooks.contains(id)` on an
+// inverse becomes an EXISTS subquery over the owner's join table.
 extension PredicateExpressions.SequenceContains: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
+        if let path = sequence as? any KeyPathExpression {
+            guard let scope = builder.scopes[try path.variableKey],
+                  let relation = scope.inverseRelation(path.anyKeyPath) else { throw PredicateTranslator.Unsupported() }
+            let join = quoted("j\(builder.nextAlias())")
+            builder.relations.append(relation)
+            let owner = try builder.expression(element)
+            return "EXISTS (SELECT 1 FROM \(quoted(relation)) AS \(join) "
+                + "WHERE \(join).target = \(quoted(scope.alias)).\"id\" AND \(join).owner = \(owner))"
+        }
         guard let values = (sequence as? any ValueSequence)?.elements else { throw PredicateTranslator.Unsupported() }
         let element = try builder.expression(element)
         let placeholders = try values.map { try builder.bind($0) }

@@ -47,6 +47,6 @@ import Testing
         #expect(fetched.map { $0.subtasks.map(\.title) } == [["S0"], ["S1"], ["S2"]])
 
         let note = try #require(try container.fetch(Note.self, id: shared.id))
-        #expect(note.todos == todos.map(\.id))
+        #expect(note.todos == Set(todos.map(\.id)))
     }
 }

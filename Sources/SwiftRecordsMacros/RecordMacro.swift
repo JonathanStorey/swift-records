@@ -111,6 +111,12 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                     continue
                 }
                 if let inverse = reference?.from {
+                    guard isSet(binding) else {
+                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                            "An inverse holds the IDs of the records that link here, in no order. Declare it as 'Set<Owner.ID>'"
+                        )))
+                        continue
+                    }
                     fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))" + modifiers)
                     continue
                 }
@@ -240,6 +246,12 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         guard let type = binding.typeAnnotation?.type else { return false }
         let text = type.trimmedDescription.filter { !$0.isWhitespace }
         return ["Date?", "Foundation.Date?", "Optional<Date>", "Optional<Foundation.Date>"].contains(text)
+    }
+
+    private static func isSet(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type else { return false }
+        let text = type.trimmedDescription.filter { !$0.isWhitespace }
+        return text.hasPrefix("Set<") || text.hasPrefix("Swift.Set<")
     }
 
     private static func isOptionalData(_ binding: PatternBindingSyntax) -> Bool {
