@@ -2,13 +2,13 @@ import Foundation
 @testable import SwiftRecords
 import Testing
 
-@Record(name: "Clash")
+@Record("Clash")
 struct ClashA {
     var id = UUID()
     var name = ""
 }
 
-@Record(name: "Clash")
+@Record("Clash")
 struct ClashB {
     var id = UUID()
     var title = ""

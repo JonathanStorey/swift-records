@@ -2,9 +2,9 @@ import Foundation
 import SwiftRecords
 import Testing
 
-// Two versions of one record type, sharing a table through `@Record(name:)`.
+// Two versions of one record type, sharing a table through `@Record(_:)`.
 
-@Record(name: "Dish")
+@Record("Dish")
 struct DishV1 {
     var id = UUID()
     var title: String
@@ -12,7 +12,7 @@ struct DishV1 {
     var shelf: [Ingredient] = []
 }
 
-@Record(name: "Dish")
+@Record("Dish")
 struct DishV2 {
     var id = UUID()
     var title: String

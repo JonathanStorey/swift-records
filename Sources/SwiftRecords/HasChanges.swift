@@ -1,6 +1,6 @@
 import Foundation
 
-extension RecordsContext {
+extension RecordContext {
     /// Whether this copy of a record differs from the one the context holds, counting its pending change.
     /// It is true for a record the context has never saved, and false again once an edit is undone.
     ///
@@ -21,7 +21,7 @@ extension RecordsContext {
 }
 
 extension BackgroundContext {
-    /// Whether this copy of a record differs from the stored one. See `RecordsContext.hasChanges(_:)`.
+    /// Whether this copy of a record differs from the stored one. See `RecordContext.hasChanges(_:)`.
     public func hasChanges<R: Record>(_ record: R) throws -> Bool {
         guard let stored = try fetch(R.self, id: record.id) else { return true }
         return !record.matches(stored)

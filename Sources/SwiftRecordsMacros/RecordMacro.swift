@@ -46,22 +46,22 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         // The type as the extension names it, which qualifies a nested type such as `Pantry.Item`.
         let typeName = type.trimmedDescription
 
-        // `@Record(name:)` fixes the stored name, so renaming the struct keeps its data.
+        // `@Record("Name")` fixes the stored name, so renaming the struct keeps its data.
         var table = "\"\(structDecl.name.trimmedDescription)\""
         if case .argumentList(let arguments) = node.arguments,
-           let name = arguments.first(where: { $0.label?.text == "name" })?.expression {
+           let name = arguments.first(where: { $0.label == nil })?.expression {
             guard let literal = name.as(StringLiteralExprSyntax.self), literal.segments.count == 1,
                   let segment = literal.segments.first?.as(StringSegmentSyntax.self),
                   isIdentifier(segment.content.text) else {
                 throw MacroError.message(
-                    "@Record(name:) takes a string literal of letters, digits and underscores that doesn't start with a digit"
+                    "@Record(_:) takes a string literal of letters, digits and underscores that doesn't start with a digit"
                 )
             }
             table = "\"\(segment.content.text)\""
         } else if context.lexicalContext.contains(where: { !$0.is(SourceFileSyntax.self) }) {
             // Records are stored under their simple name, so `Pantry.Item` and `Recipes.Item` would share a table.
             throw MacroError.message(
-                "A nested @Record type needs @Record(name:), because it's stored under its simple name '\(structDecl.name.text)', which another type could also use"
+                "A nested @Record type needs @Record(_:), because it's stored under its simple name '\(structDecl.name.text)', which another type could also use"
             )
         }
         let access = structDecl.modifiers.contains { ["public", "open", "package"].contains($0.name.text) }

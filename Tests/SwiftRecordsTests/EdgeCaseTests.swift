@@ -26,7 +26,7 @@ struct TreeFolder: Equatable {
     @Reference(to: \TreeFolder.subfolders, action: .deleteSelf) var parent: TreeFolder.ID?
 }
 
-@Record(name: "Dish")
+@Record("Dish")
 struct DishV3 {
     var id = UUID()
     var title: String

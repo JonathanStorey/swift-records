@@ -14,6 +14,18 @@ private struct WrapperUses {
     @Records("pantry") var pantry: [Person]
 }
 
+/// A bare `@Records` stays out of the memberwise initializer, as `@Query` does.
+@MainActor
+private struct RecipeList {
+    @Records var todos: [ToDo]
+    var title = "All"
+}
+
+@MainActor
+private func makeLists() -> [RecipeList] {
+    [RecipeList(), RecipeList(title: "Mine")]
+}
+
 @MainActor
 @Suite struct RecordsWrapperTests {
     let container = try! RecordContainer(for: [ToDo.self], zone: .inMemory)
@@ -24,6 +36,12 @@ private struct WrapperUses {
         try container.save([second, first, ToDo(title: "Other")])
         let query = Records<[ToDo]>.Query.list(ids: [first.id, second.id])
         #expect(try query.fetch(container).map(\.title) == ["Second", "First"])
+    }
+
+    @Test func environmentContextIsTheContainersMainContext() {
+        var environment = EnvironmentValues()
+        environment.recordContainer = container
+        #expect(environment.recordContext === container.mainContext)
     }
 
     @Test func singleRecordReadsSavesAndDeletes() throws {

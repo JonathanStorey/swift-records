@@ -95,7 +95,7 @@ extension RecordStore {
             if let other = found[type.table] ?? registered[type.table] {
                 guard ObjectIdentifier(other) == ObjectIdentifier(type) else {
                     throw RecordsError.invalidSchema(
-                        type: type.table, reason: "\(other) and \(type) are both stored as \"\(type.table)\". Give one a different @Record(name:)."
+                        type: type.table, reason: "\(other) and \(type) are both stored as \"\(type.table)\". Give one a different @Record(_:)."
                     )
                 }
                 continue
@@ -171,7 +171,7 @@ extension RecordStore {
             }
         }
         if syncSafe, !isSyncSafe(R.table) {
-            throw invalid("\"\(R.table)\" can't sync. Use @Record(name:) with letters, digits and underscores, starting with a letter.")
+            throw invalid("\"\(R.table)\" can't sync. Use @Record(_:) with letters, digits and underscores, starting with a letter.")
         }
     }
 
