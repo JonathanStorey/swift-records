@@ -320,18 +320,29 @@ errors, and changes wait on the device until they can go.
 
 The provider is transport only. It has three requirements, `open(state:report:)`, `send(_:)` and
 `fetch()`, and answers through `SyncEvent`s such as `.received`, `.sent` and `.accountChanged`. Records
-cross as `SyncRecord`s holding standard types, so anyone can write a provider. For CloudKit, each record
-type is a `recordType` and each ID a `recordName`. A child's reference crosses as a `SyncValue.reference`,
-which becomes a `CKRecord.Reference` with the same action, and `SyncRecord.parent` names the record for
-`CKRecord.parent`, which `CKShare` follows. A relationship crosses as a `[UUID]` in order, which belongs in
-a plain `[String]` field, and an asset as a file URL for a `CKAsset`. Inverses aren't sent. The container
-owns the rules:
+cross as `SyncRecord`s whose fields are `SyncValue`s, an enum with one case per `CKRecordValue` type,
+so anyone can write a provider. For CloudKit:
+
+| swift-records | CKRecord |
+| --- | --- |
+| Record type and `id` | `recordType` and `recordName` |
+| `.string`, `.int`, `.double`, `.date`, `.data` | the same types (dates cross to the millisecond, as CloudKit keeps them) |
+| `.bool`, `.uuid`, `.url` | `Int64` 0 or 1, and strings |
+| `.reference(_:action:)`, a child's `@Reference(to:)` | `CKRecord.Reference` with the same action |
+| `SyncRecord.parent` | `CKRecord.parent`, which `CKShare` follows |
+| `.ids`, a relationship in order | a plain `[String]`, not references |
+| `.url` of an `@Asset` | `CKAsset` |
+| `SyncRecord.position`, the order of a `@Records` list | an `Int64` field the provider names |
+
+Inverses aren't sent. The container owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
   item by item, so steps added on two devices both survive. Only a property both sides changed falls
   to `mergePolicy`, which defaults to the latest edit. `.serverWins`, `.localWins` and `.latestWins`
   settle whole records instead.
+- **Order syncs.** Moving a record in a `@Records` list moves it on every device, and a move merges like
+  a property.
 - **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`.
 - **Order doesn't matter.** A record can arrive before the records it links to, and its links appear
   when they do.
