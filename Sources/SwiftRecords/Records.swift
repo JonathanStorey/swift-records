@@ -50,6 +50,8 @@ public struct Records<Value: Sendable>: DynamicProperty {
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
         let write: @MainActor (RecordContext, _ zone: String?, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
+        /// Lays the context's unsaved changes over fetched values, so views show them before they commit.
+        let overlay: @MainActor (RecordContext, _ zone: String?, _ stored: Value, _ source: ObjectIdentifier) -> Value
     }
 
     /// Whether the wrapper follows the context's zone or stays in one.
@@ -166,19 +168,31 @@ public struct Records<Value: Sendable>: DynamicProperty {
         let changeCount = context.changeCount
         let zone = choice.zone(in: context)
         let key = CacheKey(query: query.key, zone: zone)
-        if let value = cache.value, cache.key == key, changeCount == cache.changeCount + 1,
-           context.lastSaveSource == ObjectIdentifier(cache) {
+        let source = ObjectIdentifier(cache)
+        if var value = cache.value, cache.key == key, changeCount == cache.changeCount + 1,
+           context.lastSaveSource == source {
             // The save only wrote this view's own edits, which the cache already shows. Filter in memory
             // so an edited record still leaves, without reading the database again.
             if let refilter = query.refilter {
-                cache.value = refilter(value)
+                value = refilter(value)
             }
+            cache.value = value
+            cache.stored = value
             cache.changeCount = changeCount
         } else if cache.changeCount != changeCount || cache.value == nil || cache.key != key {
-            cache.value = (try? query.fetch(context.storage(for: zone))) ?? query.empty
+            let stored = (try? query.fetch(context.storage(for: zone))) ?? query.empty
+            cache.stored = stored
+            cache.value = query.overlay(context, zone, stored, source)
             cache.changeCount = changeCount
             cache.key = key
+        } else if context.sequence != cache.sequence,
+                  context.hasPendingChanges(after: cache.sequence, excluding: source),
+                  let stored = cache.stored {
+            // Another view or code changed records without saving yet. This view's own edits are
+            // already in the cache, so they need no work.
+            cache.value = query.overlay(context, zone, stored, source)
         }
+        cache.sequence = context.sequence
         return cache.value ?? query.empty
     }
 
@@ -192,7 +206,12 @@ public struct Records<Value: Sendable>: DynamicProperty {
     @Observable
     final class Cache {
         var version = 0
+        /// What the view shows: the fetched records with unsaved changes laid over them.
         @ObservationIgnored var value: Value?
+        /// The records as fetched.
+        @ObservationIgnored var stored: Value?
+        /// The context's last change number this cache has seen.
+        @ObservationIgnored var sequence = 0
         @ObservationIgnored var key: CacheKey?
         @ObservationIgnored var changeCount = -1
         @ObservationIgnored weak var context: RecordContext?
@@ -211,7 +230,10 @@ extension Records.Query {
             empty: [],
             fetch: { try $0.fetch(R.self, where: predicate) },
             refilter: refilter,
-            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) }
+            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
+            overlay: { context, zone, stored, source in
+                context.overlay(stored, in: zone, source: source) { (try? predicate?.evaluate($0)) ?? true }
+            }
         )
     }
 
@@ -221,7 +243,10 @@ extension Records.Query {
             empty: [],
             fetch: { try $0.fetch(R.self, ids: ids) },
             refilter: { records in records.filter { ids.contains($0.id) } },
-            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) }
+            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
+            overlay: { context, zone, stored, source in
+                context.overlay(stored, in: zone, source: source) { ids.contains($0.id) }
+            }
         )
     }
 
@@ -242,7 +267,8 @@ extension Records.Query {
                 } else if let previous {
                     context.delete(previous, in: zone)
                 }
-            }
+            },
+            overlay: { context, zone, stored, _ in context.overlay(stored, id: id, in: zone) }
         )
     }
 }
@@ -271,7 +297,12 @@ extension RecordArray {
         let write: @MainActor (RecordContext, String?, Self, Self, ObjectIdentifier) -> Void = { context, zone, new, previous, source in
             query.write(context, zone, new as! [R], previous as! [R], source)
         }
-        return Records<Self>.Query(key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write)
+        let overlay: @MainActor (RecordContext, String?, Self, ObjectIdentifier) -> Self = { context, zone, stored, source in
+            query.overlay(context, zone, stored as! [R], source) as! Self
+        }
+        return Records<Self>.Query(
+            key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write, overlay: overlay
+        )
     }
 }
 

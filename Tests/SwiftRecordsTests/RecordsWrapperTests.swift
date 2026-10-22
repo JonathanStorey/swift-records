@@ -61,5 +61,24 @@ private func makeLists() -> [RecipeList] {
         try context.save()
         #expect(try query.fetch(container.defaultStorage) == nil)
     }
+
+    @Test func unsavedAppendsShowInEveryForm() throws {
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let todo = ToDo(title: "New", done: true)
+        try context.append(todo)
+        let view = ObjectIdentifier(container)
+
+        let all = Records<[ToDo]>.Query.list(nil)
+        #expect(all.overlay(context, nil, try all.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        let done = Records<[ToDo]>.Query.list(#Predicate<ToDo> { $0.done })
+        #expect(done.overlay(context, nil, try done.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        let ids = Records<[ToDo]>.Query.list(ids: [todo.id])
+        #expect(ids.overlay(context, nil, try ids.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        let one = Records<ToDo?>.Query.single(id: todo.id)
+        #expect(one.overlay(context, nil, try one.fetch(container.defaultStorage), view)?.title == "New")
+        let bare = [ToDo].allRecordsQuery()
+        #expect(bare.overlay(context, nil, try bare.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+    }
 }
 #endif
