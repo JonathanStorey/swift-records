@@ -20,7 +20,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID> = []  // inverse
+    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>  // inverse
 }
 ```
 
@@ -174,8 +174,8 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
   an array.
 - An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs. Loading full records would recurse
   forever with value types, so fetch them with `context.fetch(_:ids:)`, which returns them in stored
-  order. The container reads an inverse from the owners' links, so editing it and saving changes
-  nothing. Link or unlink from the owner's side.
+  order. It is read-only, with no initial value: the container fills it from the owners' links, so
+  link or unlink from the owner's side.
 - Deleting a record removes it from every owner's relationship, so a deleted recipe leaves each
   cookbook that held it.
 - `#Predicate { $0.todos.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward

@@ -16,7 +16,7 @@ struct Draft {
 struct DraftStep {
     var id = UUID()
     var text = ""
-    @Reference(from: \Draft.steps) var drafts: Set<Draft.ID> = []
+    @Reference(from: \Draft.steps) var drafts: Set<Draft.ID>
 }
 
 @MainActor

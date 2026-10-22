@@ -19,7 +19,7 @@ struct SyncRecipe {
 struct SyncStep {
     var id = UUID()
     var text: String
-    @Reference(from: \SyncRecipe.steps) var recipes: Set<SyncRecipe.ID> = []
+    @Reference(from: \SyncRecipe.steps) var recipes: Set<SyncRecipe.ID>
 }
 
 @Record

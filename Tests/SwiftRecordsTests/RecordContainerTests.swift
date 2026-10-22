@@ -25,7 +25,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID> = []
+    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record

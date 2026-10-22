@@ -33,7 +33,7 @@ import Testing
         #expect(try version(todo) == 1)
     }
 
-    @Test func linkingChangesTheOwnerAndTheInverseIsReadOnly() throws {
+    @Test func linkingChangesTheOwnerOnly() throws {
         let note = Note(text: "Shared")
         var first = ToDo(title: "First")
         let second = ToDo(title: "Second", notes: [note])
@@ -45,9 +45,8 @@ import Testing
         #expect(try version(first) == 2)
         #expect(try version(note) == 1)
 
-        // The inverse is read from the owners' links, so editing it and saving changes nothing.
-        var fetched = try #require(try container.fetch(Note.self, id: note.id))
-        fetched.todos = []
+        // The inverse is read from the owners' links, so saving the target leaves them alone.
+        let fetched = try #require(try container.fetch(Note.self, id: note.id))
         try container.save(fetched)
         #expect(try version(note) == 1)
         #expect(try version(first) == 2)

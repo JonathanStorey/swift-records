@@ -6,7 +6,8 @@ import SwiftSyntaxMacros
 
 /// `@Record` adds `Record` conformance and generates `static var schema`, which maps every stored
 /// property to its key path so predicates, sort descriptors, delete rules and inverses can be
-/// resolved without an instance. It also gives each `@Timestamp` property its storage wrapper.
+/// resolved without an instance. It also gives each `@Timestamp` and `@Reference(from:)` property its
+/// read-only storage wrapper.
 public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -14,11 +15,15 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         providingAttributesFor member: some DeclSyntaxProtocol,
         in context: some MacroExpansionContext
     ) throws -> [AttributeSyntax] {
-        guard let variable = member.as(VariableDeclSyntax.self), timestampKind(variable.attributes) != nil,
-              variable.bindings.count == 1, let binding = variable.bindings.first, isOptionalDate(binding) else {
-            return []
+        guard let variable = member.as(VariableDeclSyntax.self), variable.bindings.count == 1,
+              let binding = variable.bindings.first else { return [] }
+        if timestampKind(variable.attributes) != nil, isOptionalDate(binding) {
+            return ["@SwiftRecords.TimestampStorage"]
         }
-        return ["@SwiftRecords.TimestampStorage"]
+        if referenceArguments(variable.attributes)?.from != nil, isSet(binding), binding.initializer == nil {
+            return ["@SwiftRecords.InverseStorage"]
+        }
+        return []
     }
 
     public static func expansion(
@@ -114,6 +119,12 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                     guard isSet(binding) else {
                         context.diagnose(Diagnostic(node: binding, message: MacroError.message(
                             "An inverse holds the IDs of the records that link here, in no order. Declare it as 'Set<Owner.ID>'"
+                        )))
+                        continue
+                    }
+                    if let initializer = binding.initializer {
+                        context.diagnose(Diagnostic(node: initializer, message: MacroError.message(
+                            "An inverse is read-only and filled by the container, so it takes no initial value. Remove '\(initializer.trimmedDescription)'"
                         )))
                         continue
                     }

@@ -297,6 +297,9 @@ struct RecordDecoder<R: Record>: Decoder {
             }
             if let inverse = R.schema.field(named: name)?.inverse {
                 let ids = try decoder.loader.loadInverse(targetID: id, inverse: inverse)
+                if T.self == InverseStorage.self {
+                    return InverseStorage(ids: Set(try ids.map { try ValueCoding.decode(UUID.self, from: $0) })) as! T
+                }
                 return try ValueCoding.decode(T.self, fromArray: ids)
             }
             if let recordType = T.self as? any Record.Type {

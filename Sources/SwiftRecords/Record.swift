@@ -57,7 +57,7 @@ public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftR
 /// `#Predicate { $0.todos.contains(todo.id) }`, which runs as SQL.
 ///
 /// ```swift
-/// @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID> = []
+/// @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
 /// ```
 @attached(peer)
 public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Target>) =
