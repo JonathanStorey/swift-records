@@ -393,7 +393,7 @@ public final class RecordsContext {
     }
 
     /// Saves pending changes, then fetches records by ID in their stored order, skipping any that no longer
-    /// exist. Use it to load an inverse relationship: `context.fetch(Cookbook.self, ids: recipe.cookbooks)`.
+    /// exist. Use it to load an inverse relationship: `context.fetch(Cookbook.self, ids: recipe.cookbookIDs)`.
     public func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
         try save()
         return try container.fetch(type, ids: ids)

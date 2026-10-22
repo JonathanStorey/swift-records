@@ -54,10 +54,10 @@ public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftR
 /// Declares an inverse relationship: the IDs of every record whose `inverse` property contains this
 /// one. The property's type is `Set<Owner.ID>`, since the owners link here in no particular order.
 /// Load them with `context.fetch(Owner.self, ids:)`, and filter by them with
-/// `#Predicate { $0.todos.contains(todo.id) }`, which runs as SQL.
+/// `#Predicate { $0.todoIDs.contains(todo.id) }`, which runs as SQL.
 ///
 /// ```swift
-/// @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
+/// @Reference(from: \ToDo.notes) var todoIDs: Set<ToDo.ID>
 /// ```
 @attached(peer)
 public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Target>) =

@@ -20,7 +20,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>  // inverse
+    @Reference(from: \ToDo.notes) var todoIDs: Set<ToDo.ID>  // inverse, read-only
 }
 ```
 
@@ -38,7 +38,7 @@ let context = container.mainContext                  // one per container, on th
 
 context.save(todo)                                   // the ToDo, its Person and every Note
 let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
-let parents = try context.fetch(ToDo.self, ids: note.todos)
+let parents = try context.fetch(ToDo.self, ids: note.todoIDs)
 context.delete(todo)
 context.delete(ToDo.self, where: #Predicate { $0.done })   // or delete(ToDo.self, id: id)
 try context.save()                                   // or let autosave commit once edits pause
@@ -178,7 +178,7 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
   link or unlink from the owner's side.
 - Deleting a record removes it from every owner's relationship, so a deleted recipe leaves each
   cookbook that held it.
-- `#Predicate { $0.todos.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward
+- `#Predicate { $0.todoIDs.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward
   relationship, so searches work at full speed in both directions.
 
 ## Assets

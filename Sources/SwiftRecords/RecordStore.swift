@@ -557,7 +557,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     /// Fetches records by ID in their stored order, skipping any that no longer exist. Use it to load an
-    /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbooks)`.
+    /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbookIDs)`.
     func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
         try fetch(type, ids: Array(ids), storedOrder: true)
     }

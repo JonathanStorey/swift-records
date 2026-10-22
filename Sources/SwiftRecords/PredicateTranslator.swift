@@ -32,7 +32,7 @@ struct SQLBuilder {
         let alias: String
         let table: String
         let fieldName: (AnyKeyPath) -> String?
-        /// The join table behind an inverse property, such as `Cookbook.recipes` for `\Recipe.cookbooks`.
+        /// The join table behind an inverse property, such as `Cookbook.recipes` for `\Recipe.cookbookIDs`.
         let inverseRelation: (AnyKeyPath) -> String?
 
         init<R: Record>(_ type: R.Type, alias: String) {
@@ -197,7 +197,7 @@ extension PredicateExpressions.Negation: SQLExpressible {
     }
 }
 
-// `[a, b].contains($0.property)` becomes `property IN (?, ?)`, and `$0.cookbooks.contains(id)` on an
+// `[a, b].contains($0.property)` becomes `property IN (?, ?)`, and `$0.cookbookIDs.contains(id)` on an
 // inverse becomes an EXISTS subquery over the owner's join table.
 extension PredicateExpressions.SequenceContains: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
