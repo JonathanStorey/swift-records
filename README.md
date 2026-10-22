@@ -335,6 +335,15 @@ struct ContentView: View {
 
 `@Records(filter:animation:)` animates the list's changes, including ones from a background import.
 
+`@Records` also loads records by ID, and keeps them current the same way:
+
+```swift
+@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // an inverse's owners, in stored order
+@Records(id: recipeID) var recipe: Recipe?                   // nil once the recipe is deleted
+```
+
+Writing a record to `$recipe` saves it, and writing `nil` deletes it.
+
 Without a container in the environment, `@Records` uses the default zone's shared container.
 `@Records("drafts")` reads another zone, through the environment's container if it belongs to that
 zone and otherwise through `RecordContainer.shared(_:)`, which returns the most recently opened
