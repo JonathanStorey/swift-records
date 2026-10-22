@@ -2,7 +2,7 @@ import Foundation
 @testable import SwiftRecords
 import Testing
 
-@Record(name: "SyncRecipe")
+@Record("SyncRecipe")
 struct SyncRecipe {
     var id = UUID()
     var title: String
@@ -35,7 +35,7 @@ struct SyncCook {
 struct Device {
     let provider: TestProvider
     let container: RecordContainer
-    var context: RecordsContext { container.mainContext }
+    var context: RecordContext { container.mainContext }
 
     init(
         _ server: TestServer, zone: Zone = .inMemory, directory: URL? = nil, mergePolicy: MergePolicy = .default,

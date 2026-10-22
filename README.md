@@ -43,13 +43,17 @@ read and write through a context.
 let container = try RecordContainer()                // the default zone
 let context = container.mainContext                  // one per container, on the main actor
 
-context.save(todo)                                   // the ToDo, its Person and every Note
+try context.append(todo)                             // a new ToDo, its Person and every Note
+context.save(todo)                                   // inserts or updates
 let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
 let parents = try context.fetch(ToDo.self, ids: note.todoIDs)
 context.delete(todo)
 context.delete(ToDo.self, where: #Predicate { $0.done })   // or delete(ToDo.self, id: id)
 try context.save()                                   // or let autosave commit once edits pause
 ```
+
+`append(_:)` adds a new record at the end of the stored order and throws `RecordsError.duplicateID` if
+the ID is already stored or pending, so it never overwrites anything. `save(_:)` inserts or updates.
 
 The main context collects changes and commits them together, either when you call `save()` or
 automatically once edits pause for `autosaveDelay`. Every fetch saves first, so results include your
@@ -159,7 +163,7 @@ Anything else is evaluated in memory, so every predicate works.
   `var servings = 2`. Optionals read as `nil`. A new non-optional property needs a default.
 - **Renamed properties** keep their values with `@Renamed(from: "minutes") var duration = 0`. The
   column (or a relationship's join table) is renamed the first time the container uses the type.
-- **Renamed types** keep their data with `@Record(name: "Recipe")`, which fixes the stored name. A
+- **Renamed types** keep their data with `@Record("Recipe")`, which fixes the stored name. A
   type nested inside another needs one, since its simple name could clash.
 - A property renamed more than once lists every earlier name: `@Renamed(from: "minutes", "time")`.
 - `@Indexed` adds an index to a property that predicates compare, and changes nothing about encoding.
@@ -369,14 +373,23 @@ struct ToDoApp: App {
 
 struct ContentView: View {
     @Records var todos: [ToDo]
+    @Environment(\.recordContext) private var context
 
     var body: some View {
         List($todos, editActions: .all) { $todo in
             TextField("Title", text: $todo.title)
         }
+        .toolbar {
+            Button("Add") { $todos.wrappedValue.append(ToDo(title: "New")) }   // shows at once
+            Button("Save") { try? context.save() }
+        }
     }
 }
 ```
+
+As with SwiftData, `.recordContainer(_:)` puts the container in the environment, and
+`@Environment(\.recordContext)` reads its main context, the one `@Records` writes through. A bare
+`@Records var todos: [ToDo]` takes no arguments, so `ContentView()` needs none either.
 
 `@Records(filter:animation:)` animates the list's changes, including ones from a background import.
 
@@ -399,7 +412,8 @@ container for a zone's file. Either way it reads and writes through that contain
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
-default). The array's order is stored, so moves persist, and records always come back in that order.
+default). The view that wrote shows the change at once. Other views reading the same records see it once
+the context saves. The array's order is stored, so moves persist, and records always come back in that order.
 A filtered list reorders only its own records within the slots they already hold, leaving the rest in
 place. Sort a copy to display them another way.
 

@@ -186,7 +186,7 @@ final class RecordMacroTests: XCTestCase {
     func testGeneratesDefaultsNamesRenamesAndIndexes() {
         assertMacroExpansion(
             """
-            @Record(name: "Recipe")
+            @Record("Recipe")
             struct Dish {
                 var id = UUID()
                 @Renamed(from: "minutes", "time") var duration: Double = 5
@@ -446,7 +446,7 @@ final class RecordMacroTests: XCTestCase {
         for name in ["\"Recipe.steps\"", "\"9lives\"", "\"\"", "someConstant"] {
             assertMacroExpansion(
                 """
-                @Record(name: \(name))
+                @Record(\(name))
                 struct Dish {
                     var id = UUID()
                 }
@@ -457,7 +457,7 @@ final class RecordMacroTests: XCTestCase {
                 }
                 """,
                 diagnostics: [DiagnosticSpec(
-                    message: "@Record(name:) takes a string literal of letters, digits and underscores that doesn't start with a digit",
+                    message: "@Record(_:) takes a string literal of letters, digits and underscores that doesn't start with a digit",
                     line: 1, column: 1
                 )],
                 macros: macros
@@ -483,7 +483,7 @@ final class RecordMacroTests: XCTestCase {
             }
             """,
             diagnostics: [DiagnosticSpec(
-                message: "A nested @Record type needs @Record(name:), because it's stored under its simple name 'Item', which another type could also use",
+                message: "A nested @Record type needs @Record(_:), because it's stored under its simple name 'Item', which another type could also use",
                 line: 2, column: 5
             )],
             macros: macros
@@ -491,7 +491,7 @@ final class RecordMacroTests: XCTestCase {
         assertMacroExpansion(
             """
             enum Pantry {
-                @Record(name: "PantryItem")
+                @Record("PantryItem")
                 struct Item {
                     var id = UUID()
                 }

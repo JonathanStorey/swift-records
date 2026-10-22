@@ -9,7 +9,7 @@ import Foundation
 public final class RecordContainer: @unchecked Sendable {
     let store: RecordStore
     /// Created on first use by `mainContext`, on the main actor.
-    private nonisolated(unsafe) var mainContextStorage: RecordsContext?
+    private nonisolated(unsafe) var mainContextStorage: RecordContext?
 
     /// The zone this container was opened with, or `nil` when opened by URL.
     public let zone: Zone?
@@ -104,11 +104,11 @@ public final class RecordContainer: @unchecked Sendable {
     /// The container's main-actor context, which views and app code use to read and write records. The
     /// container keeps it while the container is open, so every caller shares its pending changes.
     @MainActor
-    public var mainContext: RecordsContext {
+    public var mainContext: RecordContext {
         if let context = mainContextStorage {
             return context
         }
-        let context = RecordsContext(container: self)
+        let context = RecordContext(container: self)
         mainContextStorage = context
         return context
     }

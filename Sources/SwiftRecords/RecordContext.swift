@@ -19,7 +19,7 @@ import AppKit
 /// async code so the interface keeps running while a background import holds the file.
 @MainActor
 @Observable
-public final class RecordsContext {
+public final class RecordContext {
     public let container: RecordContainer
 
     /// Incremented after every save, after a rollback, and after the container commits changes this
@@ -107,7 +107,7 @@ public final class RecordsContext {
     @ObservationIgnored private nonisolated(unsafe) var commitObserver: UUID?
     @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
     /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
-    @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordsContext")
+    @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordContext")
     /// Async saves committing now. Their commits are accounted for when they finish.
     @ObservationIgnored private var savesInFlight = 0 {
         didSet { updateStatus() }
@@ -192,6 +192,15 @@ public final class RecordsContext {
     public var pendingChangeCount: Int { pending.count }
 
     // MARK: Changes
+
+    /// Adds a new record at the end of its type's stored order. It throws `RecordsError.duplicateID` when a
+    /// record with the same ID is already stored or waiting to be saved, so it never overwrites one.
+    public func append<R: Record>(_ record: R) throws {
+        if case .saved? = try current(R.self, id: record.id) {
+            throw RecordsError.duplicateID(type: R.table, id: record.id)
+        }
+        save(record)
+    }
 
     /// Inserts the record, or updates it if one with the same ID exists.
     public func save<R: Record>(_ record: R) {

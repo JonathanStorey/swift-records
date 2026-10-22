@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 @MainActor
-@Suite struct RecordsContextTests {
+@Suite struct RecordContextTests {
     let context = try! RecordContainer(zone: .inMemory).mainContext
 
     @Test func batchesChangesUntilSave() throws {
@@ -17,6 +17,26 @@ import Testing
         #expect(!context.hasChanges)
         #expect(context.changeCount == 1)
         #expect(try context.container.fetch(ToDo.self).count == 2)
+    }
+
+    @Test func appendRefusesAnExistingID() throws {
+        context.autosaveEnabled = false
+        let first = ToDo(title: "First")
+        try context.append(first)
+        #expect(throws: RecordsError.duplicateID(type: "ToDo", id: first.id)) { try context.append(first) }
+
+        try context.save()
+        #expect(throws: RecordsError.duplicateID(type: "ToDo", id: first.id)) { try context.append(first) }
+
+        try context.append(ToDo(title: "Second"))
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["First", "Second"])
+
+        // Once deleted, the ID is free again.
+        context.delete(first)
+        try context.save()
+        try context.append(first)
+        try context.save()
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Second", "First"])
     }
 
     @Test func fetchIncludesPendingChanges() throws {

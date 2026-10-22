@@ -49,7 +49,7 @@ public struct BackgroundContext {
         try container.fetch(type, where: predicate)
     }
 
-    /// Fetches one page of records. See `RecordsContext.fetch(_:where:limit:offset:)`.
+    /// Fetches one page of records. See `RecordContext.fetch(_:where:limit:offset:)`.
     public func fetch<R: Record>(
         _ type: R.Type = R.self,
         where predicate: Predicate<R>? = nil,

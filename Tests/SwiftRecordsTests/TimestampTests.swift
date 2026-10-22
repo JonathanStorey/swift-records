@@ -61,7 +61,7 @@ struct Journal {
 @Suite struct SyncedTimestampTests {
     let server = TestServer()
 
-    private func device() throws -> (TestProvider, RecordsContext) {
+    private func device() throws -> (TestProvider, RecordContext) {
         let provider = TestProvider(server: server)
         let context = try RecordContainer(for: [Journal.self], zone: .inMemory, syncProvider: provider).mainContext
         context.autosaveEnabled = false
@@ -69,7 +69,7 @@ struct Journal {
     }
 
     /// In async code the compiler picks the async `save()`, which sends.
-    private func commit(_ context: RecordsContext) throws {
+    private func commit(_ context: RecordContext) throws {
         try context.save()
     }
 

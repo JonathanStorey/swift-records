@@ -32,7 +32,7 @@ public macro Record() = #externalMacro(module: "SwiftRecordsMacros", type: "Reco
 /// its data. Use letters, digits and underscores, which a CloudKit record type also allows.
 @attached(extension, conformances: Record, names: named(schema))
 @attached(memberAttribute)
-public macro Record(name: String) = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
+public macro Record(_ name: String) = #externalMacro(module: "SwiftRecordsMacros", type: "RecordMacro")
 
 /// Reads a property's earlier names, so renaming it in Swift keeps its stored values. The column is
 /// renamed the first time the container uses the type.

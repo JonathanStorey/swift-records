@@ -48,7 +48,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
         let fetch: @MainActor (RecordContainer) throws -> Value
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
-        let write: @MainActor (RecordsContext, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
+        let write: @MainActor (RecordContext, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
     }
 
     private init(zone: Zone?, query: Query, animation: Animation?) {
@@ -61,6 +61,12 @@ public struct Records<Value: Sendable>: DynamicProperty {
     /// stored order. With an animation, the view animates as records arrive, change and leave.
     public init<R: Record>(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
         self.init(zone: nil, query: .list(predicate), animation: animation)
+    }
+
+    /// Every record of the element type, so `@Records var recipes: [Recipe]` needs no arguments and stays
+    /// out of the view's memberwise initializer.
+    public init() where Value: RecordArray {
+        self.init(zone: nil, query: Value.allRecordsQuery(), animation: nil)
     }
 
     /// Records from a zone, such as `@Records(.pantry)`.
@@ -96,7 +102,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
 
     /// The main context of the environment's container when it fits the requested zone, otherwise of the
     /// zone's shared container.
-    private var resolvedContext: RecordsContext? {
+    private var resolvedContext: RecordContext? {
         if let container, zone == nil || container.zone == zone {
             return container.mainContext
         }
@@ -129,13 +135,14 @@ public struct Records<Value: Sendable>: DynamicProperty {
                     let previous = Self.value(context: context, cache: cache, query: query)
                     // Show the edit immediately; the context saves it once edits pause.
                     cache.value = newValue
+                    cache.version += 1
                     query.write(context, newValue, previous, ObjectIdentifier(cache))
                 }
             }
         )
     }
 
-    private static func value(context: RecordsContext?, cache: Cache, query: Query) -> Value {
+    private static func value(context: RecordContext?, cache: Cache, query: Query) -> Value {
         guard let context else { return query.empty }
         // Reading the cache's version registers the dependency. The context bumps it after each change,
         // inside the view's animation.
@@ -171,7 +178,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
         @ObservationIgnored var value: Value?
         @ObservationIgnored var key: AnyHashable?
         @ObservationIgnored var changeCount = -1
-        @ObservationIgnored weak var context: RecordsContext?
+        @ObservationIgnored weak var context: RecordContext?
         @ObservationIgnored var animation: Animation?
     }
 }
@@ -223,6 +230,34 @@ extension Records.Query {
     }
 }
 
+/// An array of records, which `@Records` fills when it's declared without arguments, as in
+/// `@Records var recipes: [Recipe]`.
+public protocol RecordArray: Sendable {
+    associatedtype RecordElement: Record
+}
+
+extension Array: RecordArray where Element: Record {
+    public typealias RecordElement = Element
+}
+
+extension RecordArray {
+    /// Every record of the element type, typed as this array. Only `[R]` conforms, so the casts hold.
+    @MainActor
+    static func allRecordsQuery() -> Records<Self>.Query {
+        typealias R = RecordElement
+        let query = Records<[R]>.Query.list(nil)
+        let fetch: @MainActor (RecordContainer) throws -> Self = { try query.fetch($0) as! Self }
+        var refilter: (@MainActor (Self) -> Self)?
+        if let filter = query.refilter {
+            refilter = { filter($0 as! [R]) as! Self }
+        }
+        let write: @MainActor (RecordContext, Self, Self, ObjectIdentifier) -> Void = { context, new, previous, source in
+            query.write(context, new as! [R], previous as! [R], source)
+        }
+        return Records<Self>.Query(key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write)
+    }
+}
+
 private struct RecordContainerKey: EnvironmentKey {
     static let defaultValue: RecordContainer? = nil
 }
@@ -235,8 +270,31 @@ extension EnvironmentValues {
     }
 }
 
+extension EnvironmentValues {
+    /// The context views use for their own changes, as SwiftData's `modelContext`: the main context of the
+    /// environment's container, or of the default zone's shared container when none is set.
+    ///
+    /// ```swift
+    /// @Environment(\.recordContext) private var context
+    /// ```
+    public var recordContext: RecordContext {
+        let container = recordContainer
+        // SwiftUI reads the environment on the main actor.
+        return MainActor.assumeIsolated {
+            if let container {
+                return container.mainContext
+            }
+            do {
+                return try RecordContainer.shared().mainContext
+            } catch {
+                preconditionFailure("SwiftRecords could not open the default zone: \(error)")
+            }
+        }
+    }
+}
+
 extension View {
-    /// Makes a container available to `@Records` in this view and its children.
+    /// Makes a container, and its main context as `\.recordContext`, available to this view and its children.
     public func recordContainer(_ container: RecordContainer) -> some View {
         environment(\.recordContainer, container)
     }
