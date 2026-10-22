@@ -168,11 +168,12 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 ## Relationships
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
-  It is stored in a join table named `Owner.property` that keeps the order of both sides.
+  It is stored in a join table named `Owner.property` that keeps the owner's order. A forward
+  relationship is fully readable and writable, and it is how you link and unlink records.
 - Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
-- An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs. Loading full records would recurse
+- An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs, so name it for that, such as `todoIDs`. Loading full records would recurse
   forever with value types, so fetch them with `context.fetch(_:ids:)`, which returns them in stored
   order. It is read-only, with no initial value: the container fills it from the owners' links, so
   link or unlink from the owner's side.
