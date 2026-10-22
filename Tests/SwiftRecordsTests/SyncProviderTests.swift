@@ -11,7 +11,7 @@ struct SyncRecipe {
     var tags: [String] = []
     var updated: Date?
     var steps: [SyncStep] = []
-    @Reference(deleteRule: .none) var cook: SyncCook?
+    var cook: SyncCook?
     @Asset var photo: Data?
 }
 
@@ -19,6 +19,7 @@ struct SyncRecipe {
 struct SyncStep {
     var id = UUID()
     var text: String
+    @Reference(to: \SyncRecipe.steps, action: .deleteSelf) var recipe: SyncRecipe.ID?
     @Reference(from: \SyncRecipe.steps) var recipes: Set<SyncRecipe.ID>
 }
 
@@ -26,6 +27,7 @@ struct SyncStep {
 struct SyncCook {
     var id = UUID()
     var name: String
+    @Reference(from: \SyncRecipe.cook) var recipeIDs: Set<SyncRecipe.ID>
 }
 
 /// One device: an in-memory container syncing through its own provider.

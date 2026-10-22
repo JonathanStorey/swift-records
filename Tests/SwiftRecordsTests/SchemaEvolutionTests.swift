@@ -28,6 +28,7 @@ struct DishV2 {
 struct Ingredient {
     var id = UUID()
     var name: String
+    @Reference(from: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
 }
 
 @Suite struct SchemaEvolutionTests {

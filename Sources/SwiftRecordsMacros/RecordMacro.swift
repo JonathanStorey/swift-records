@@ -5,7 +5,7 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
 /// `@Record` adds `Record` conformance and generates `static var schema`, which maps every stored
-/// property to its key path so predicates, sort descriptors, delete rules and inverses can be
+/// property to its key path so predicates, sort descriptors, references and inverses can be
 /// resolved without an instance. It also gives each `@Timestamp` and `@Reference(from:)` property its
 /// read-only storage wrapper.
 public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
@@ -131,8 +131,18 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                     fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))" + modifiers)
                     continue
                 }
-                var field = reference?.deleteRule.map { ".field(\"\(name)\", \(keyPath), deleteRule: \($0))" }
-                    ?? ".field(\"\(name)\", \(keyPath))"
+                if let parent = reference?.to {
+                    guard isOptional(binding) else {
+                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
+                            "A reference holds its parent's ID, or nil while it has none. Declare it as 'Parent.ID?'"
+                        )))
+                        continue
+                    }
+                    let action = reference?.action.map { ", action: \($0)" } ?? ""
+                    fields.append(".reference(\"\(name)\", \(keyPath), to: \(parent)\(action))" + modifiers)
+                    continue
+                }
+                var field = ".field(\"\(name)\", \(keyPath))"
                 if name != "id", !wrapped, let value = defaultValue(binding) {
                     field += ".defaulting(\(value))"
                 }
@@ -271,22 +281,29 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         return ["Data?", "Foundation.Data?", "Optional<Data>", "Optional<Foundation.Data>"].contains(text)
     }
 
-    private static func referenceArguments(_ attributes: AttributeListSyntax) -> (deleteRule: String?, from: String?)? {
+    private static func isOptional(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type else { return false }
+        return type.is(OptionalTypeSyntax.self) || type.trimmedDescription.hasPrefix("Optional<")
+    }
+
+    private static func referenceArguments(_ attributes: AttributeListSyntax) -> (to: String?, action: String?, from: String?)? {
         for element in attributes {
             guard let attribute = element.as(AttributeSyntax.self),
                   attribute.attributeName.trimmedDescription == "Reference" else { continue }
-            var deleteRule: String?
+            var to: String?
+            var action: String?
             var from: String?
             if case .argumentList(let arguments) = attribute.arguments {
                 for argument in arguments {
                     switch argument.label?.text {
-                    case "deleteRule": deleteRule = argument.expression.trimmedDescription
+                    case "to": to = argument.expression.trimmedDescription
+                    case "action": action = argument.expression.trimmedDescription
                     case "from": from = argument.expression.trimmedDescription
                     default: break
                     }
                 }
             }
-            return (deleteRule, from)
+            return (to, action, from)
         }
         return nil
     }

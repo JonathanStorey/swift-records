@@ -6,6 +6,7 @@ import Testing
 struct Person {
     var id = UUID()
     var name: String
+    @Reference(from: \ToDo.owner) var todoIDs: Set<ToDo.ID>
 }
 
 @Record
@@ -16,7 +17,7 @@ struct ToDo {
     var priority = 0
     var due: Date?
     var owner: Person?
-    @Reference(deleteRule: .none) var notes: [Note] = []
+    var notes: [Note] = []
     var subtasks: [Subtask] = []
     var tags: [String] = []
 }
@@ -32,13 +33,15 @@ struct Note {
 struct Subtask {
     var id = UUID()
     var title: String
+    @Reference(to: \ToDo.subtasks, action: .deleteSelf) var todo: ToDo.ID?
+    @Reference(to: \Folder.items, action: .deleteSelf) var folder: Folder.ID?
 }
 
 @Record
 struct Folder {
     var id = UUID()
     var name: String
-    @Reference var items: [Subtask] = []  // a bare @Reference is the default, .cascade
+    var items: [Subtask] = []
 }
 
 @Suite struct RecordContainerTests {
@@ -67,8 +70,8 @@ struct Folder {
         let fetched = try #require(try store.fetch(ToDo.self, id: todo.id))
         #expect(fetched.due == nil)
         #expect(fetched.owner == nil)
-        // The person was cascaded once nothing referenced it.
-        #expect(try store.fetch(Person.self).isEmpty)
+        // A person can own many to-dos, so unlinking keeps them.
+        #expect(try store.fetch(Person.self).map(\.name) == ["Sam"])
     }
 
     @Test func savesNestedRecordsInOrder() throws {

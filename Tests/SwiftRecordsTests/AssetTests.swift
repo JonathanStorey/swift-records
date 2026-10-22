@@ -7,6 +7,7 @@ struct Photo {
     var id = UUID()
     var caption = ""
     @Asset(fileExtension: "jpg") var image: Data? = nil
+    @Reference(to: \Album.photos, action: .deleteSelf) var album: Album.ID?
 }
 
 @Record

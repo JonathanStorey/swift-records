@@ -22,10 +22,16 @@ public protocol SyncProvider: AnyObject, Sendable {
 /// One record as it crosses to or from a server.
 ///
 /// `fields` is keyed by stored property name and holds only standard types: `String`, `Int64`, `Double`,
-/// `Bool`, `Date`, `UUID` and `Data`, with `Data` holding JSON for any other `Codable` value. A
-/// relationship is a `[UUID]` in order, a to-one relationship an array of zero or one, and an asset is a
-/// file `URL`. A missing key means `nil`. Inverse relationships are never sent, because each device
-/// rebuilds them.
+/// `Bool`, `Date`, `UUID` and `Data`, with `Data` holding JSON for any other `Codable` value. A missing key
+/// means `nil`.
+///
+/// - A child's `@Reference(to:)` is a `SyncReference`, which a CloudKit provider stores as a
+///   `CKRecord.Reference` with the same action.
+/// - A relationship is a `[UUID]` in order, and a to-one relationship an array of zero or one. Store it as
+///   plain strings, such as a CloudKit `[String]` field, not as references: the children's references
+///   decide membership, and the list only keeps their order.
+/// - An asset is a file `URL`, such as a `CKAsset`'s.
+/// - Inverse relationships are never sent, because each device rebuilds them.
 public struct SyncRecord: Sendable, Identifiable {
     /// The record's stored type name, such as `"Recipe"`.
     public let type: String
@@ -37,6 +43,10 @@ public struct SyncRecord: Sendable, Identifiable {
     public var tag: Data?
     /// When the record was last changed, which settles a conflict under `.latestWins`.
     public var modified: Date?
+    /// The record this one belongs to, for a server that groups records, such as a `CKRecord`'s `parent`,
+    /// which `CKShare` follows. It is one of the record's references: its first `.deleteSelf` one that is
+    /// set, or else its first one that is set. The container sets it when sending and ignores it on receipt.
+    public var parent: UUID?
 
     public init(type: String, id: UUID, fields: [String: any Sendable]?, tag: Data? = nil, modified: Date? = nil) {
         self.type = type
@@ -47,6 +57,18 @@ public struct SyncRecord: Sendable, Identifiable {
     }
 
     public var isDeletion: Bool { fields == nil }
+}
+
+/// A child's `@Reference(to:)` as it crosses to or from a server: the parent's ID and what happens to the
+/// child when the parent goes. A provider may also hand back a plain `UUID` or its string.
+public struct SyncReference: Sendable, Hashable {
+    public let id: UUID
+    public let action: ReferenceAction
+
+    public init(id: UUID, action: ReferenceAction) {
+        self.id = id
+        self.action = action
+    }
 }
 
 /// What a provider reports. The container turns these into stored changes and its contexts' `status`.

@@ -10,7 +10,13 @@ import Foundation
 /// struct ToDo {
 ///     var id = UUID()
 ///     var title: String
-///     @Reference(deleteRule: .none) var notes: [Note] = []
+///     var notes: [Note] = []
+/// }
+///
+/// @Record
+/// struct Note {
+///     var id = UUID()
+///     @Reference(to: \ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?
 /// }
 /// ```
 public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
@@ -42,14 +48,24 @@ public macro Renamed(from names: String...) = #externalMacro(module: "SwiftRecor
 @attached(peer)
 public macro Indexed() = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
-/// Marks a relationship with the default rule, `.cascade`. Writing it is optional.
+/// Declares a child's reference to its parent: the ID of the record whose `parent` relationship holds
+/// this one. The property's type is `Parent.ID?`. It is how a record says it belongs to one parent, and
+/// it decides membership: saving the parent with this record in its array sets it, and setting it moves
+/// the record to the end of the new parent's array. With a sync provider it crosses as a reference to the
+/// parent, the way a `CKRecord.Reference` does.
+///
+/// ```swift
+/// @Reference(to: \ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?
+/// ```
 @attached(peer)
-public macro Reference() = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
+public macro Reference<Parent: Record, Children>(to parent: KeyPath<Parent, Children>, action: ReferenceAction) =
+    #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
-/// Sets the delete rule for a relationship. Without it, related records are cascaded, the way a nested
-/// struct disappears with its parent. Pass `.none` to unlink related records and keep them.
+/// Declares a child's reference to its parent with the action `.none`, so deleting the parent keeps
+/// this record and clears the reference.
 @attached(peer)
-public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
+public macro Reference<Parent: Record, Children>(to parent: KeyPath<Parent, Children>) =
+    #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares an inverse relationship: the IDs of every record whose `inverse` property contains this
 /// one. The property's type is `Set<Owner.ID>`, since the owners link here in no particular order.
@@ -63,11 +79,12 @@ public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftR
 public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Target>) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
-/// What happens to related records when their owner is deleted or drops them. A relationship whose
-/// rule is `nil` (written `.none`) unlinks them and keeps them.
-public enum DeleteRule: String, Sendable {
-    /// Delete related records that no other record still references. The default.
-    case cascade
+/// What a child's reference does when its parent goes, named after `CKRecord.ReferenceAction`.
+public enum ReferenceAction: String, Sendable, Hashable, Codable {
+    /// Keep the child and clear its reference when the parent is deleted or drops it.
+    case none
+    /// Delete the child when the parent is deleted or drops it.
+    case deleteSelf
 }
 
 /// The property list `@Record` generates for a type. Only the macro's generated code builds one.
@@ -83,9 +100,10 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
     public struct Field: @unchecked Sendable {
         let name: String
         let keyPath: PartialKeyPath<Root>
-        /// The delete rule for a relationship: `.cascade` unless `@Reference(deleteRule:)` says otherwise,
-        /// and `nil` to keep related records.
-        let deleteRule: DeleteRule?
+        /// For a child's reference, the parent's forward key path, such as `\ToDo.notes`.
+        let parent: AnyKeyPath?
+        /// For a child's reference, what happens to the child when the parent goes.
+        let action: ReferenceAction
         /// For an inverse field, the owner's forward key path, such as `\ToDo.notes`.
         let inverse: AnyKeyPath?
         /// True for an `@Asset` property, whose file lives beside the database.
@@ -102,10 +120,14 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         /// What the container stamps into a `@Timestamp` property.
         private(set) var timestamp: TimestampKind?
 
-        init(name: String, keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule?, inverse: AnyKeyPath?, isAsset: Bool, fileExtension: String) {
+        init(
+            name: String, keyPath: PartialKeyPath<Root>, parent: AnyKeyPath? = nil, action: ReferenceAction = .none,
+            inverse: AnyKeyPath? = nil, isAsset: Bool = false, fileExtension: String = ""
+        ) {
             self.name = name
             self.keyPath = keyPath
-            self.deleteRule = deleteRule
+            self.parent = parent
+            self.action = action
             self.inverse = inverse
             self.isAsset = isAsset
             self.fileExtension = fileExtension
@@ -130,24 +152,30 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
             return field
         }
 
-        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>, deleteRule: DeleteRule? = .cascade) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: deleteRule, inverse: nil, isAsset: false, fileExtension: "")
+        public static func field(_ name: String, _ keyPath: PartialKeyPath<Root>) -> Field {
+            Field(name: name, keyPath: keyPath)
+        }
+
+        public static func reference<Parent: Record, Children>(
+            _ name: String, _ keyPath: KeyPath<Root, UUID?>, to parent: KeyPath<Parent, Children>, action: ReferenceAction = .none
+        ) -> Field {
+            Field(name: name, keyPath: keyPath, parent: parent, action: action)
         }
 
         public static func timestamp(_ name: String, _ keyPath: KeyPath<Root, Date?>, _ kind: TimestampKind) -> Field {
-            var field = Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: false, fileExtension: "")
+            var field = Field(name: name, keyPath: keyPath)
             field.timestamp = kind
             return field
         }
 
         public static func asset(_ name: String, _ keyPath: KeyPath<Root, Data?>, fileExtension: String = "") -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: nil, isAsset: true, fileExtension: fileExtension)
+            Field(name: name, keyPath: keyPath, isAsset: true, fileExtension: fileExtension)
         }
 
         public static func inverse<Owner: Record, Target>(
             _ name: String, _ keyPath: PartialKeyPath<Root>, of inverse: KeyPath<Owner, Target>
         ) -> Field {
-            Field(name: name, keyPath: keyPath, deleteRule: .cascade, inverse: inverse, isAsset: false, fileExtension: "")
+            Field(name: name, keyPath: keyPath, inverse: inverse)
         }
     }
 
