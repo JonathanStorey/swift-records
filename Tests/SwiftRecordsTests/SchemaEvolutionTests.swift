@@ -32,7 +32,7 @@ struct Ingredient {
 }
 
 @Suite struct SchemaEvolutionTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     @Test func rowsWithoutANewPropertyTakeItsDefault() throws {
         let old = DishV1(title: "Soup", minutes: 20)

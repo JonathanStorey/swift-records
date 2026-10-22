@@ -13,7 +13,7 @@ extension RecordContext {
     /// itself, `@Timestamp` properties and inverse relationships, don't. It never saves, so a view can call
     /// it while it updates, and it costs one read by ID each call.
     public func hasChanges<R: Record>(_ record: R) -> Bool {
-        guard case .saved(let current)? = try? current(R.self, id: record.id), let current = current as? R else {
+        guard case .saved(let current)? = try? current(R.self, id: record.id, in: zone), let current = current as? R else {
             return true
         }
         return !record.matches(current)

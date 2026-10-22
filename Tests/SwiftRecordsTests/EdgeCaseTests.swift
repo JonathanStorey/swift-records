@@ -34,7 +34,7 @@ struct DishV3 {
 }
 
 @Suite struct ValueEdgeCaseTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     @Test func unorderedValuesDontLookLikeEdits() throws {
         let collection = Bag(
@@ -85,7 +85,7 @@ struct DishV3 {
 }
 
 @Suite struct StoreEdgeCaseTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     @Test func selfReferencingTreesSaveAndFetch() throws {
         let tree = TreeFolder(name: "Root", subfolders: [
@@ -107,8 +107,8 @@ struct DishV3 {
         let parent = TreeFolder(name: "Parent", subfolders: [child])
         try container.save(parent)
         // Point the child back at its parent through the link table, which no value type can express.
-        try container.store.transaction {
-            try container.store.db.run(
+        try container.defaultStorage.store.transaction {
+            try container.defaultStorage.store.db.run(
                 "INSERT INTO \"TreeFolder.subfolders\" (owner, target, position, inverse_position) VALUES (?, ?, 0, 0)",
                 [try ValueCoding.encode(child.id), try ValueCoding.encode(parent.id)]
             )
@@ -191,7 +191,7 @@ struct DishV3 {
 
 @MainActor
 @Suite struct ContextEdgeCaseTests {
-    let context = try! RecordContainer(zone: .inMemory).mainContext
+    let context = try! RecordContainer(inMemory: true).mainContext
 
     init() {
         context.autosaveEnabled = false
@@ -315,10 +315,10 @@ struct DishV3 {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
     @Test func containersOnOneFileShareAStore() async throws {
-        let first = try RecordContainer(zone: "shared", directory: directory)
-        let second = try RecordContainer(zone: "shared", directory: directory)
+        let first = try RecordContainer(directory: directory)
+        let second = try RecordContainer(directory: directory)
         defer { try? FileManager.default.removeItem(at: directory) }
-        #expect(first.store === second.store)
+        #expect(first.defaultStorage.store === second.defaultStorage.store)
 
         // A column the second container adds is visible to the first.
         try first.save(ToDo(title: "Plain"))
@@ -337,7 +337,7 @@ struct DishV3 {
 
     #if canImport(Darwin)
     @Test func appGroupDirectory() {
-        if let url = Zone.directory(appGroup: "group.example.records") {
+        if let url = RecordContainer.directory(appGroup: "group.example.records") {
             #expect(url.path.hasSuffix("Library/Application Support/Records"))
         }
     }

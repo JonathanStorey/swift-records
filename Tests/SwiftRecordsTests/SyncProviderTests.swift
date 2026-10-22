@@ -38,12 +38,13 @@ struct Device {
     var context: RecordContext { container.mainContext }
 
     init(
-        _ server: TestServer, zone: Zone = .inMemory, directory: URL? = nil, mergePolicy: MergePolicy = .default,
+        _ server: TestServer, directory: URL? = nil, mergePolicy: MergePolicy = .default,
         onSignOut: AccountPolicy = .keepLocalData
     ) throws {
-        provider = TestProvider(server: server)
+        let provider = TestProvider(server: server)
+        self.provider = provider
         container = try RecordContainer(
-            for: [SyncRecipe.self], zone: zone, directory: directory, syncProvider: provider, mergePolicy: mergePolicy,
+            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: { _ in provider }, mergePolicy: mergePolicy,
             onSignOut: onSignOut
         )
         container.mainContext.autosaveEnabled = false
@@ -133,7 +134,7 @@ struct Device {
         try await tablet.context.refresh()
         try await tablet.context.refresh()
         #expect(tablet.provider.sentBatches.isEmpty)
-        #expect(try tablet.container.store.pendingChanges().isEmpty)
+        #expect(try tablet.container.defaultStorage.store.pendingChanges().isEmpty)
     }
 
     // MARK: Conflicts
@@ -204,7 +205,7 @@ struct Device {
         let result = try #require(try await tablet.recipes().first)
         #expect(result.title == "Salad")
         #expect(result.servings == 3)
-        #expect(try tablet.container.store.pendingChanges().isEmpty)
+        #expect(try tablet.container.defaultStorage.store.pendingChanges().isEmpty)
     }
 
     @Test func listsMergeItemByItem() async throws {
@@ -343,7 +344,7 @@ struct Device {
         await phone.settle()
         #expect(phone.context.status == .failed(.incompatibleRecord(type: "SyncRecipe", id: id)))
         #expect(try await phone.recipes().map(\.title) == ["Fine"])
-        let parked = try phone.container.store.db.run("SELECT COUNT(*) AS n FROM \"_records_parked\"")
+        let parked = try phone.container.defaultStorage.store.db.run("SELECT COUNT(*) AS n FROM \"_records_parked\"")
         #expect(parked.first?["n"] == .integer(2))
     }
 
@@ -393,7 +394,7 @@ struct Device {
     }
 
     @Test func localContainersReportStatusToo() async throws {
-        let context = try RecordContainer(zone: .inMemory).mainContext
+        let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false
         #expect(context.status == .saved)
         context.save(Measurement(value: .nan))
@@ -451,17 +452,17 @@ struct Device {
         server.reset()
         await phone.provider.emit(.serverReset)
         #expect(server.count == 2)
-        #expect(try phone.container.store.pendingChanges().isEmpty)
+        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
     }
 
     @Test func aFirstSignInUploadsExistingRecords() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         do {
-            let local = try RecordContainer(zone: "kitchen", directory: directory)
+            let local = try RecordContainer(directory: directory)
             try local.save(SyncRecipe(title: "Before sync"))
         }
-        let phone = try Device(server, zone: "kitchen", directory: directory)
+        let phone = try Device(server, directory: directory)
         try await phone.context.refresh()
         #expect(server.count == 1)
     }
@@ -471,17 +472,17 @@ struct Device {
         defer { try? FileManager.default.removeItem(at: directory) }
         let recipe = SyncRecipe(title: "Unacknowledged")
         do {
-            let phone = try Device(server, zone: "kitchen", directory: directory)
+            let phone = try Device(server, directory: directory)
             phone.provider.dropsAcknowledgements = true
             phone.context.save(recipe)
             try await phone.context.save()
             #expect(server.count == 1)
-            #expect(try phone.container.store.pendingChanges().count == 1)
+            #expect(try phone.container.defaultStorage.store.pendingChanges().count == 1)
         }
-        let relaunched = try Device(server, zone: "kitchen", directory: directory)
+        let relaunched = try Device(server, directory: directory)
         try await relaunched.context.refresh()
         #expect(relaunched.provider.sentBatches.first?.map(\.id) == [recipe.id])
-        #expect(try relaunched.container.store.pendingChanges().isEmpty)
+        #expect(try relaunched.container.defaultStorage.store.pendingChanges().isEmpty)
         #expect(try await relaunched.recipes().map(\.title) == ["Unacknowledged"])
     }
 }
@@ -513,6 +514,6 @@ struct Device {
         #expect(server.record("SyncRecipe", recipe.id)?.fields?["updated"] == .date(Date(timeIntervalSince1970: 1_000.123)))
 
         try await phone.context.refresh()
-        #expect(try phone.container.store.pendingChanges().isEmpty)
+        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
     }
 }

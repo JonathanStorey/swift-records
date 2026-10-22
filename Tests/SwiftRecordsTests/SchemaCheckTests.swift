@@ -63,7 +63,11 @@ final class SilentProvider: SyncProvider {
 @Suite struct SchemaCheckTests {
     private func reason(registering types: [any Record.Type], sync: Bool = false) -> String? {
         do {
-            _ = try RecordContainer(for: types, zone: .inMemory, syncProvider: sync ? SilentProvider() : nil)
+            if sync {
+                _ = try RecordContainer(for: types, inMemory: true, syncProvider: { _ in SilentProvider() })
+            } else {
+                _ = try RecordContainer(for: types, inMemory: true)
+            }
             return nil
         } catch RecordsError.invalidSchema(_, let reason) {
             return reason
@@ -80,9 +84,9 @@ final class SilentProvider: SyncProvider {
     @Test func twoTypesCantShareAStoredName() throws {
         #expect(reason(registering: [ClashOwner.self])?.contains("both stored as \"Clash\"") == true)
         // Nothing was created.
-        let container = try RecordContainer(zone: .inMemory)
-        #expect(throws: RecordsError.self) { try container.store.register([ClashOwner.self]) }
-        #expect(!container.store.tableExists("ClashOwner"))
+        let container = try RecordContainer(inMemory: true)
+        #expect(throws: RecordsError.self) { try container.defaultStorage.store.register([ClashOwner.self]) }
+        #expect(!container.defaultStorage.store.tableExists("ClashOwner"))
     }
 
     @Test func inversesMustPointBack() {

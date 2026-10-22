@@ -12,7 +12,7 @@ struct Journal {
 }
 
 @Suite struct TimestampTests {
-    let container = try! RecordContainer(for: [Journal.self], zone: .inMemory)
+    let container = try! RecordContainer(for: [Journal.self], inMemory: true)
 
     @Test func savesStampCreatedAndModified() throws {
         let start = Date()
@@ -45,7 +45,7 @@ struct Journal {
         let cutoff = Date.distantPast
         #expect(try container.fetch(Journal.self, where: #Predicate { $0.modified! > cutoff }).count == 1)
         #expect(try container.fetch(Journal.self, where: #Predicate { $0.synced == nil }).count == 1)
-        #expect(!container.store.columns["Journal", default: []].contains("synced"))
+        #expect(!container.defaultStorage.store.columns["Journal", default: []].contains("synced"))
     }
 
     @Test func encodesAsPlainDatesOutsideAContainer() throws {
@@ -63,7 +63,7 @@ struct Journal {
 
     private func device() throws -> (TestProvider, RecordContext) {
         let provider = TestProvider(server: server)
-        let context = try RecordContainer(for: [Journal.self], zone: .inMemory, syncProvider: provider).mainContext
+        let context = try RecordContainer(for: [Journal.self], inMemory: true, syncProvider: { _ in provider }).mainContext
         context.autosaveEnabled = false
         return (provider, context)
     }

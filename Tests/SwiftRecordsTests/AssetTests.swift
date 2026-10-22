@@ -17,7 +17,7 @@ struct Album {
 }
 
 @Suite struct AssetTests {
-    let container = try! RecordContainer(zone: .inMemory)
+    let container = try! RecordContainer(inMemory: true)
 
     private func files() -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: container.assetsDirectory.path)) ?? []).sorted()
@@ -160,18 +160,18 @@ struct Album {
 
         let photo = Photo(image: Data("x".utf8))
         do {
-            let container = try RecordContainer(zone: "library", directory: directory)
-            #expect(container.assetsDirectory.lastPathComponent == "library.assets")
+            let container = try RecordContainer(directory: directory)
+            #expect(container.assetsDirectory.lastPathComponent == "_default.assets")
             try container.save(photo)
         }
-        let reopened = try RecordContainer(zone: "library", directory: directory)
+        let reopened = try RecordContainer(directory: directory)
         #expect(try reopened.fetch(Photo.self, id: photo.id)?.image == Data("x".utf8))
     }
 
     @Test func inMemoryAssetsAreRemovedWithTheContainer() throws {
         var directory: URL?
         do {
-            let container = try RecordContainer(zone: .inMemory)
+            let container = try RecordContainer(inMemory: true)
             try container.save(Photo(image: Data("temp".utf8)))
             directory = container.assetsDirectory
             #expect(FileManager.default.fileExists(atPath: directory!.path))

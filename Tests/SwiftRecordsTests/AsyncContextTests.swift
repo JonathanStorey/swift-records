@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 @Suite struct AsyncContextTests {
-    let context = try! RecordContainer(zone: .inMemory).mainContext
+    let context = try! RecordContainer(inMemory: true).mainContext
 
     init() {
         context.autosaveEnabled = false
@@ -84,7 +84,7 @@ import Testing
 
     @Test func refreshPicksUpAnotherProcessesWrites() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(zone: "shared", directory: directory)
+        let container = try RecordContainer(directory: directory)
         let context = container.mainContext
         context.autosaveEnabled = false
         let person = Person(name: "Ana")

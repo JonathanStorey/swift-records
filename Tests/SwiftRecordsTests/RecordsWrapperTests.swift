@@ -11,7 +11,7 @@ private struct WrapperUses {
     @Records(filter: #Predicate<ToDo> { $0.done }) var done: [ToDo]
     @Records(ids: []) var some: [ToDo]
     @Records(id: UUID()) var one: ToDo?
-    @Records(.default, id: UUID()) var other: Note?
+    @Records(nil, id: UUID()) var other: Note?
     @Records("pantry") var pantry: [Person]
 }
 
@@ -29,14 +29,14 @@ private func makeLists() -> [RecipeList] {
 
 @MainActor
 @Suite struct RecordsWrapperTests {
-    let container = try! RecordContainer(for: [ToDo.self], zone: .inMemory)
+    let container = try! RecordContainer(for: [ToDo.self], inMemory: true)
 
     @Test func idsLoadInStoredOrder() throws {
         let first = ToDo(title: "First")
         let second = ToDo(title: "Second")
         try container.save([second, first, ToDo(title: "Other")])
         let query = Records<[ToDo]>.Query.list(ids: [first.id, second.id])
-        #expect(try query.fetch(container).map(\.title) == ["Second", "First"])
+        #expect(try query.fetch(container.defaultStorage).map(\.title) == ["Second", "First"])
     }
 
     @Test func environmentContextIsTheContainersMainContext() {
@@ -50,16 +50,16 @@ private func makeLists() -> [RecipeList] {
         var todo = ToDo(title: "One")
         try container.save(todo)
         let query = Records<ToDo?>.Query.single(id: todo.id)
-        #expect(try query.fetch(container)?.title == "One")
+        #expect(try query.fetch(container.defaultStorage)?.title == "One")
 
         todo.title = "Edited"
-        query.write(context, todo, nil, ObjectIdentifier(container))
+        query.write(context, nil, todo, nil, ObjectIdentifier(container))
         try context.save()
-        #expect(try query.fetch(container)?.title == "Edited")
+        #expect(try query.fetch(container.defaultStorage)?.title == "Edited")
 
-        query.write(context, nil, todo, ObjectIdentifier(container))
+        query.write(context, nil, nil, todo, ObjectIdentifier(container))
         try context.save()
-        #expect(try query.fetch(container) == nil)
+        #expect(try query.fetch(container.defaultStorage) == nil)
     }
 }
 #endif

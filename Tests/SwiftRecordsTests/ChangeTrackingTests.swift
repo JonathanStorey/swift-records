@@ -5,7 +5,7 @@ import Testing
 /// Checks that edits which only change values skip structural work, so views can keep their caches.
 @MainActor
 @Suite struct ChangeTrackingTests {
-    let context = try! RecordContainer(zone: .inMemory).mainContext
+    let context = try! RecordContainer(inMemory: true).mainContext
 
     @Test func editingANestedValueIsNotStructural() throws {
         context.autosaveEnabled = false
