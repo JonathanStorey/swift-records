@@ -29,8 +29,6 @@ struct EncodedRecord {
 
     var columns: [(name: String, value: SQLiteValue)] = []
     var relations: [Relation] = []
-    /// The order of IDs in each inverse property, keyed by field name.
-    var inverseOrders: [String: [SQLiteValue]] = [:]
     /// Assets to store as files, keyed by field name. A nil asset is absent.
     var assets: [String: Asset] = [:]
 }
@@ -189,8 +187,7 @@ final class RecordEncoder: Encoder {
             if value is TimestampStorage {
                 // The container stamps timestamps itself.
             } else if encoder.inverseFields.contains(name) {
-                let ids = (value as? [any Encodable]) ?? []
-                encoder.output.inverseOrders[name] = try ids.map { try ValueCoding.encode($0) }
+                // Inverses are read from the owners' links, so saving the target never changes them.
             } else if let asset = value as? Asset {
                 if asset.storage != nil {
                     encoder.output.assets[name] = asset
@@ -300,6 +297,9 @@ struct RecordDecoder<R: Record>: Decoder {
             }
             if let inverse = R.schema.field(named: name)?.inverse {
                 let ids = try decoder.loader.loadInverse(targetID: id, inverse: inverse)
+                if T.self == InverseStorage.self {
+                    return InverseStorage(ids: Set(try ids.map { try ValueCoding.decode(UUID.self, from: $0) })) as! T
+                }
                 return try ValueCoding.decode(T.self, fromArray: ids)
             }
             if let recordType = T.self as? any Record.Type {

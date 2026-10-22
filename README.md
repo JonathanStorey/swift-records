@@ -20,7 +20,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: [ToDo.ID] = []  // inverse, order kept
+    @Reference(from: \ToDo.notes) var todoIDs: Set<ToDo.ID>  // inverse, read-only
 }
 ```
 
@@ -38,7 +38,7 @@ let context = container.mainContext                  // one per container, on th
 
 context.save(todo)                                   // the ToDo, its Person and every Note
 let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
-let parents = try context.fetch(ToDo.self, ids: note.todos)
+let parents = try context.fetch(ToDo.self, ids: note.todoIDs)
 context.delete(todo)
 context.delete(ToDo.self, where: #Predicate { $0.done })   // or delete(ToDo.self, id: id)
 try context.save()                                   // or let autosave commit once edits pause
@@ -168,13 +168,19 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 ## Relationships
 
 - Any property whose type is a `@Record`, an optional `@Record` or an array of them is a relationship.
-  It is stored in a join table named `Owner.property` that keeps the order of both sides.
+  It is stored in a join table named `Owner.property` that keeps the owner's order. A forward
+  relationship is fully readable and writable, and it is how you link and unlink records.
 - Delete rules: `.cascade` (the default, like a nested struct) and `.none`, which unlinks and keeps them. Cascade only
   deletes records nothing else still references, and it also applies when a record is removed from
   an array.
-- An inverse, `@Reference(from:)`, holds the owners' IDs in order. Loading full records eagerly would
-  recurse forever with value types, so fetch them with `context.fetch(_:ids:)`. Reordering the IDs and
-  saving persists the new order.
+- An inverse, `@Reference(from:)`, is a `Set` of the owners' IDs, so name it for that, such as `todoIDs`. Loading full records would recurse
+  forever with value types, so fetch them with `context.fetch(_:ids:)`, which returns them in stored
+  order. It is read-only, with no initial value: the container fills it from the owners' links, so
+  link or unlink from the owner's side.
+- Deleting a record removes it from every owner's relationship, so a deleted recipe leaves each
+  cookbook that held it.
+- `#Predicate { $0.todoIDs.contains(todo.id) }` on an inverse runs as SQL, like `contains { }` on a forward
+  relationship, so searches work at full speed in both directions.
 
 ## Assets
 

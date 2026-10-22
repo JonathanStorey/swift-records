@@ -3,6 +3,13 @@ import Foundation
 import Testing
 
 @Suite struct PredicateTranslatorTests {
+    @Test func translatesContainsOnAnInverse() throws {
+        let id = UUID()
+        let clause = try PredicateTranslator.translate(#Predicate<Note> { $0.todos.contains(id) })
+        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "ToDo.notes" AS "j1" WHERE "j1".target = "Note"."id" AND "j1".owner = ?)"#)
+        #expect(clause.relations == ["ToDo.notes"])
+    }
+
     @Test func translatesComparisonsAndLogic() throws {
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { !$0.done && $0.priority >= 3 })
         #expect(clause.sql == #"((NOT "ToDo"."done") AND ("ToDo"."priority" >= ?))"#)

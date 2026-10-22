@@ -25,7 +25,7 @@ struct ToDo {
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: [ToDo.ID] = []
+    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
@@ -82,20 +82,22 @@ struct Folder {
         #expect(try store.fetch(Note.self).count == 5)
     }
 
-    @Test func loadsInverseInOrder() throws {
+    @Test func loadsInverseAsASet() throws {
         let note = Note(text: "Shared")
         let first = ToDo(title: "First", notes: [note])
         let second = ToDo(title: "Second", notes: [note])
-        try store.save([first, second])
+        let other = ToDo(title: "Other", notes: [Note(text: "Own")])
+        try store.save([second, first, other])
 
-        var fetched = try #require(try store.fetch(Note.self, id: note.id))
+        let fetched = try #require(try store.fetch(Note.self, id: note.id))
         #expect(fetched.todos == [first.id, second.id])
+        // A set of IDs loads in stored order.
+        #expect(try store.fetch(ToDo.self, ids: fetched.todos).map(\.title) == ["Second", "First"])
 
-        fetched.todos.reverse()
-        try store.save(fetched)
-        let reordered = try #require(try store.fetch(Note.self, id: note.id))
-        #expect(reordered.todos == [second.id, first.id])
-        #expect(try store.fetch(ToDo.self, ids: reordered.todos).map(\.title) == ["Second", "First"])
+        let firstID = first.id
+        #expect(try store.fetch(Note.self, where: #Predicate { $0.todos.contains(firstID) }).map(\.text) == ["Shared"])
+        let otherID = other.id
+        #expect(try store.fetch(Note.self, where: #Predicate { !$0.todos.contains(otherID) }).map(\.text) == ["Shared"])
     }
 
     @Test func cascadeIsTheDefault() throws {

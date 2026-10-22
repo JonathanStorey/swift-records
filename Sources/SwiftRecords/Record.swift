@@ -51,11 +51,13 @@ public macro Reference() = #externalMacro(module: "SwiftRecordsMacros", type: "R
 @attached(peer)
 public macro Reference(deleteRule: DeleteRule?) = #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
-/// Declares an inverse relationship: the ordered IDs of every record whose `inverse` property
-/// contains this one. The property's type is `[Owner.ID]`.
+/// Declares an inverse relationship: the IDs of every record whose `inverse` property contains this
+/// one. The property's type is `Set<Owner.ID>`, since the owners link here in no particular order.
+/// Load them with `context.fetch(Owner.self, ids:)`, and filter by them with
+/// `#Predicate { $0.todoIDs.contains(todo.id) }`, which runs as SQL.
 ///
 /// ```swift
-/// @Reference(from: \ToDo.notes) var todos: [ToDo.ID] = []
+/// @Reference(from: \ToDo.notes) var todoIDs: Set<ToDo.ID>
 /// ```
 @attached(peer)
 public macro Reference<Owner: Record, Target>(from inverse: KeyPath<Owner, Target>) =
@@ -160,6 +162,11 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
 
 extension Record {
     static var table: String { schema.table }
+
+    /// The stored name of the property at `keyPath`.
+    static func fieldName(for keyPath: AnyKeyPath) -> String? {
+        schema.field(for: keyPath)?.name
+    }
 
     var sqlID: SQLiteValue {
         get throws { try ValueCoding.encode(id) }

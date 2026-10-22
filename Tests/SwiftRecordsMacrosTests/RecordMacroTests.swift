@@ -50,13 +50,13 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Note {
                 let id: UUID
-                @Reference(from: \\ToDo.notes) var todos: [ToDo.ID] = []
+                @Reference(from: \\ToDo.notes) var todos: Set<ToDo.ID>
             }
             """,
             expandedSource: """
             struct Note {
                 let id: UUID
-                var todos: [ToDo.ID] = []
+                @SwiftRecords.InverseStorage var todos: Set<ToDo.ID>
             }
 
             extension Note: Record {
@@ -244,6 +244,45 @@ final class RecordMacroTests: XCTestCase {
             """,
             diagnostics: [
                 DiagnosticSpec(message: "A @Timestamp property must be declared as 'Date?'", line: 7, column: 20),
+            ],
+            macros: macros
+        )
+    }
+
+    func testInversesMustBeSets() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Note {
+                var id = UUID()
+                @Reference(from: \\ToDo.notes) var todos: [ToDo.ID] = []
+                @Reference(from: \\ToDo.tags) var tagged: Set<ToDo.ID> = []
+            }
+            """,
+            expandedSource: """
+            struct Note {
+                var id = UUID()
+                var todos: [ToDo.ID] = []
+                var tagged: Set<ToDo.ID> = []
+            }
+
+            extension Note: Record {
+                static var schema: RecordSchema<Note> {
+                    RecordSchema(table: "Note", fields: [
+                        .field("id", \\Note.id)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "An inverse holds the IDs of the records that link here, in no order. Declare it as 'Set<Owner.ID>'",
+                    line: 4, column: 39
+                ),
+                DiagnosticSpec(
+                    message: "An inverse is read-only and filled by the container, so it takes no initial value. Remove '= []'",
+                    line: 5, column: 59
+                ),
             ],
             macros: macros
         )

@@ -217,6 +217,10 @@ extension RecordContainer {
         try store.fetch(type, ids: ids)
     }
 
+    package func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
+        try store.fetch(type, ids: ids)
+    }
+
     package func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
         try store.fetch(type, where: predicate)
     }

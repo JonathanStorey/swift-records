@@ -67,6 +67,11 @@ public struct BackgroundContext {
         try container.fetch(type, ids: ids)
     }
 
+    /// Fetches records by ID in their stored order, such as an inverse relationship's owners.
+    public func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
+        try container.fetch(type, ids: ids)
+    }
+
     public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
         try container.count(type, where: predicate)
     }
