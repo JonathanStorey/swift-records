@@ -106,6 +106,9 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     // MARK: SyncProvider
 
+    /// The location, so moving to another folder uploads everything to it.
+    public var identifier: String { "FileSyncProvider.\(location)" }
+
     public func userID() async throws -> String? {
         guard location.isICloud else { return "local" }
         #if canImport(Darwin)

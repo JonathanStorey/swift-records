@@ -39,13 +39,14 @@ struct Device {
 
     init(
         _ server: TestServer, directory: URL? = nil, account: String?? = nil, publicZones: Set<Zone> = [],
-        mergePolicy: MergePolicy = .default, onSignOut: AccountPolicy = .keepLocalData
+        mergePolicy: MergePolicy = .default, onSignOut: AccountPolicy = .keepLocalData,
+        onAccountSwitch: AccountPolicy = .deleteLocalData
     ) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
             for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: { _ in provider },
-            publicZones: publicZones, mergePolicy: mergePolicy, onSignOut: onSignOut
+            publicZones: publicZones, mergePolicy: mergePolicy, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -599,6 +600,24 @@ struct Device {
         let phone = try Device(server, directory: directory)
         try await phone.context.refresh()
         #expect(server.count == 1)
+    }
+
+    @Test func switchingProvidersUploadsEverythingToTheNewServer() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let phone = try Device(server, directory: directory)
+            phone.context.insert(SyncRecipe(title: "Soup"))
+            try await phone.context.save()
+            #expect(server.count == 1)
+        }
+        // A bigger server, where the same person has another user ID.
+        let bigger = TestServer()
+        let moved = try Device(bigger, directory: directory, account: "new-id")
+        try await moved.context.refresh()
+        #expect(bigger.count == 1)
+        #expect(try await moved.recipes().map(\.title) == ["Soup"])
+        #expect(moved.context.unsyncedChanges == 0)
     }
 
     @Test func changesSentBeforeACrashAreSentAgain() async throws {

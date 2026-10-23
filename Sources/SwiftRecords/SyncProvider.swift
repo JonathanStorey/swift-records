@@ -37,10 +37,19 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// them without waiting for a refresh. Called once for each zone that syncs: return a new stream each
     /// time, and send every push to all of them. `nil`, the default, means the provider can't tell.
     func pushedChanges() -> AsyncStream<[Zone]>?
+
+    /// Names the server this provider talks to, such as its URL. When it differs from the one a zone last
+    /// synced with, the container treats the new server as empty: it uploads every local record and
+    /// downloads from the beginning, and keeps local data whatever the account policies say. The default
+    /// is the provider's type name, so return something more specific when one type can reach several
+    /// servers.
+    var identifier: String { get }
 }
 
 extension SyncProvider {
     public func pushedChanges() -> AsyncStream<[Zone]>? { nil }
+
+    public var identifier: String { String(reflecting: Self.self) }
 }
 
 /// One record as it crosses to or from a server: a whole record saved, or a deletion.

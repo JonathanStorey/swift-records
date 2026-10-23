@@ -37,6 +37,7 @@ actor SyncCoordinator {
     private static let maxRounds = 20
     private static let cursorKey = "provider.cursor"
     private static let accountKey = "provider.account"
+    private static let identifierKey = "provider.identifier"
 
     private let provider: any SyncProvider
     private let zone: Zone
@@ -339,6 +340,7 @@ actor SyncCoordinator {
 
     /// Applies an account change. Returns false when there is nothing to do until someone signs in.
     private func checkAccount() async throws -> Bool {
+        checkProvider()
         let current = try await provider.userID()
         account = current
         let stored = (try? store.syncValue(forKey: Self.accountKey)).flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } }
@@ -368,6 +370,19 @@ actor SyncCoordinator {
         }
         try? store.setSyncValue(Data(current.utf8), forKey: Self.accountKey)
         return true
+    }
+
+    /// A different server knows nothing of this device's records, so forget the old server's account and
+    /// let the next sign-in count as a first one, which uploads everything and downloads from the start.
+    private func checkProvider() {
+        let current = provider.identifier
+        let stored = (try? store.syncValue(forKey: Self.identifierKey)).flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } }
+        guard current != stored else { return }
+        if stored != nil {
+            try? store.setSyncValue(nil, forKey: Self.accountKey)
+            try? store.setSyncValue(nil, forKey: Self.cursorKey)
+        }
+        try? store.setSyncValue(Data(current.utf8), forKey: Self.identifierKey)
     }
 
     private func apply(_ policy: AccountPolicy) {
