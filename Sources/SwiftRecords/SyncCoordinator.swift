@@ -47,7 +47,7 @@ actor SyncCoordinator {
     private let policies: Policies
     private let phaseChanged: @Sendable (Phase) -> Void
     /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
-    private let transferChanged: @Sendable (Transfer?, _ landed: Bool) -> Void
+    private let transferChanged: @Sendable (Transfer?, _ landed: Bool) async -> Void
 
     private(set) var phase: Phase = .idle {
         didSet {
@@ -72,7 +72,7 @@ actor SyncCoordinator {
     init(
         provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore, policies: Policies,
         phaseChanged: @escaping @Sendable (Phase) -> Void,
-        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) -> Void = { _, _ in }
+        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) async -> Void = { _, _ in }
     ) {
         self.provider = provider
         self.zone = zone
@@ -310,20 +310,20 @@ actor SyncCoordinator {
         let downloads = signedOut && !isPublic ? [] : (try? store.missingAssets()) ?? []
         var progress = Transfer(done: 0, total: uploads.count + downloads.count)
         guard progress.total > 0 else { return }
-        transferChanged(progress, false)
+        await transferChanged(progress, false)
         for asset in uploads {
             if (try? await provider.uploadAssets([asset])) != nil {
                 try? store.markAssetsUploaded([asset.id])
             }
             progress.done += 1
-            transferChanged(progress, false)
+            await transferChanged(progress, false)
         }
         for id in downloads {
             let landed = (try? await downloadAsset(id)) ?? false
             progress.done += 1
-            transferChanged(progress, landed)
+            await transferChanged(progress, landed)
         }
-        transferChanged(nil, false)
+        await transferChanged(nil, false)
     }
 
     private func downloadAsset(_ id: String) async throws -> Bool {

@@ -32,11 +32,6 @@ package final class ZoneStorage: @unchecked Sendable {
     /// Downloads whenever the provider pushes word that the zone changed.
     private var pushTask: Task<Void, Never>?
 
-    /// Numbers transfer updates as they're sent, so one that reaches the main actor late can't undo a newer one.
-    private let transferLock = NSLock()
-    private nonisolated(unsafe) var transfersSent = 0
-    @MainActor private var transfersApplied = 0
-
     init(
         zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false,
         policies: SyncCoordinator.Policies
@@ -52,16 +47,10 @@ package final class ZoneStorage: @unchecked Sendable {
                 Task { @MainActor in self?.syncPhase = phase }
             },
             transferChanged: { [weak self] transfer, landed in
-                guard let self else { return }
-                let number = self.transferLock.withLock {
-                    self.transfersSent += 1
-                    return self.transfersSent
-                }
-                Task { @MainActor in
-                    if number > self.transfersApplied {
-                        self.transfersApplied = number
-                        self.assetTransfer = transfer
-                    }
+                // Waiting for the main actor keeps updates in order, and the transfer isn't done until views know.
+                await MainActor.run {
+                    guard let self else { return }
+                    self.assetTransfer = transfer
                     // The record already points at the file, so only views need to know it's here.
                     if landed { self.context?.assetDidLand(in: zone) }
                 }
