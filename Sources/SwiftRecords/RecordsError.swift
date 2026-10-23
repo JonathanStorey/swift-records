@@ -11,7 +11,7 @@ public enum RecordsError: Error, Hashable, Sendable {
     case cycle(type: String)
     /// An inverse key path does not name a property of a `@Record` type.
     case unknownInverse(String)
-    /// A zone name is empty, starts with a dot or an underscore, or contains a path separator.
+    /// A zone name, once lowercased, isn't 1 to 64 letters, digits, `-` or `_` starting with a letter.
     case invalidZoneName(String)
     /// A registered record type is set up in a way that would lose or mix up data, such as two types
     /// stored under one name. `reason` says what to fix.

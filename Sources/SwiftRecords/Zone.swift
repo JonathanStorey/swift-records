@@ -1,24 +1,79 @@
 import Foundation
 
-/// Zone names and the files they map to. A zone is a `String?` naming a database file inside a container's
-/// folder: the zone `"drafts"` is stored as `drafts.sqlite`, and `nil`, the default zone, as `_default.sqlite`.
-/// Names starting with an underscore are reserved for SwiftRecords.
-enum ZoneFile {
-    /// Throws unless the name is usable as a zone's file name.
-    static func validate(_ zone: String?) throws {
-        guard let zone else { return }
-        guard !zone.isEmpty, !zone.hasPrefix("."), !zone.hasPrefix("_"), zone.rangeOfCharacter(from: disallowed) == nil else {
-            throw RecordsError.invalidZoneName(zone)
+/// A zone: a database file inside a container's folder, and the matching zone on a sync server. The zone
+/// `"drafts"` is stored as `drafts.sqlite`, and `.default` as `_default.sqlite`.
+///
+/// A name is lowercased, then must be 1 to 64 characters of `a`–`z`, `0`–`9`, `-` and `_`, starting with a
+/// letter. That keeps it a safe folder and file name everywhere, and stops `"Drafts"` and `"drafts"` from
+/// sharing one file on a case-insensitive disk. Names starting with an underscore are reserved for SwiftRecords.
+///
+/// ```swift
+/// context.zone = "drafts"                 // a literal: an invalid one stops the app
+/// let zone = try Zone(userTypedName)      // anything else: throws `RecordsError.invalidZoneName`
+/// ```
+public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, CustomStringConvertible {
+    /// The zone's lowercased name, which is also its file's name.
+    public let name: String
+
+    /// The zone a context uses until you set another.
+    public static let `default` = Zone(unchecked: "_default")
+
+    /// A zone that lives only as long as its container and never touches disk, such as for scratch work or
+    /// previews. It never syncs.
+    public static let inMemory = Zone(unchecked: "_memory")
+
+    /// A zone stored on this device that never syncs, such as for drafts or device settings. The container
+    /// doesn't ask its sync provider about it.
+    public static let localOnly = Zone(unchecked: "_local")
+
+    /// Throws `RecordsError.invalidZoneName` unless the name, once lowercased, is a valid zone name.
+    public init(_ name: String) throws {
+        let lowercased = name.lowercased()
+        guard Self.isValid(lowercased) else { throw RecordsError.invalidZoneName(name) }
+        self.name = lowercased
+    }
+
+    /// A zone named in code. An invalid name is a programming error, so it stops the app.
+    public init(stringLiteral name: String) {
+        guard let zone = try? Zone(name) else {
+            preconditionFailure("\"\(name)\" is not a valid zone name. Use 1 to 64 letters, digits, - or _, starting with a letter.")
         }
+        self = zone
     }
 
-    /// The zone's file inside `directory`.
-    static func url(for zone: String?, in directory: URL) throws -> URL {
-        try validate(zone)
-        return directory.appendingPathComponent((zone ?? "_default") + ".sqlite")
+    private init(unchecked name: String) {
+        self.name = name
     }
 
-    private static let disallowed = CharacterSet(charactersIn: "/\\:").union(.newlines).union(.controlCharacters)
+    public init(from decoder: any Decoder) throws {
+        let name = try decoder.singleValueContainer().decode(String.self)
+        self = try Zone.reserved.first { $0.name == name } ?? Zone(name)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(name)
+    }
+
+    public var description: String { name }
+
+    /// The zone's database file inside `directory`, or `nil` for `.inMemory`.
+    func url(in directory: URL) -> URL? {
+        self == .inMemory ? nil : directory.appendingPathComponent(name + ".sqlite")
+    }
+
+    /// Whether the container asks its sync provider about this zone.
+    var canSync: Bool { self != .inMemory && self != .localOnly }
+
+    private static let reserved: [Zone] = [.default, .inMemory, .localOnly]
+
+    private static func isValid(_ name: String) -> Bool {
+        guard (1...64).contains(name.count), let first = name.unicodeScalars.first, letters.contains(first) else { return false }
+        return name.unicodeScalars.allSatisfy(allowed.contains)
+    }
+
+    private static let letters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz")
+    private static let allowed = letters.union(CharacterSet(charactersIn: "0123456789-_"))
 }
 
 extension RecordContainer {

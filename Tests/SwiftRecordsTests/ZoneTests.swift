@@ -15,11 +15,11 @@ import Testing
         context.save(ToDo(title: "Draft"))
         try context.save()
 
-        #expect(try container.url() == directory.appendingPathComponent("_default.sqlite"))
-        #expect(try container.url(for: "drafts") == directory.appendingPathComponent("drafts.sqlite"))
+        #expect(container.url() == directory.appendingPathComponent("_default.sqlite"))
+        #expect(container.url(for: "drafts") == directory.appendingPathComponent("drafts.sqlite"))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drafts.sqlite").path))
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Draft"])
-        context.zone = nil
+        context.zone = .default
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Main"])
     }
 
@@ -32,7 +32,7 @@ import Testing
         #expect(context.pendingChangeCount == 2)
 
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Old"])
-        context.zone = nil
+        context.zone = .default
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Main"])
     }
 
@@ -67,13 +67,58 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: directory.path))
     }
 
-    @Test(arguments: ["", ".hidden", "_default", "a/b", "a\\b", "a:b"])
-    func rejectsUnsafeNames(_ name: String) throws {
-        let context = try RecordContainer(inMemory: true).mainContext
-        context.zone = name
+    @Test(arguments: ["", ".hidden", "_default", "_memory", "a/b", "a\\b", "a:b", "my drafts", "1st", "-a", String(repeating: "a", count: 65)])
+    func rejectsUnsafeNames(_ name: String) {
         #expect(throws: RecordsError.invalidZoneName(name)) {
-            try context.fetch(ToDo.self)
+            try Zone(name)
         }
+    }
+
+    @Test func namesAreLowercased() throws {
+        #expect(try Zone("Drafts") == "drafts")
+        #expect(Zone(stringLiteral: "Pantry").name == "pantry")
+        #expect(try Zone("my_drafts-2").name == "my_drafts-2")
+    }
+
+    @Test func zonesRoundTripThroughJSON() throws {
+        let zones: [Zone] = ["drafts", .default, .inMemory, .localOnly]
+        let data = try JSONEncoder().encode(zones)
+        #expect(String(decoding: data, as: UTF8.self) == #"["drafts","_default","_memory","_local"]"#)
+        #expect(try JSONDecoder().decode([Zone].self, from: data) == zones)
+        #expect(throws: RecordsError.invalidZoneName("a/b")) {
+            try JSONDecoder().decode(Zone.self, from: Data(#""a/b""#.utf8))
+        }
+    }
+
+    @Test func inMemoryZoneWritesNoFile() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let container = try RecordContainer(directory: directory)
+        try await container.performBackgroundTask(in: .inMemory) { try $0.save(ToDo(title: "Scratch")) }
+        #expect(container.url(for: .inMemory) == nil)
+        #expect(try await container.performBackgroundTask(in: .inMemory) { try $0.fetch(ToDo.self) }.map(\.title) == ["Scratch"])
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(!files.contains { $0.hasPrefix("_memory") })
+    }
+
+    @Test func reservedZonesNeverAskForAProvider() throws {
+        let asked = AskedZones()
+        let container = try RecordContainer(inMemory: true, syncProvider: { zone in
+            asked.append(zone)
+            return nil
+        })
+        let context = container.mainContext
+        for zone: Zone in [.inMemory, .localOnly, "drafts"] {
+            context.zone = zone
+            _ = try context.fetch(ToDo.self)
+        }
+        #expect(asked.zones == [.default, "drafts"])
+    }
+
+    private final class AskedZones: @unchecked Sendable {
+        private let lock = NSLock()
+        private var list: [Zone] = []
+        var zones: [Zone] { lock.withLock { list } }
+        func append(_ zone: Zone) { lock.withLock { list.append(zone) } }
     }
 
     @Test func defaultDirectoryIsApplicationSupport() {

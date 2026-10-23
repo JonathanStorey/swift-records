@@ -114,8 +114,8 @@ let container = try RecordContainer(for: [ToDo.self])
 
 ## Zones
 
-A container is a folder, and a zone is a database file in it, named by a `String?`. The context's `zone`
-decides where saves, deletes and fetches go. It starts as `nil`, the default zone.
+A container is a folder, and a `Zone` is a database file in it. The context's `zone` decides where saves,
+deletes and fetches go. It starts as `.default`.
 
 ```swift
 let container = try RecordContainer()     // Application Support/Records
@@ -125,16 +125,22 @@ context.save(recipe)                      // _default.sqlite
 context.zone = "drafts"
 context.save(draft)                       // drafts.sqlite, opened on first use
 let drafts = try context.fetch(Recipe.self)
-context.zone = nil                        // back to the default zone
+context.zone = .default                   // back to the default zone
 
 try await container.performBackgroundTask(in: "drafts") { try $0.save(imported) }
+context.zone = .inMemory                  // never written to disk, never synced
+context.zone = .localOnly                 // _local.sqlite, never synced
 let scratch = try RecordContainer(inMemory: true)   // every zone lives in memory
 ```
 
 Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay
 with the zone they were made in, and a save commits each zone it touches in a transaction of its own.
-Relationships stay within one zone, and the same record type can be stored in several. Names starting
-with an underscore are reserved, which keeps `_default` free for the default zone.
+Relationships stay within one zone, and the same record type can be stored in several.
+
+A zone name is lowercased, then must be 1 to 64 letters, digits, `-` or `_`, starting with a letter, so
+`"Drafts"` and `"drafts"` are the same zone. A string literal with an invalid name stops the app, and
+`try Zone(name)` throws for names that come from elsewhere. Names starting with an underscore are reserved
+for `.default`, `.inMemory` and `.localOnly`.
 
 Zone files are local to the device unless the container syncs. They are included in the device's own
 backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
@@ -319,7 +325,7 @@ written by a background context or a sync provider.
 ## Sync
 
 A `SyncProvider` keeps a zone in step with a server. Pass a closure when the container opens, and it's
-called once for each zone as the zone opens. Return a provider to sync that zone with its zone on the
+called once for each zone as the zone opens, except `.inMemory` and `.localOnly`. Return a provider to sync that zone with its zone on the
 server, or `nil` to keep it on the device. The same app code works with or without it: sync adds to
 saving, it doesn't replace it.
 
@@ -421,8 +427,8 @@ which is deleted along with its cascades, while the new one brings only its own 
 
 `@Records` reads and writes through the main context of the environment's container, or without one, the
 most recently opened container on the default folder. It follows `context.zone`, so setting the zone
-switches every list at once. `@Records("pantry")` pins a property to one zone instead, and `@Records(nil)`
-to the default zone.
+switches every list at once. `@Records("pantry")` pins a property to one zone instead, and
+`@Records(.default)` to the default zone.
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by

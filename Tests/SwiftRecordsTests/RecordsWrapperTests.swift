@@ -11,7 +11,7 @@ private struct WrapperUses {
     @Records(filter: #Predicate<ToDo> { $0.done }) var done: [ToDo]
     @Records(ids: []) var some: [ToDo]
     @Records(id: UUID()) var one: ToDo?
-    @Records(nil, id: UUID()) var other: Note?
+    @Records(.default, id: UUID()) var other: Note?
     @Records("pantry") var pantry: [Person]
 }
 

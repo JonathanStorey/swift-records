@@ -20,7 +20,7 @@ import Testing
 
     private func shown(_ predicate: Predicate<Draft>? = nil, source: ObjectIdentifier? = nil) throws -> [Draft] {
         let stored = try context.storage(for: nil).fetch(Draft.self, where: predicate)
-        return context.overlay(stored, in: nil, source: source) { (try? predicate?.evaluate($0)) ?? true }
+        return context.overlay(stored, in: .default, source: source) { (try? predicate?.evaluate($0)) ?? true }
     }
 
     @Test func appendsShowBeforeSaving() throws {
@@ -89,15 +89,15 @@ import Testing
 
         soup.title = "Broth"
         context.save(soup)
-        #expect(context.overlay(fetched, id: soup.id, in: nil)?.title == "Broth")
+        #expect(context.overlay(fetched, id: soup.id, in: .default)?.title == "Broth")
         context.delete(soup)
-        #expect(context.overlay(fetched, id: soup.id, in: nil) == nil)
+        #expect(context.overlay(fetched, id: soup.id, in: .default) == nil)
     }
 
     @Test func otherZonesStayOut() throws {
         context.zone = "pantry"
         try context.append(Draft(title: "Flour"))
-        context.zone = nil
+        context.zone = .default
         #expect(try shown().isEmpty)
     }
 
