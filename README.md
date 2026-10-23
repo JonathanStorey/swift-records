@@ -377,10 +377,6 @@ if let progress = context.assetProgress {
 }
 ```
 
-`context.recordsProgress` does the same for records during a sync, by record count. Downloads count
-only when the provider fills in `RecordDownload.remaining`. Without it, progress is `nil` while
-downloading, and `status` still reads `syncing`.
-
 `publicZones` names zones everyone shares. Their records carry the user who created them as `owner`,
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.

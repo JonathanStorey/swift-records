@@ -26,13 +26,7 @@ package final class ZoneStorage: @unchecked Sendable {
 
     /// How far the zone's asset files have got moving to and from the server, `nil` when none are.
     @MainActor private(set) var assetTransfer: SyncCoordinator.Transfer? {
-        didSet { context?.transferChanged() }
-    }
-
-    /// How far a sync pass has got sending and receiving records, `nil` between passes and while a
-    /// download's size is unknown.
-    @MainActor private(set) var recordTransfer: SyncCoordinator.Transfer? {
-        didSet { context?.transferChanged() }
+        didSet { context?.assetTransferChanged() }
     }
 
     init(
@@ -56,9 +50,6 @@ package final class ZoneStorage: @unchecked Sendable {
                     // The record already points at the file, so only views need to know it's here.
                     if landed { self.context?.assetDidLand(in: zone) }
                 }
-            },
-            recordsChanged: { [weak self] transfer in
-                Task { @MainActor in self?.recordTransfer = transfer }
             }
         )
         self.sync = sync

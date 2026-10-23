@@ -14,7 +14,7 @@ actor SyncCoordinator {
         case failed(RecordsError)
     }
 
-    /// How far the current transfers have got, by record or file count.
+    /// How far the current asset transfers have got, by file count.
     struct Transfer: Sendable, Hashable {
         var done: Int
         var total: Int
@@ -48,9 +48,6 @@ actor SyncCoordinator {
     private let phaseChanged: @Sendable (Phase) -> Void
     /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
     private let transferChanged: @Sendable (Transfer?, _ landed: Bool) -> Void
-    /// Reports how far a pass has got sending and receiving records, `nil` between passes and while a
-    /// download's size is unknown.
-    private let recordsChanged: @Sendable (Transfer?) -> Void
 
     private(set) var phase: Phase = .idle {
         didSet {
@@ -65,10 +62,6 @@ actor SyncCoordinator {
     /// The asset transfers running now, and whether a pass has finished since they started.
     private var transferring: Task<Void, Never>?
     private var transferRequested = false
-    /// Records sent and received in the passes running now, out of those known to be waiting.
-    private var recordProgress = Transfer(done: 0, total: 0)
-    /// Whether a download is running whose size the server hasn't said.
-    private var sizeUnknown = false
     private var uploadRequested = false
     private var downloadRequested = false
     private var account: String?
@@ -79,8 +72,7 @@ actor SyncCoordinator {
     init(
         provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore, policies: Policies,
         phaseChanged: @escaping @Sendable (Phase) -> Void,
-        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) -> Void = { _, _ in },
-        recordsChanged: @escaping @Sendable (Transfer?) -> Void = { _ in }
+        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) -> Void = { _, _ in }
     ) {
         self.provider = provider
         self.zone = zone
@@ -89,7 +81,6 @@ actor SyncCoordinator {
         self.policies = policies
         self.phaseChanged = phaseChanged
         self.transferChanged = transferChanged
-        self.recordsChanged = recordsChanged
     }
 
     // MARK: Calls from contexts
@@ -163,8 +154,6 @@ actor SyncCoordinator {
             uploadRequested = false
             await pass(download: download, upload: upload)
         } while passRequested && passes < Self.maxRounds
-        recordProgress = Transfer(done: 0, total: 0)
-        recordsChanged(nil)
         running = nil
         startTransfers()
     }
@@ -204,11 +193,6 @@ actor SyncCoordinator {
         }
     }
 
-    /// Reports records sent and received out of those known to be waiting.
-    private func reportRecords() {
-        recordsChanged(sizeUnknown || recordProgress.total == 0 ? nil : recordProgress)
-    }
-
     /// Shows `syncing`, unless a record that won't decode is being reported.
     private func markSyncing() {
         if case .failed(.incompatibleRecord) = phase { return }
@@ -219,15 +203,6 @@ actor SyncCoordinator {
 
     private func uploadPending() async throws {
         var skipped: Set<Key> = []
-        let waiting = Set(try store.pendingChanges().map { Key(table: $0.table, id: $0.id) }).count
-        let end = recordProgress.done + waiting
-        recordProgress.total += waiting
-        defer {
-            // Changes left for the next pass no longer count.
-            recordProgress.total = recordProgress.done
-            reportRecords()
-        }
-        reportRecords()
         for _ in 0..<Self.maxRounds {
             var batch: [UUID: (change: PendingChange, record: SyncRecord, fields: SyncFields?)] = [:]
             var order: [UUID] = []
@@ -263,8 +238,6 @@ actor SyncCoordinator {
                     }
                 }
             }
-            recordProgress.done = min(recordProgress.done + answered.count, end)
-            reportRecords()
             // Changes the provider didn't answer wait for the next pass.
             for id in order where !answered.contains(id) {
                 skipped.insert(Key(table: batch[id]!.change.table, id: id))
@@ -280,21 +253,10 @@ actor SyncCoordinator {
 
     private func downloadChanges() async throws {
         markSyncing()
-        sizeUnknown = true
-        defer {
-            sizeUnknown = false
-            recordProgress.total = recordProgress.done
-            reportRecords()
-        }
-        reportRecords()
         var cursor = try store.syncValue(forKey: Self.cursorKey)
         while true {
             let page = try await provider.downloadRecordChanges(in: zone, after: cursor)
             try await receive(page.changes, cursor: page.cursor)
-            recordProgress.done += page.changes.count
-            recordProgress.total = recordProgress.done + (page.hasMore ? page.remaining ?? 0 : 0)
-            sizeUnknown = page.hasMore && page.remaining == nil
-            reportRecords()
             cursor = page.cursor
             guard page.hasMore, !page.changes.isEmpty else { return }
         }
