@@ -402,6 +402,30 @@ Inverses aren't sent. The container owns the rules:
 - **Accounts have policies.** `onSignOut` (keep local data by default), `onAccountSwitch` (delete) and
   `onServerReset` (keep and upload again) decide what an account change does.
 
+### Syncing through iCloud files
+
+`FileSyncProvider` syncs through a folder, and the system copies the folder between devices. No server
+is needed.
+
+```swift
+let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in FileSyncProvider() })
+```
+
+| Location | Folder |
+| --- | --- |
+| `.iCloud` (default) | The app's iCloud container, hidden from the Files app |
+| `.iCloudDrive` | The container's `Documents` folder, visible in Files and iCloud Drive |
+| `.appGroup("group.com.example")` | An App Group's folder, shared with extensions on one device |
+| `.applicationSupport` | Application Support on this device, for tests and the simulator |
+| `.other(directory: url)` | Any folder |
+
+Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, and assets are plain files
+in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
+them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
+can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
+capability with iCloud Documents on, and while the person is signed out, `status` is `.signedOut`.
+For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder shows in Files.
+
 ## SwiftUI
 
 ```swift
