@@ -50,6 +50,24 @@ import Testing
         #expect(try shown().map(\.title) == ["Soup", "Stew"])
     }
 
+    @Test func deletesByPredicateShowBeforeSaving() throws {
+        context.save(Draft(title: "Soup"))
+        context.save(Draft(title: "Stew"))
+        context.save(Draft(title: "Bread"))
+        try context.save()
+
+        context.delete(Draft.self, where: #Predicate { $0.title.starts(with: "S") })
+        #expect(try shown().map(\.title) == ["Bread"])
+        // A save after the delete brings a record back, as it does when they commit.
+        context.save(Draft(title: "Salad"))
+        #expect(try shown().map(\.title) == ["Bread", "Salad"])
+
+        context.delete(Draft.self)
+        #expect(try shown().isEmpty)
+        context.rollback()
+        #expect(try shown().map(\.title) == ["Soup", "Stew", "Bread"])
+    }
+
     @Test func filtersApplyToUnsavedRecords() throws {
         var soup = Draft(title: "Soup")
         context.save(soup)

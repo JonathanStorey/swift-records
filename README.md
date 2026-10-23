@@ -429,7 +429,7 @@ which batches them into one transaction once edits pause for `autosaveDelay` (ha
 default). Every view reading the same records shows the change at once, before it saves, and so do changes
 made through `@Environment(\.recordContext)`, such as `try context.append(todo)`. A new record joins the end
 of a list, a filtered list drops records its filter rejects, and a rollback takes them back out. Deletes by
-predicate show once they're saved. The array's order is stored, so moves persist, and records always come back in that order.
+predicate hide their matches at once too. The array's order is stored, so moves persist, and records always come back in that order.
 A filtered list reorders only its own records within the slots they already hold, leaving the rest in
 place. Sort a copy to display them another way.
 
