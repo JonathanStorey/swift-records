@@ -82,12 +82,12 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// The zone's latest changes for `user` after `cursor`, oldest first, at most `limit`, and the new cursor.
-    func changes(in zone: Zone, for user: String?, since cursor: Int, limit: Int) -> (changes: [RecordChangeData], cursor: Int, hasMore: Bool) {
+    func changes(in zone: Zone, for user: String?, since cursor: Int, limit: Int) -> (changes: [RecordChangeData], cursor: Int, remaining: Int) {
         withLock {
             let prefix = space(zone, account: user)
             let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
             let page = found.prefix(limit)
-            return (page.map(\.change), page.last?.sequence ?? cursor, found.count > limit)
+            return (page.map(\.change), page.last?.sequence ?? cursor, found.count - page.count)
         }
     }
 
@@ -143,6 +143,10 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     var account: String??
     /// Changes per download page.
     var pageSize = 100
+    /// Whether download pages say how many changes remain.
+    var countsRemaining = true
+    /// Runs before each download page.
+    var beforeDownload: (@Sendable () async -> Void)?
     /// Fails every asset upload, as if the connection dropped mid-file.
     var failsAssetUploads = false
     /// Runs before each asset download.
@@ -193,10 +197,14 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     }
 
     func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
+        await beforeDownload?()
         try check()
         let start = cursor.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
         let page = server.changes(in: zone, for: user, since: start, limit: pageSize)
-        return RecordDownload(changes: page.changes, cursor: Data(String(page.cursor).utf8), hasMore: page.hasMore)
+        return RecordDownload(
+            changes: page.changes, cursor: Data(String(page.cursor).utf8), hasMore: page.remaining > 0,
+            remaining: lock.withLock { countsRemaining } ? page.remaining : nil
+        )
     }
 
     func uploadAssets(_ assets: [RecordAssetData]) async throws {

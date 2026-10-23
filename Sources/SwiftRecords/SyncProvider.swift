@@ -110,11 +110,15 @@ public struct RecordDownload: Sendable, Hashable {
     public var cursor: Data?
     /// Whether more changes are waiting after this page.
     public var hasMore: Bool
+    /// How many changes are waiting after this page, when the server can tell. It lets
+    /// `RecordContext.recordsProgress` include downloads, which otherwise have no known end.
+    public var remaining: Int?
 
-    public init(changes: [RecordChangeData], cursor: Data?, hasMore: Bool = false) {
+    public init(changes: [RecordChangeData], cursor: Data?, hasMore: Bool = false, remaining: Int? = nil) {
         self.changes = changes
         self.cursor = cursor
         self.hasMore = hasMore
+        self.remaining = remaining
     }
 }
 

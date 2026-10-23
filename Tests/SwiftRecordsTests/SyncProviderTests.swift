@@ -420,6 +420,44 @@ struct Device {
         #expect(landed.$photo.url?.lastPathComponent == assetID)
     }
 
+    @Test func recordsProgressCountsRecords() async throws {
+        let phone = try Device(server)
+        for title in ["One", "Two", "Three"] {
+            phone.context.save(SyncRecipe(title: title))
+        }
+        try await phone.context.save()
+        await phone.settle()
+        #expect(phone.context.recordsProgress == nil)
+
+        // Each page says how many changes remain, so progress climbs by record.
+        let tablet = try Device(server)
+        tablet.provider.pageSize = 1
+        let seen = Seen()
+        let context = tablet.context
+        tablet.provider.beforeDownload = {
+            for _ in 0..<20 { await Task.yield() }
+            await seen.add(await MainActor.run { context.recordsProgress })
+        }
+        try await tablet.context.refresh()
+        await tablet.settle()
+        #expect(await seen.values == [nil, 1.0 / 3, 2.0 / 3])
+        #expect(tablet.context.recordsProgress == nil)
+
+        // A server that can't count leaves downloads without progress.
+        let laptop = try Device(server)
+        laptop.provider.pageSize = 1
+        laptop.provider.countsRemaining = false
+        let unknown = Seen()
+        let laptopContext = laptop.context
+        laptop.provider.beforeDownload = {
+            for _ in 0..<20 { await Task.yield() }
+            await unknown.add(await MainActor.run { laptopContext.recordsProgress })
+        }
+        try await laptop.context.refresh()
+        #expect(await unknown.values == [nil, nil, nil])
+        #expect(try await laptop.recipes().count == 3)
+    }
+
     @Test func assetProgressCountsFiles() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)

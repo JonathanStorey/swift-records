@@ -78,6 +78,11 @@ public final class RecordContext {
     /// so a received record's asset reads `nil` until its file lands.
     public private(set) var assetProgress: Double?
 
+    /// How far syncing has got sending and receiving records, from 0 to 1 by record count across the zones
+    /// this context uses, or `nil` between syncs. Downloads count only when the provider says how many
+    /// changes remain; while it doesn't, this is `nil` and `status` still reads `syncing`.
+    public private(set) var recordsProgress: Double?
+
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
 
@@ -190,13 +195,20 @@ public final class RecordContext {
         updateStatus()
     }
 
-    func assetTransferChanged() {
-        let transfers = observed.values.compactMap(\.storage.assetTransfer)
-        let total = transfers.reduce(0) { $0 + $1.total }
-        let new = total == 0 ? nil : Double(transfers.reduce(0) { $0 + $1.done }) / Double(total)
-        if new != assetProgress {
-            assetProgress = new
+    func transferChanged() {
+        let assets = Self.progress(observed.values.compactMap(\.storage.assetTransfer))
+        if assets != assetProgress {
+            assetProgress = assets
         }
+        let records = Self.progress(observed.values.compactMap(\.storage.recordTransfer))
+        if records != recordsProgress {
+            recordsProgress = records
+        }
+    }
+
+    private static func progress(_ transfers: [SyncCoordinator.Transfer]) -> Double? {
+        let total = transfers.reduce(0) { $0 + $1.total }
+        return total == 0 ? nil : Double(transfers.reduce(0) { $0 + $1.done }) / Double(total)
     }
 
     /// Refreshes views once a downloaded asset file is in place, so its record's asset reads the file.
