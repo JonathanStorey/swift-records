@@ -125,6 +125,7 @@ final class RecordStore: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS "_records_parked" (
                 record_table TEXT NOT NULL, record_id NOT NULL, record BLOB NOT NULL,
                 PRIMARY KEY (record_table, record_id));
+            CREATE TABLE IF NOT EXISTS "_records_uploaded_assets" (name TEXT PRIMARY KEY);
             """)
         // Files from before child references.
         if try !db.run("PRAGMA table_info(\"_records_relations\")").contains(where: { $0["name"] == .text("child_field") }) {

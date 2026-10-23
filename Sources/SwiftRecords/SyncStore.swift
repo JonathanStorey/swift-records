@@ -1,5 +1,72 @@
 import Foundation
 
+/// One record as the container handles it for sync: its fields typed, as they merge.
+struct SyncRecord: Sendable {
+    /// The record's stored type name, such as `"Recipe"`.
+    let type: String
+    let id: UUID
+    /// The record's values keyed by stored property name, or `nil` for a deletion. A missing key means `nil`.
+    var fields: SyncFields?
+    /// The server's `synced` date for the copy this one is based on, as stored in the record's tag.
+    var tag: Data?
+    /// When the record was last edited, which settles a conflict under `.latestWins`.
+    var modified: Date?
+    /// The record's place in its type's stored order.
+    var position: Int64?
+
+    init(type: String, id: UUID, fields: SyncFields?, tag: Data? = nil, modified: Date? = nil) {
+        self.type = type
+        self.id = id
+        self.fields = fields
+        self.tag = tag
+        self.modified = modified
+    }
+
+    var isDeletion: Bool { fields == nil }
+}
+
+/// One field value, typed the way it merges and compares.
+enum SyncValue: Hashable, Codable, Sendable {
+    /// A `String`, or a `UInt64` above `Int64.max`.
+    case string(String)
+    /// Any integer up to `Int64.max`.
+    case int(Int64)
+    /// A `Double` or `Float`.
+    case double(Double)
+    case bool(Bool)
+    /// A `Date`, to the millisecond.
+    case date(Date)
+    /// `Data`, or canonical JSON for any other `Codable` value.
+    case data(Data)
+    case uuid(UUID)
+    /// A `URL`, or an asset's stored file.
+    case url(URL)
+    /// A relationship, in order.
+    case ids([UUID])
+    /// A child's `@Reference(to:)`: its parent's ID and what happens to it when the parent goes.
+    case reference(UUID, action: ReferenceAction)
+    /// A field this version of the app doesn't know, as the JSON it arrived in, sent back untouched.
+    case json(Data)
+}
+
+extension SyncValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral {
+    init(stringLiteral value: String) { self = .string(value) }
+    init(integerLiteral value: Int64) { self = .int(value) }
+    init(floatLiteral value: Double) { self = .double(value) }
+    init(booleanLiteral value: Bool) { self = .bool(value) }
+}
+
+/// A server's `synced` date as a record's tag, and back.
+enum SyncedTag {
+    static func data(_ date: Date?) -> Data? {
+        date.map { Data(String($0.timeIntervalSince1970).utf8) }
+    }
+
+    static func date(_ data: Data?) -> Date? {
+        data.flatMap { Double(String(decoding: $0, as: UTF8.self)) }.map { Date(timeIntervalSince1970: $0) }
+    }
+}
+
 extension SyncValue {
     /// A decoded property value. Scalars keep their type, and anything else becomes JSON. `nil` for an
     /// optional that holds nothing.
@@ -42,6 +109,7 @@ extension SyncValue {
             case .url(let value): .text(value.absoluteString)
             case .ids(let value): .text(String(decoding: try CanonicalJSON.encode(value), as: UTF8.self))
             case .reference(let id, _): try ValueCoding.encode(id)
+            case .json(let value): .text(String(decoding: value, as: UTF8.self))
             }
         }
     }
@@ -60,16 +128,6 @@ extension SyncFields {
         guard case .blob(let data)? = value else { return nil }
         return try? JSONDecoder().decode(SyncFields.self, from: data)
     }
-}
-
-/// A record kept back because this version of the app can't store it, to try again after an update.
-private struct ParkedRecord: Codable {
-    let type: String
-    let id: UUID
-    let fields: SyncFields?
-    let tag: Data?
-    let modified: Date?
-    let position: Int64?
 }
 
 /// A change the server doesn't have yet.
@@ -275,7 +333,9 @@ extension RecordStore {
         }
         func convert<T: Codable>(_ type: T.Type) throws -> SQLiteValue {
             let typed: T
-            if case .data(let json) = value, T.self != Data.self, T.self != Data?.self {
+            if case .json(let json) = value {
+                typed = try WireJSON.decoder.decode(T.self, from: json)
+            } else if case .data(let json) = value, T.self != Data.self, T.self != Data?.self {
                 typed = try ValueCoding.jsonDecoder.decode(T.self, from: json)
             } else {
                 typed = try ValueCoding.decode(T.self, from: value.sqliteValue)
@@ -437,21 +497,9 @@ extension RecordStore {
             var values = fields
             let position = values.removeValue(forKey: positionField)
             var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag, modified: modified)
-            record.parent = registered[change.table].flatMap { Self.parent(of: $0, in: fields) }
             if case .int(let place)? = position { record.position = place }
             return (record, fields)
         }
-    }
-
-    /// The parent a server should file a record under, such as a `CKRecord`'s `parent`: its first `.deleteSelf`
-    /// reference that is set, or else its first reference that is set.
-    private static func parent<R: Record>(of type: R.Type, in fields: SyncFields) -> UUID? {
-        let references = R.schema.fields.filter { $0.parent != nil }
-        let ordered = references.filter { $0.action == .deleteSelf } + references.filter { $0.action != .deleteSelf }
-        for field in ordered {
-            if case .reference(let id, _)? = fields[field.name] { return id }
-        }
-        return nil
     }
 
     /// A server's fields with each child reference as a `.reference`, whichever form the provider handed
@@ -469,8 +517,10 @@ extension RecordStore {
         return fields
     }
 
-    /// Records that the server has a change. A later local edit stays pending, with what was sent as its ancestor.
-    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, tag: Data?) throws {
+    /// Records that the server accepted a change at `synced`. A later local edit stays pending, with what was
+    /// sent as its ancestor.
+    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, synced: Date) throws {
+        let tag = SyncedTag.data(synced)
         let id = try ValueCoding.encode(change.id)
         guard let entry = try logEntry(change.table, id: id) else { return }
         if change.kind == .delete {
@@ -487,7 +537,7 @@ extension RecordStore {
         let deletedTag: SQLiteValue = entry.kind == .delete ? (tag.map { .blob($0) } ?? .null) : .null
         try updateSyncRow(change.table, id: id, [
             "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": deletedTag,
-            "synced_at": .real(Date().timeIntervalSince1970),
+            "synced_at": .real(synced.timeIntervalSince1970),
         ])
         // Views showing a synced timestamp refresh.
         changedData = true
@@ -496,16 +546,17 @@ extension RecordStore {
         }
     }
 
-    /// Applies records from the server, merging any that have unsent local edits. Returns the ones this
+    /// Applies changes from the server, merging any that have unsent local edits. Returns the ones this
     /// version of the app can't store, which are kept to try again after an update.
-    func applyReceived(_ records: [SyncRecord], policy: MergePolicy) throws -> [SyncRecord] {
-        var incompatible: [SyncRecord] = []
-        for record in records {
+    func applyReceived(_ changes: [RecordChangeData], policy: MergePolicy) throws -> [RecordChangeData] {
+        var incompatible: [RecordChangeData] = []
+        for change in changes {
             do {
+                let record = try syncRecord(from: change)
                 try transaction { try applyReceived(record, policy: policy) }
             } catch RecordsError.incompatibleRecord {
-                incompatible.append(record)
-                try park(record)
+                incompatible.append(change)
+                try park(change)
             }
         }
         return incompatible
@@ -579,31 +630,23 @@ extension RecordStore {
         try setTagColumn(record.tag, table: table, id: id)
     }
 
-    private func park(_ record: SyncRecord) throws {
-        let parked = ParkedRecord(
-            type: record.type, id: record.id, fields: record.fields, tag: record.tag,
-            modified: record.modified, position: record.position
-        )
+    private func park(_ change: RecordChangeData) throws {
         try db.run(
             "INSERT OR REPLACE INTO \"_records_parked\" (record_table, record_id, record) VALUES (?, ?, ?)",
-            [.text(record.type), try ValueCoding.encode(record.id), .blob(try JSONEncoder().encode(parked))]
+            [.text(change.type), try ValueCoding.encode(change.id), .blob(try JSONEncoder().encode(change))]
         )
     }
 
-    /// Tries records kept back by an earlier version of the app again. Returns the ones still incompatible.
-    func retryParked(policy: MergePolicy) throws -> [SyncRecord] {
+    /// Tries changes kept back by an earlier version of the app again. Returns the ones still incompatible.
+    func retryParked(policy: MergePolicy) throws -> [RecordChangeData] {
         try transaction {
-            let records = try db.run("SELECT record FROM \"_records_parked\"").compactMap { row -> SyncRecord? in
-                guard case .blob(let data)? = row["record"], let parked = try? JSONDecoder().decode(ParkedRecord.self, from: data) else {
-                    return nil
-                }
-                var record = SyncRecord(type: parked.type, id: parked.id, fields: parked.fields, tag: parked.tag, modified: parked.modified)
-                record.position = parked.position
-                return record
+            let changes = try db.run("SELECT record FROM \"_records_parked\"").compactMap { row -> RecordChangeData? in
+                guard case .blob(let data)? = row["record"] else { return nil }
+                return try? JSONDecoder().decode(RecordChangeData.self, from: data)
             }
-            guard !records.isEmpty else { return [] }
             try db.run("DELETE FROM \"_records_parked\"")
-            return try applyReceived(records, policy: policy)
+            guard !changes.isEmpty else { return [] }
+            return try applyReceived(changes, policy: policy)
         }
     }
 
@@ -612,6 +655,7 @@ extension RecordStore {
     func markAllPending() throws {
         try transaction {
             try db.run("UPDATE \"_records_sync\" SET acked = 0, known = 0, tag = NULL, snapshot = NULL")
+            try db.run("DELETE FROM \"_records_uploaded_assets\"")
             try db.run("DELETE FROM \"_records_sync\" WHERE extra IS NULL")
             try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete'")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)

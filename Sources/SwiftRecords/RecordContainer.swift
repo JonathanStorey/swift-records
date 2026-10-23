@@ -3,8 +3,8 @@ import Foundation
 /// A folder of zones, the schema of the records stored in them and how they sync, in the role SwiftData
 /// gives `ModelContainer`.
 ///
-/// A zone is a `String?` naming a database file in the folder: `"drafts"` is `drafts.sqlite`, and `nil`, the
-/// default zone, is `_default.sqlite`. Each zone opens the first time it's used. You read and write records
+/// A `Zone` names a database file in the folder: `"drafts"` is `drafts.sqlite`, and `.default` is
+/// `_default.sqlite`. Each zone opens the first time it's used. You read and write records
 /// through `mainContext` on the main actor, whose `zone` picks the zone, or through the context that
 /// `performBackgroundTask(in:_:)` hands you for work off the main actor. Containers opened on the same
 /// folder share each file's connection, so they see each other's changes.
@@ -33,12 +33,16 @@ public final class RecordContainer: @unchecked Sendable {
     /// What happens to a zone's records when the server's copy of it is deleted.
     public let onServerReset: AccountPolicy
 
+    /// The zones everyone shares, such as a public CloudKit database. Their records carry the user who created
+    /// them, signing out or switching accounts never deletes them, and they download without an account.
+    public let publicZones: Set<Zone>
+
     private let types: [any Record.Type]
-    private let syncProvider: (@Sendable (String?) -> (any SyncProvider)?)?
+    private let syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)?
     private let policies: SyncCoordinator.Policies
     /// The default zone, opened with the container so `mainContext` can't fail.
     let defaultStorage: ZoneStorage
-    private var storages: [String?: ZoneStorage]
+    private var storages: [Zone: ZoneStorage]
     /// Created on first use by `mainContext`, on the main actor.
     private nonisolated(unsafe) var mainContextStorage: RecordContext?
     private let lock = NSLock()
@@ -52,14 +56,16 @@ public final class RecordContainer: @unchecked Sendable {
     /// too. A sync provider needs it, because a server's records can arrive before any code has touched their
     /// type.
     ///
-    /// `syncProvider` is called once for each zone as it opens. Return a provider to keep that zone in step
-    /// with its zone on the server, or `nil` to keep it on this device, such as for drafts. The provider and
-    /// policies stay fixed for the container's life.
+    /// `syncProvider` is called once for each zone as it opens, except `.inMemory` and `.localOnly`, which
+    /// never sync. Return a provider to keep that zone in step with its zone on the server, or `nil` to keep it
+    /// on this device. The provider and policies stay fixed for the container's life. Name the zones everyone
+    /// shares in `publicZones`.
     public init(
         for types: [any Record.Type] = [],
         directory: URL? = nil,
         inMemory: Bool = false,
-        syncProvider: (@Sendable (String?) -> (any SyncProvider)?)? = nil,
+        syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)? = nil,
+        publicZones: Set<Zone> = [],
         mergePolicy: MergePolicy = .default,
         onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData,
@@ -75,42 +81,49 @@ public final class RecordContainer: @unchecked Sendable {
         self.directory = directory
         self.types = types
         self.syncProvider = syncProvider
+        self.publicZones = publicZones
         self.policies = policies
         self.mergePolicy = mergePolicy
         self.onSignOut = onSignOut
         self.onAccountSwitch = onAccountSwitch
         self.onServerReset = onServerReset
-        defaultStorage = try Self.open(nil, directory: directory, types: types, syncProvider: syncProvider, policies: policies)
-        storages = [nil: defaultStorage]
+        defaultStorage = try Self.open(
+            .default, directory: directory, types: types, syncProvider: syncProvider, isPublic: publicZones.contains(.default), policies: policies
+        )
+        storages = [.default: defaultStorage]
         if directory != nil {
             Self.register(self)
         }
     }
 
     private static func open(
-        _ zone: String?, directory: URL?, types: [any Record.Type],
-        syncProvider: (@Sendable (String?) -> (any SyncProvider)?)?, policies: SyncCoordinator.Policies
+        _ zone: Zone, directory: URL?, types: [any Record.Type],
+        syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)?, isPublic: Bool, policies: SyncCoordinator.Policies
     ) throws -> ZoneStorage {
-        try ZoneFile.validate(zone)
-        let store = try RecordStore.open(url: directory.map { try ZoneFile.url(for: zone, in: $0) })
-        return try ZoneStorage(zone: zone, store: store, types: types, syncProvider: syncProvider?(zone), policies: policies)
+        let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
+        return try ZoneStorage(
+            zone: zone, store: store, types: types, syncProvider: zone.canSync ? syncProvider?(zone) : nil, isPublic: isPublic,
+            policies: policies
+        )
     }
 
     /// The zone's storage, opening its file the first time.
-    func storage(for zone: String?) throws -> ZoneStorage {
+    func storage(for zone: Zone) throws -> ZoneStorage {
         lock.lock()
         defer { lock.unlock() }
         if let storage = storages[zone] {
             return storage
         }
-        let storage = try Self.open(zone, directory: directory, types: types, syncProvider: syncProvider, policies: policies)
+        let storage = try Self.open(
+            zone, directory: directory, types: types, syncProvider: syncProvider, isPublic: publicZones.contains(zone), policies: policies
+        )
         storages[zone] = storage
         return storage
     }
 
     /// The zone's database file, or `nil` in memory.
-    public func url(for zone: String? = nil) throws -> URL? {
-        try directory.map { try ZoneFile.url(for: zone, in: $0) }
+    public func url(for zone: Zone = .default) -> URL? {
+        directory.flatMap { zone.url(in: $0) }
     }
 
     // MARK: Contexts
@@ -134,7 +147,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// Each zone serializes access to its file, so the main context waits while a transaction runs. Keep
     /// transactions to a few hundred records, and split a large import into several.
     public func performBackgroundTask<T: Sendable>(
-        in zone: String? = nil,
+        in zone: Zone = .default,
         _ body: @escaping @Sendable (BackgroundContext) throws -> T
     ) async throws -> T {
         let storage = try storage(for: zone)
@@ -145,7 +158,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// discards its main context's pending changes. Use it for signing out or resetting app data. Nothing
     /// is sent to a sync server: the next sync starts over.
     @MainActor
-    public func deleteAllData(in zone: String? = nil) throws {
+    public func deleteAllData(in zone: Zone = .default) throws {
         mainContextStorage?.rollback(in: zone)
         mainContextStorage?.waitForSaves()
         try storage(for: zone).deleteAllData()

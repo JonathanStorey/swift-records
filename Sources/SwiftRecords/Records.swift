@@ -29,7 +29,7 @@ import SwiftUI
 /// It reads through the main context of the environment's container, or of a shared container on the
 /// default folder when the environment has none. Without a zone it follows the context's `zone`, so setting
 /// `context.zone` switches it and it fetches again. A zone, such as `@Records("pantry")`, pins it to that
-/// zone whatever the context's is, and `@Records(nil)` pins it to the default zone.
+/// zone whatever the context's is, and `@Records(.default)` pins it to the default zone.
 @MainActor
 @propertyWrapper
 public struct Records<Value: Sendable>: DynamicProperty {
@@ -49,18 +49,18 @@ public struct Records<Value: Sendable>: DynamicProperty {
         let fetch: @MainActor (ZoneStorage) throws -> Value
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
-        let write: @MainActor (RecordContext, _ zone: String?, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
+        let write: @MainActor (RecordContext, _ zone: Zone, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
         /// Lays the context's unsaved changes over fetched values, so views show them before they commit.
-        let overlay: @MainActor (RecordContext, _ zone: String?, _ stored: Value, _ source: ObjectIdentifier) -> Value
+        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: Value, _ source: ObjectIdentifier) -> Value
     }
 
     /// Whether the wrapper follows the context's zone or stays in one.
     enum ZoneChoice {
         case following
-        case fixed(String?)
+        case fixed(Zone)
 
         @MainActor
-        func zone(in context: RecordContext) -> String? {
+        func zone(in context: RecordContext) -> Zone {
             switch self {
             case .following: context.zone
             case .fixed(let zone): zone
@@ -85,8 +85,8 @@ public struct Records<Value: Sendable>: DynamicProperty {
         self.init(zone: .following, query: Value.allRecordsQuery(), animation: nil)
     }
 
-    /// Records from one zone whatever the context's is, such as `@Records("pantry")`. `nil` is the default zone.
-    public init<R: Record>(_ zone: String?, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
+    /// Records from one zone whatever the context's is, such as `@Records("pantry")`. Pass `.default` for the default zone.
+    public init<R: Record>(_ zone: Zone, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
         self.init(zone: .fixed(zone), query: .list(predicate), animation: animation)
     }
 
@@ -97,7 +97,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
     }
 
     /// The records with these IDs in a zone.
-    public init<R: Record>(_ zone: String?, ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
+    public init<R: Record>(_ zone: Zone, ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
         self.init(zone: .fixed(zone), query: .list(ids: ids), animation: animation)
     }
 
@@ -107,7 +107,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
     }
 
     /// The record with this ID in a zone.
-    public init<R: Record>(_ zone: String?, id: UUID, animation: Animation? = nil) where Value == R? {
+    public init<R: Record>(_ zone: Zone, id: UUID, animation: Animation? = nil) where Value == R? {
         self.init(zone: .fixed(zone), query: .single(id: id), animation: animation)
     }
 
@@ -199,7 +199,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
     /// What the cached value was fetched for.
     struct CacheKey: Hashable {
         let query: AnyHashable?
-        let zone: String?
+        let zone: Zone
     }
 
     @MainActor
@@ -294,10 +294,10 @@ extension RecordArray {
         if let filter = query.refilter {
             refilter = { filter($0 as! [R]) as! Self }
         }
-        let write: @MainActor (RecordContext, String?, Self, Self, ObjectIdentifier) -> Void = { context, zone, new, previous, source in
+        let write: @MainActor (RecordContext, Zone, Self, Self, ObjectIdentifier) -> Void = { context, zone, new, previous, source in
             query.write(context, zone, new as! [R], previous as! [R], source)
         }
-        let overlay: @MainActor (RecordContext, String?, Self, ObjectIdentifier) -> Self = { context, zone, stored, source in
+        let overlay: @MainActor (RecordContext, Zone, Self, ObjectIdentifier) -> Self = { context, zone, stored, source in
             query.overlay(context, zone, stored as! [R], source) as! Self
         }
         return Records<Self>.Query(

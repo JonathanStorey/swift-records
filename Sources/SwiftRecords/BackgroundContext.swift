@@ -9,7 +9,7 @@ public struct BackgroundContext {
     let storage: ZoneStorage
 
     /// The zone this context reads and writes.
-    public var zone: String? { storage.zone }
+    public var zone: Zone { storage.zone }
 
     init(storage: ZoneStorage) {
         self.storage = storage

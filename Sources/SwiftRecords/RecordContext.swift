@@ -24,10 +24,10 @@ public final class RecordContext {
     /// The container this context belongs to.
     public let container: RecordContainer
 
-    /// The zone that saves, deletes and fetches use: `nil`, the default zone, until you set it. Setting it switches every
+    /// The zone that saves, deletes and fetches use: `.default` until you set it. Setting it switches every
     /// `@Records` view that doesn't name a zone of its own, and they fetch again from the new zone. Changes
     /// already pending stay with the zone they were made in. A zone's file opens the first time it's used.
-    public var zone: String? = nil {
+    public var zone: Zone = .default {
         didSet {
             guard zone != oldValue else { return }
             _ = try? storage(for: zone)
@@ -77,7 +77,7 @@ public final class RecordContext {
     @ObservationIgnored private var saveFailure: RecordsError?
 
     private struct Change: Sendable {
-        let zone: String?
+        let zone: Zone
         /// The table of the record or order the change touches, so views can lay it over their results.
         var table: String? = nil
         let sequence: Int
@@ -107,7 +107,7 @@ public final class RecordContext {
     /// What a committed batch reports back to the main actor.
     private struct Commit: Sendable {
         /// Each zone's commit count just before this batch committed to it.
-        let bases: [String?: Int]
+        let bases: [Zone: Int]
         let changedStructure: Bool
     }
 
@@ -128,9 +128,9 @@ public final class RecordContext {
     /// nothing structural. `@Records` uses it to skip fetching again after its own edits.
     @ObservationIgnored private(set) var lastSaveSource: ObjectIdentifier?
     /// Each zone's commit count as of the last change this context has accounted for.
-    @ObservationIgnored private var knownCommits: [String?: Int] = [:]
+    @ObservationIgnored private var knownCommits: [Zone: Int] = [:]
     /// The zones this context has used, and its commit observer on each.
-    @ObservationIgnored private nonisolated(unsafe) var observed: [String?: (storage: ZoneStorage, token: UUID)] = [:]
+    @ObservationIgnored private nonisolated(unsafe) var observed: [Zone: (storage: ZoneStorage, token: UUID)] = [:]
     @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
     /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
     @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordContext")
@@ -162,7 +162,7 @@ public final class RecordContext {
     }
 
     /// The zone's storage, which this context then watches for commits it didn't make.
-    func storage(for zone: String?) throws -> ZoneStorage {
+    func storage(for zone: Zone) throws -> ZoneStorage {
         if let storage = observed[zone]?.storage {
             return storage
         }
@@ -205,7 +205,7 @@ public final class RecordContext {
     }
 
     /// Refreshes views after commits this context didn't make. Its own saves are already counted.
-    private func zoneDidCommit(_ zone: String?) {
+    private func zoneDidCommit(_ zone: Zone) {
         guard savesInFlight == 0, let storage = observed[zone]?.storage else { return }
         let commits = storage.commitCount
         guard commits != knownCommits[zone] else { return }
@@ -254,7 +254,7 @@ public final class RecordContext {
         save(record, in: zone)
     }
 
-    func save<R: Record>(_ record: R, in zone: String?) {
+    func save<R: Record>(_ record: R, in zone: Zone) {
         enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .saved(record)) { try $0.save(record) }
     }
 
@@ -262,7 +262,7 @@ public final class RecordContext {
         delete(record, in: zone)
     }
 
-    func delete<R: Record>(_ record: R, in zone: String?) {
+    func delete<R: Record>(_ record: R, in zone: Zone) {
         enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(record) }
     }
 
@@ -278,7 +278,7 @@ public final class RecordContext {
             return (try? predicate?.evaluate(record)) ?? true
         }
         enqueue(
-            key: "\(zone ?? "")|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
+            key: "\(zone.name)|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
         ) { try $0.delete(type, where: predicate) }
     }
 
@@ -327,7 +327,7 @@ public final class RecordContext {
     }
 
     /// Drops one zone's pending changes, before its data is deleted.
-    func rollback(in zone: String?) {
+    func rollback(in zone: Zone) {
         pending = pending.filter { $0.value.zone != zone }
     }
 
@@ -387,15 +387,15 @@ public final class RecordContext {
 
     /// Commits each zone's changes in a transaction of its own, zone by zone in the order they were first made.
     private nonisolated static func commit(_ changes: [Change], in container: RecordContainer) throws -> Commit {
-        var zones: [String?] = []
-        var byZone: [String?: [Change]] = [:]
+        var zones: [Zone] = []
+        var byZone: [Zone: [Change]] = [:]
         for change in changes {
             if byZone[change.zone] == nil {
                 zones.append(change.zone)
             }
             byZone[change.zone, default: []].append(change)
         }
-        var bases: [String?: Int] = [:]
+        var bases: [Zone: Int] = [:]
         var changedStructure = false
         for zone in zones {
             let storage = try container.storage(for: zone)
@@ -490,7 +490,7 @@ public final class RecordContext {
 
     /// The record as this context holds it: its pending change if it has one, otherwise the stored copy.
     /// Unlike a fetch, it doesn't save, so a view can call it while it updates.
-    func current<R: Record>(_ type: R.Type, id: R.ID, in zone: String?) throws -> Latest? {
+    func current<R: Record>(_ type: R.Type, id: R.ID, in zone: Zone) throws -> Latest? {
         if let latest = pending[Self.key(type, id: id, in: zone)]?.latest {
             return latest
         }
@@ -599,7 +599,7 @@ public final class RecordContext {
     /// new record does when it commits, and leaves if `includes` rejects it. A delete by predicate removes
     /// the records it matches. With a `source`, that view's unsaved order applies too.
     func overlay<R: Record>(
-        _ stored: [R], in zone: String?, source: ObjectIdentifier? = nil, includes: (R) -> Bool
+        _ stored: [R], in zone: Zone, source: ObjectIdentifier? = nil, includes: (R) -> Bool
     ) -> [R] {
         let changes = unsaved.filter { $0.change.zone == zone && $0.change.table == R.table }
         guard !changes.isEmpty else { return stored }
@@ -641,7 +641,7 @@ public final class RecordContext {
     }
 
     /// The record as views should show it: an unsaved save or delete if there is one, otherwise `stored`.
-    func overlay<R: Record>(_ stored: R?, id: UUID, in zone: String?) -> R? {
+    func overlay<R: Record>(_ stored: R?, id: UUID, in zone: Zone) -> R? {
         let key = Self.key(R.self, id: id, in: zone)
         switch (pending[key] ?? inFlight[key])?.latest {
         case .saved(let any)?: return (any as? R) ?? stored
@@ -656,7 +656,7 @@ public final class RecordContext {
     /// are updated. The array's order becomes the stored order among these records, leaving others in
     /// place. This is what the `@Records` binding calls when SwiftUI writes to it.
     /// Without a zone it applies to the context's current one.
-    func apply<R: Record>(_ records: [R], replacing previous: [R], in zone: String?? = nil, source: ObjectIdentifier? = nil) {
+    func apply<R: Record>(_ records: [R], replacing previous: [R], in zone: Zone? = nil, source: ObjectIdentifier? = nil) {
         let zone = zone ?? self.zone
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
@@ -671,20 +671,20 @@ public final class RecordContext {
         }
     }
 
-    private static func key<R: Record>(_ record: R, in zone: String?) -> String {
+    private static func key<R: Record>(_ record: R, in zone: Zone) -> String {
         key(R.self, id: record.id, in: zone)
     }
 
-    private static func key<R: Record>(_ type: R.Type, id: R.ID, in zone: String?) -> String {
-        "\(zone ?? "")|record|\(R.table)|\(id)"
+    private static func key<R: Record>(_ type: R.Type, id: R.ID, in zone: Zone) -> String {
+        "\(zone.name)|record|\(R.table)|\(id)"
     }
 
-    private static func orderKey<R: Record>(_ type: R.Type, in zone: String?, source: ObjectIdentifier?) -> String {
-        "\(zone ?? "")|order|\(R.table)|\(source.map { "\($0)" } ?? "")"
+    private static func orderKey<R: Record>(_ type: R.Type, in zone: Zone, source: ObjectIdentifier?) -> String {
+        "\(zone.name)|order|\(R.table)|\(source.map { "\($0)" } ?? "")"
     }
 
     private func enqueue(
-        key: String, zone: String?, table: String? = nil, source: ObjectIdentifier?, isOrder: Bool = false,
+        key: String, zone: Zone, table: String? = nil, source: ObjectIdentifier?, isOrder: Bool = false,
         latest: Latest? = nil, orderIDs: [UUID]? = nil, deletes: (@Sendable (Any) -> Bool)? = nil,
         _ run: @escaping @Sendable (ZoneStorage) throws -> Void
     ) {

@@ -7,7 +7,7 @@ package final class ZoneStorage: @unchecked Sendable {
     /// The container's main context, once it has used this zone. It hears about sync phase changes.
     nonisolated(unsafe) weak var context: RecordContext?
 
-    let zone: String?
+    let zone: Zone
 
     /// The database file, or `nil` for an in-memory zone.
     var url: URL? { store.url }
@@ -24,13 +24,16 @@ package final class ZoneStorage: @unchecked Sendable {
         didSet { context?.syncPhaseChanged() }
     }
 
-    init(zone: String?, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, policies: SyncCoordinator.Policies) throws {
+    init(
+        zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false,
+        policies: SyncCoordinator.Policies
+    ) throws {
         self.zone = zone
         self.store = store
         try store.register(types, syncSafe: syncProvider != nil)
         guard let syncProvider else { return }
         store.syncEnabled = true
-        let sync = SyncCoordinator(provider: syncProvider, store: store, policies: policies) { [weak self] phase in
+        let sync = SyncCoordinator(provider: syncProvider, zone: zone, isPublic: isPublic, store: store, policies: policies) { [weak self] phase in
             Task { @MainActor in self?.syncPhase = phase }
         }
         self.sync = sync
