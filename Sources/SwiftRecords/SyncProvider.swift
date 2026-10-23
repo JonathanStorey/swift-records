@@ -32,6 +32,15 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
     /// have it yet, and it's asked for again after the next pass.
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
+
+    /// Zones the server says have changed, such as from a push notification, so the container downloads
+    /// them without waiting for a refresh. Called once for each zone that syncs: return a new stream each
+    /// time, and send every push to all of them. `nil`, the default, means the provider can't tell.
+    func pushedChanges() -> AsyncStream<[Zone]>?
+}
+
+extension SyncProvider {
+    public func pushedChanges() -> AsyncStream<[Zone]>? { nil }
 }
 
 /// One record as it crosses to or from a server: a whole record saved, or a deletion.

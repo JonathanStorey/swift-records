@@ -421,6 +421,8 @@ struct Device {
         #expect(waiting.photo == nil)
         #expect(waiting.$photo.url == nil)
         #expect(tablet.context.status == .saved)
+        // The fetch sent again, which retried the download, so wait for that to finish too.
+        await tablet.transfers()
         #expect(tablet.context.assetProgress == nil)
 
         // The upload is tried again after the next pass, and the download after the tablet's.

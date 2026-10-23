@@ -29,6 +29,9 @@ package final class ZoneStorage: @unchecked Sendable {
         didSet { context?.assetTransferChanged() }
     }
 
+    /// Downloads whenever the provider pushes word that the zone changed.
+    private var pushTask: Task<Void, Never>?
+
     init(
         zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false,
         policies: SyncCoordinator.Policies
@@ -44,7 +47,8 @@ package final class ZoneStorage: @unchecked Sendable {
                 Task { @MainActor in self?.syncPhase = phase }
             },
             transferChanged: { [weak self] transfer, landed in
-                Task { @MainActor in
+                // Waiting for the main actor keeps updates in order, and the transfer isn't done until views know.
+                await MainActor.run {
                     guard let self else { return }
                     self.assetTransfer = transfer
                     // The record already points at the file, so only views need to know it's here.
@@ -54,6 +58,17 @@ package final class ZoneStorage: @unchecked Sendable {
         )
         self.sync = sync
         Task { await sync.open() }
+        if let pushes = syncProvider.pushedChanges() {
+            pushTask = Task { [weak sync] in
+                for await zones in pushes where zones.contains(zone) {
+                    await sync?.pushed()
+                }
+            }
+        }
+    }
+
+    deinit {
+        pushTask?.cancel()
     }
 
     /// Removes every record and asset file in the zone, along with the change log and sync state.
