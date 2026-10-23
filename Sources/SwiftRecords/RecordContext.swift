@@ -88,6 +88,8 @@ public final class RecordContext {
         var latest: Latest? = nil
         /// The IDs a `@Records` binding stored in this order.
         var orderIDs: [UUID]? = nil
+        /// Which records of the table a delete by predicate removes.
+        var deletes: (@Sendable (Any) -> Bool)? = nil
         let run: @Sendable (ZoneStorage) throws -> Void
     }
 
@@ -271,7 +273,13 @@ public final class RecordContext {
     /// Deletes every record that matches the predicate when the context saves, applying each one's
     /// delete rules. Without a predicate it deletes every record of the type.
     public func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) {
-        enqueue(key: "\(zone ?? "")|delete|\(R.table)|\(sequence + 1)", zone: zone, source: nil) { try $0.delete(type, where: predicate) }
+        let deletes: @Sendable (Any) -> Bool = { record in
+            guard let record = record as? R else { return false }
+            return (try? predicate?.evaluate(record)) ?? true
+        }
+        enqueue(
+            key: "\(zone ?? "")|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
+        ) { try $0.delete(type, where: predicate) }
     }
 
     /// Commits every pending change, in one transaction for each zone they touch. If the save fails, the
@@ -588,8 +596,8 @@ public final class RecordContext {
 
     /// Records as fetched, with this context's unsaved saves and deletes of the type laid over them, so views
     /// show them before they commit. A saved record replaces its stored copy in place, or joins the end, as a
-    /// new record does when it commits, and leaves if `includes` rejects it. With a `source`, that view's
-    /// unsaved order applies too. Deletes by predicate show once they're saved.
+    /// new record does when it commits, and leaves if `includes` rejects it. A delete by predicate removes
+    /// the records it matches. With a `source`, that view's unsaved order applies too.
     func overlay<R: Record>(
         _ stored: [R], in zone: String?, source: ObjectIdentifier? = nil, includes: (R) -> Bool
     ) -> [R] {
@@ -614,7 +622,9 @@ public final class RecordContext {
                     records.removeAll { $0.id == id }
                 }
             case nil:
-                break
+                if let deletes = change.deletes {
+                    records.removeAll { deletes($0) }
+                }
             }
         }
         let orderKey = Self.orderKey(R.self, in: zone, source: source)
@@ -675,14 +685,15 @@ public final class RecordContext {
 
     private func enqueue(
         key: String, zone: String?, table: String? = nil, source: ObjectIdentifier?, isOrder: Bool = false,
-        latest: Latest? = nil, orderIDs: [UUID]? = nil, _ run: @escaping @Sendable (ZoneStorage) throws -> Void
+        latest: Latest? = nil, orderIDs: [UUID]? = nil, deletes: (@Sendable (Any) -> Bool)? = nil,
+        _ run: @escaping @Sendable (ZoneStorage) throws -> Void
     ) {
         // Watch the zone from now on, so commits elsewhere refresh views.
         _ = try? storage(for: zone)
         sequence += 1
         pending[key] = Change(
             zone: zone, table: table, sequence: sequence, source: source, isOrder: isOrder, latest: latest,
-            orderIDs: orderIDs, run: run
+            orderIDs: orderIDs, deletes: deletes, run: run
         )
         // Views show unsaved changes at once.
         notifyHandlers()
