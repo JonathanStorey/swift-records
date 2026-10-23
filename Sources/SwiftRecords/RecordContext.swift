@@ -73,6 +73,11 @@ public final class RecordContext {
     /// container moves between `saving`, `saved` and `failed`.
     public private(set) var status: Status = .saved
 
+    /// How far asset files have got moving to and from the server, from 0 to 1 by file count across the
+    /// zones this context uses, or `nil` when none are moving. Records sync first and their files follow,
+    /// so a received record's asset reads `nil` until its file lands.
+    public private(set) var assetProgress: Double?
+
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
 
@@ -183,6 +188,22 @@ public final class RecordContext {
 
     func syncPhaseChanged() {
         updateStatus()
+    }
+
+    func assetTransferChanged() {
+        let transfers = observed.values.compactMap(\.storage.assetTransfer)
+        let total = transfers.reduce(0) { $0 + $1.total }
+        let new = total == 0 ? nil : Double(transfers.reduce(0) { $0 + $1.done }) / Double(total)
+        if new != assetProgress {
+            assetProgress = new
+        }
+    }
+
+    /// Refreshes views once a downloaded asset file is in place, so its record's asset reads the file.
+    func assetDidLand(in zone: Zone) {
+        guard observed[zone] != nil else { return }
+        lastSaveSource = nil
+        didChange()
     }
 
     private func updateStatus() {

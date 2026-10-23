@@ -135,6 +135,7 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     let server: TestServer
     private let lock = NSLock()
     private var batches: [[RecordChangeData]] = []
+    private var uploadedAssets: [String] = []
     private var epoch: Int
     /// Saves on the server without answering, as if the app quit before hearing back.
     var dropsAcknowledgements = false
@@ -142,6 +143,10 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     var account: String??
     /// Changes per download page.
     var pageSize = 100
+    /// Fails every asset upload, as if the connection dropped mid-file.
+    var failsAssetUploads = false
+    /// Runs before each asset download.
+    var beforeAssetDownload: (@Sendable () async -> Void)?
 
     init(server: TestServer, account: String?? = nil) {
         self.server = server
@@ -151,6 +156,9 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     /// Every batch the container asked to upload.
     var sentBatches: [[RecordChangeData]] { lock.withLock { batches } }
+
+    /// Every asset file uploaded, by ID.
+    var sentAssets: [String] { lock.withLock { uploadedAssets } }
 
     private var user: String? {
         lock.withLock { account } ?? server.withLock { server.account }
@@ -193,12 +201,15 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     func uploadAssets(_ assets: [RecordAssetData]) async throws {
         try check()
+        guard !failsAssetUploads else { throw SyncError.offline }
         for asset in assets {
             server.storeAsset(try Data(contentsOf: asset.file), id: asset.id)
+            lock.withLock { uploadedAssets.append(asset.id) }
         }
     }
 
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
+        await beforeAssetDownload?()
         try check()
         guard let data = server.asset(id) else { throw SyncError.offline }
         let file = directory.appendingPathComponent(id)

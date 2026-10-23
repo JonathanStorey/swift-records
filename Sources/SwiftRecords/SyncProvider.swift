@@ -25,10 +25,12 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// `nil` starts from the beginning. The container stores the new cursor together with the changes.
     func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload
 
-    /// Uploads asset files the server doesn't have yet. Called before the records that use them.
+    /// Uploads asset files the server doesn't have yet. Called in the background after records sync, so a
+    /// record can reach the server, and other devices, before its file does.
     func uploadAssets(_ assets: [RecordAssetData]) async throws
 
-    /// Downloads one asset file into `directory` and returns where it landed.
+    /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
+    /// have it yet, and it's asked for again after the next pass.
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
 }
 

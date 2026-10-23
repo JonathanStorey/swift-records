@@ -65,6 +65,12 @@ struct Device {
         await settle()
     }
 
+    /// Waits for the background asset transfers, then lets their progress reach the context.
+    func transfers() async {
+        await container.defaultStorage.sync?.transfers()
+        await settle()
+    }
+
     /// Lets status updates from the sync layer reach the context.
     func settle() async {
         for _ in 0..<20 { await Task.yield() }
@@ -355,7 +361,9 @@ struct Device {
         recipe.photo = Data([1, 2, 3])
         phone.context.save(recipe)
         try await phone.context.save()
+        await phone.transfers()
         try await tablet.context.refresh()
+        await tablet.transfers()
         let received = try #require(try await tablet.recipes().first)
         #expect(received.photo == Data([1, 2, 3]))
         #expect(received.$photo.url?.path.hasPrefix(tablet.container.assetsDirectory.path) == true)
@@ -369,8 +377,72 @@ struct Device {
         renamed.title = "Photo again"
         tablet.context.save(renamed)
         try await tablet.context.save()
+        await tablet.transfers()
         #expect(tablet.provider.sentBatches.count == 1)
+        #expect(tablet.provider.sentAssets.isEmpty)
+        #expect(phone.provider.sentAssets == [assetID])
         #expect(server.value("SyncRecipe", recipe.id, "photo", as: String.self) == assetID)
+    }
+
+    @Test func recordsArriveBeforeTheirFiles() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        phone.provider.failsAssetUploads = true
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.save(recipe)
+        try await phone.context.save()
+        await phone.transfers()
+        let assetID = try #require(server.value("SyncRecipe", recipe.id, "photo", as: String.self))
+        #expect(server.asset(assetID) == nil)
+
+        // The record syncs without its file, whose asset reads nil until it lands.
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        let waiting = try #require(try await tablet.recipes().first)
+        #expect(waiting.title == "Photo")
+        #expect(waiting.photo == nil)
+        #expect(waiting.$photo.url == nil)
+        #expect(tablet.context.status == .saved)
+        #expect(tablet.context.assetProgress == nil)
+
+        // The upload is tried again after the next pass, and the download after the tablet's.
+        phone.provider.failsAssetUploads = false
+        try await phone.context.refresh()
+        await phone.transfers()
+        #expect(server.asset(assetID) == Data([1, 2, 3]))
+        let changes = tablet.context.changeCount
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        #expect(tablet.context.changeCount > changes)
+        let landed = try #require(try await tablet.recipes().first)
+        #expect(landed.photo == Data([1, 2, 3]))
+        #expect(landed.$photo.url?.lastPathComponent == assetID)
+    }
+
+    @Test func assetProgressCountsFiles() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        for title in ["One", "Two"] {
+            var recipe = SyncRecipe(title: title)
+            recipe.photo = Data(title.utf8)
+            phone.context.save(recipe)
+        }
+        try await phone.context.save()
+        await phone.transfers()
+        #expect(phone.provider.sentAssets.count == 2)
+
+        let seen = Seen()
+        let context = tablet.context
+        tablet.provider.beforeAssetDownload = {
+            for _ in 0..<20 { await Task.yield() }
+            await seen.add(await MainActor.run { context.assetProgress })
+        }
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        #expect(await seen.values == [0, 0.5])
+        #expect(tablet.context.assetProgress == nil)
+        #expect(try await tablet.recipes().compactMap(\.photo).count == 2)
     }
 
     // MARK: Status
@@ -590,5 +662,14 @@ struct Device {
         try await phone.context.refresh()
         #expect(server.count == 0)
         #expect(phone.provider.sentBatches.isEmpty)
+    }
+}
+
+/// Values a provider hook saw.
+private actor Seen {
+    private(set) var values: [Double?] = []
+
+    func add(_ value: Double?) {
+        values.append(value)
     }
 }
