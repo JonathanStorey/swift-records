@@ -180,11 +180,8 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
         let results: [UploadResult] = changes.map { change in
             rejected.contains(change.type) ? .rejected(id: change.id) : server.save(change, by: user)
         }
-        guard dropsAcknowledgements else { return results }
-        return results.filter {
-            if case .synced = $0 { return false }
-            return true
-        }
+        // Saved, but the app never hears back, however often it sends again.
+        return dropsAcknowledgements ? [] : results
     }
 
     func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
