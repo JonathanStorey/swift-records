@@ -66,7 +66,7 @@ actor SyncCoordinator {
     private var transferring: Task<Void, Never>?
     private var transferRequested = false
     /// Records sent and received in the passes running now, out of those known to be waiting.
-    private var records = Transfer(done: 0, total: 0)
+    private var recordProgress = Transfer(done: 0, total: 0)
     /// Whether a download is running whose size the server hasn't said.
     private var sizeUnknown = false
     private var uploadRequested = false
@@ -163,7 +163,7 @@ actor SyncCoordinator {
             uploadRequested = false
             await pass(download: download, upload: upload)
         } while passRequested && passes < Self.maxRounds
-        records = Transfer(done: 0, total: 0)
+        recordProgress = Transfer(done: 0, total: 0)
         recordsChanged(nil)
         running = nil
         startTransfers()
@@ -206,7 +206,7 @@ actor SyncCoordinator {
 
     /// Reports records sent and received out of those known to be waiting.
     private func reportRecords() {
-        recordsChanged(sizeUnknown || records.total == 0 ? nil : records)
+        recordsChanged(sizeUnknown || recordProgress.total == 0 ? nil : recordProgress)
     }
 
     /// Shows `syncing`, unless a record that won't decode is being reported.
@@ -220,11 +220,11 @@ actor SyncCoordinator {
     private func uploadPending() async throws {
         var skipped: Set<Key> = []
         let waiting = Set(try store.pendingChanges().map { Key(table: $0.table, id: $0.id) }).count
-        let end = records.done + waiting
-        records.total += waiting
+        let end = recordProgress.done + waiting
+        recordProgress.total += waiting
         defer {
             // Changes left for the next pass no longer count.
-            records.total = records.done
+            recordProgress.total = recordProgress.done
             reportRecords()
         }
         reportRecords()
@@ -263,7 +263,7 @@ actor SyncCoordinator {
                     }
                 }
             }
-            records.done = min(records.done + answered.count, end)
+            recordProgress.done = min(recordProgress.done + answered.count, end)
             reportRecords()
             // Changes the provider didn't answer wait for the next pass.
             for id in order where !answered.contains(id) {
@@ -283,7 +283,7 @@ actor SyncCoordinator {
         sizeUnknown = true
         defer {
             sizeUnknown = false
-            records.total = records.done
+            recordProgress.total = recordProgress.done
             reportRecords()
         }
         reportRecords()
@@ -291,8 +291,8 @@ actor SyncCoordinator {
         while true {
             let page = try await provider.downloadRecordChanges(in: zone, after: cursor)
             try await receive(page.changes, cursor: page.cursor)
-            records.done += page.changes.count
-            records.total = records.done + (page.hasMore ? page.remaining ?? 0 : 0)
+            recordProgress.done += page.changes.count
+            recordProgress.total = recordProgress.done + (page.hasMore ? page.remaining ?? 0 : 0)
             sizeUnknown = page.hasMore && page.remaining == nil
             reportRecords()
             cursor = page.cursor
