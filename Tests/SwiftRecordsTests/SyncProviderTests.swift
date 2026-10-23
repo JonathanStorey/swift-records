@@ -51,7 +51,7 @@ struct Device {
     }
 
     func recipes() async throws -> [SyncRecipe] {
-        try await context.fetch(SyncRecipe.self)
+        try context.fetch(SyncRecipe.self)
     }
 
     /// Commits without sending, as the synchronous `save()` does.
@@ -90,7 +90,7 @@ struct Device {
             title: "Soup", servings: 4, tags: ["winter"], updated: Date(timeIntervalSince1970: 1_000),
             steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cook: SyncCook(name: "Ana")
         )
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         #expect(server.count == 4)
 
@@ -115,7 +115,7 @@ struct Device {
         #expect(received.steps.map(\.text) == ["Chop", "Simmer"])
         #expect(received.cook?.name == "Ana")
         // Inverses are rebuilt on each device.
-        #expect(try await tablet.context.fetch(SyncStep.self).map(\.recipes) == [[recipe.id], [recipe.id]])
+        #expect(try tablet.context.fetch(SyncStep.self).map(\.recipes) == [[recipe.id], [recipe.id]])
     }
 
     @Test func refreshUpdatesViewsBeforeReturning() async throws {
@@ -126,7 +126,7 @@ struct Device {
         let view = NSObject()
         tablet.context.onChange(for: view) { refreshes += 1 }
 
-        phone.context.save(SyncRecipe(title: "Toast"))
+        phone.context.insert(SyncRecipe(title: "Toast"))
         try await phone.context.save()
         try await tablet.context.refresh()
         // A pull-to-refresh spinner stops when this returns, so views must already show the new record.
@@ -138,7 +138,7 @@ struct Device {
     @Test func onlyTheAsyncSaveSends() async throws {
         let phone = try Device(server)
         try await phone.context.refresh()   // opening the provider sends what is pending, so open it first
-        phone.context.save(SyncRecipe(title: "Toast"))
+        phone.context.insert(SyncRecipe(title: "Toast"))
         try phone.commit()
         #expect(server.count == 0)
         try await phone.context.save()
@@ -150,7 +150,7 @@ struct Device {
     @Test func largeUploadsGoInBatches() async throws {
         let phone = try Device(server)
         for index in 0..<450 {
-            phone.context.save(SyncCook(name: "Cook \(index)"))
+            phone.context.insert(SyncCook(name: "Cook \(index)"))
         }
         try await phone.context.save()
         #expect(server.count == 450)
@@ -160,7 +160,7 @@ struct Device {
     @Test func serverChangesAreNotSentBack() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
-        phone.context.save(SyncRecipe(title: "Pie"))
+        phone.context.insert(SyncRecipe(title: "Pie"))
         try await phone.context.save()
         try await tablet.context.refresh()
         try await tablet.context.refresh()
@@ -174,15 +174,15 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Stew", servings: 2)
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         recipe.title = "Beef stew"
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         var other = try #require(try await tablet.recipes().first)
         other.servings = 6
-        tablet.context.save(other)
+        tablet.context.insert(other)
 
         try await phone.context.save()
         try await tablet.context.save()   // conflicts, merges and sends the merge
@@ -199,15 +199,15 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Cake")
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         recipe.title = "Lemon cake"
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try phone.commit()
         recipe.title = "Carrot cake"
-        tablet.context.save(recipe)
+        tablet.context.insert(recipe)
         try tablet.commit()   // the later edit
 
         try await phone.context.save()
@@ -221,16 +221,16 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server, mergePolicy: .serverWins)
         var recipe = SyncRecipe(title: "Salad")
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         recipe.servings = 3
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         recipe.servings = 1
         recipe.title = "Green salad"
-        tablet.context.save(recipe)
+        tablet.context.insert(recipe)
         try await tablet.context.save()
 
         let result = try #require(try await tablet.recipes().first)
@@ -245,15 +245,15 @@ struct Device {
         let first = SyncStep(text: "First")
         let second = SyncStep(text: "Second")
         var recipe = SyncRecipe(title: "Bread", steps: [first, second])
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         var other = recipe
         recipe.steps.append(SyncStep(text: "Bake"))
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         other.steps.insert(SyncStep(text: "Mix"), at: 0)
-        tablet.context.save(other)
+        tablet.context.insert(other)
 
         try await phone.context.save()
         try await tablet.context.save()
@@ -278,18 +278,18 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Tart", steps: [SyncStep(text: "Roll")])
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         phone.context.delete(recipe)
         try await phone.context.save()
         recipe.title = "Apple tart"
-        tablet.context.save(recipe)
+        tablet.context.insert(recipe)
         try await tablet.context.save()   // the server answers with its deletion
 
         #expect(try await tablet.recipes().isEmpty)
-        #expect(try await tablet.context.fetch(SyncStep.self).isEmpty)
+        #expect(try tablet.context.fetch(SyncStep.self).isEmpty)
         #expect(server.count == 0)
     }
 
@@ -297,14 +297,14 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Jam")
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
         tablet.context.delete(recipe)
         try tablet.commit()
         recipe.title = "Plum jam"
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         await tablet.download()   // the edit arrives before the delete is sent
         #expect(try await tablet.recipes().isEmpty)
@@ -327,7 +327,7 @@ struct Device {
 
         // Saving the recipe here keeps the link it can't see yet.
         recipe.title = "Cheese omelette"
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try phone.commit()
         server.put("SyncStep", id: step.id, json: #"{"text":"Whisk"}"#)
         await phone.download()
@@ -342,7 +342,7 @@ struct Device {
         await phone.download()
         var recipe = try #require(try await phone.recipes().first)
         recipe.title = "Green curry"
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
 
         #expect(server.value("SyncRecipe", id, "title", as: String.self) == "Green curry")
@@ -376,7 +376,7 @@ struct Device {
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Photo")
         recipe.photo = Data([1, 2, 3])
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         await phone.transfers()
         try await tablet.context.refresh()
@@ -392,7 +392,7 @@ struct Device {
         // An unchanged photo isn't uploaded again.
         var renamed = received
         renamed.title = "Photo again"
-        tablet.context.save(renamed)
+        tablet.context.insert(renamed)
         try await tablet.context.save()
         await tablet.transfers()
         #expect(tablet.provider.sentBatches.count == 1)
@@ -407,7 +407,7 @@ struct Device {
         phone.provider.failsAssetUploads = true
         var recipe = SyncRecipe(title: "Photo")
         recipe.photo = Data([1, 2, 3])
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         await phone.transfers()
         let assetID = try #require(server.value("SyncRecipe", recipe.id, "photo", as: String.self))
@@ -445,7 +445,7 @@ struct Device {
         for title in ["One", "Two"] {
             var recipe = SyncRecipe(title: title)
             recipe.photo = Data(title.utf8)
-            phone.context.save(recipe)
+            phone.context.insert(recipe)
         }
         try await phone.context.save()
         await phone.transfers()
@@ -466,10 +466,32 @@ struct Device {
 
     // MARK: Status
 
+    @Test func unsyncedChangesCountWhatTheServerLacks() async throws {
+        let phone = try Device(server)
+        server.isOnline = false
+        phone.context.insert(SyncRecipe(title: "Soup"))
+        phone.context.insert(SyncRecipe(title: "Stew"))
+        try await phone.context.save()
+        await phone.settle()
+        #expect(phone.context.unsyncedChanges == 2)
+        #expect(phone.context.unsavedChanges == 0)
+
+        server.isOnline = true
+        try await phone.context.refresh()
+        await phone.settle()
+        #expect(phone.context.unsyncedChanges == 0)
+
+        // Without a sync provider nothing is waiting to be sent.
+        let local = try RecordContainer(for: [SyncRecipe.self], inMemory: true)
+        local.mainContext.insert(SyncRecipe(title: "Toast"))
+        try await local.mainContext.save()
+        #expect(local.mainContext.unsyncedChanges == 0)
+    }
+
     @Test func statusFollowsTheServer() async throws {
         let phone = try Device(server)
         server.isOnline = false
-        phone.context.save(SyncRecipe(title: "Offline"))
+        phone.context.insert(SyncRecipe(title: "Offline"))
         try await phone.context.save()
         await phone.settle()
         #expect(phone.context.status == .offline)
@@ -482,7 +504,7 @@ struct Device {
         #expect(server.count == 1)
 
         server.isFull = true
-        phone.context.save(SyncRecipe(title: "Too much"))
+        phone.context.insert(SyncRecipe(title: "Too much"))
         await #expect(throws: RecordsError.storageFull) { try await phone.context.refresh() }
         await phone.settle()
         #expect(phone.context.status == .failed(.storageFull))
@@ -490,7 +512,7 @@ struct Device {
         server.isFull = false
         server.rejectedTypes = ["SyncCook"]
         let cook = SyncCook(name: "Refused")
-        phone.context.save(cook)
+        phone.context.insert(cook)
         try await phone.context.save()
         await phone.settle()
         #expect(phone.context.status == .failed(.rejected(type: "SyncCook", id: cook.id)))
@@ -500,11 +522,11 @@ struct Device {
         let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false
         #expect(context.status == .saved)
-        context.save(Measurement(value: .nan))
+        context.insert(Measurement(value: .nan))
         await #expect(throws: RecordsError.self) { try await context.save() }
         #expect(context.status == .failed(.invalidValue(type: "Measurement", property: "value")))
         context.rollback()
-        context.save(Measurement(value: 1))
+        context.insert(Measurement(value: 1))
         try await context.save()
         #expect(context.status == .saved)
         try await context.refresh()
@@ -514,7 +536,7 @@ struct Device {
 
     @Test func signingOutKeepsLocalDataByDefault() async throws {
         let phone = try Device(server)
-        phone.context.save(SyncRecipe(title: "Mine"))
+        phone.context.insert(SyncRecipe(title: "Mine"))
         try await phone.context.save()
         server.withLock { server.account = nil }
         try await phone.context.refresh()
@@ -523,7 +545,7 @@ struct Device {
         #expect(try await phone.recipes().count == 1)
 
         // Edits while signed out wait for the next account.
-        phone.context.save(SyncRecipe(title: "Later"))
+        phone.context.insert(SyncRecipe(title: "Later"))
         try await phone.context.save()
         #expect(server.count == 1)
         server.withLock { server.account = "alice" }
@@ -535,7 +557,7 @@ struct Device {
 
     @Test func signingOutCanDeleteLocalData() async throws {
         let phone = try Device(server, onSignOut: .deleteLocalData)
-        phone.context.save(SyncRecipe(title: "Mine"))
+        phone.context.insert(SyncRecipe(title: "Mine"))
         try await phone.context.save()
         server.withLock { server.account = nil }
         try await phone.context.refresh()
@@ -545,7 +567,7 @@ struct Device {
 
     @Test func switchingAccountsDeletesTheOldAccountsData() async throws {
         let phone = try Device(server)
-        phone.context.save(SyncRecipe(title: "Alice's"))
+        phone.context.insert(SyncRecipe(title: "Alice's"))
         try await phone.context.save()
         server.withLock { server.account = "bob" }
         try await phone.context.refresh()
@@ -559,7 +581,7 @@ struct Device {
 
     @Test func aServerResetUploadsEverythingAgain() async throws {
         let phone = try Device(server)
-        phone.context.save(SyncRecipe(title: "Keep", steps: [SyncStep(text: "One")]))
+        phone.context.insert(SyncRecipe(title: "Keep", steps: [SyncStep(text: "One")]))
         try await phone.context.save()
         server.reset()
         try await phone.context.refresh()
@@ -586,7 +608,7 @@ struct Device {
         do {
             let phone = try Device(server, directory: directory)
             phone.provider.dropsAcknowledgements = true
-            phone.context.save(recipe)
+            phone.context.insert(recipe)
             try await phone.context.save()
             #expect(server.count == 1)
             #expect(try phone.container.defaultStorage.store.pendingChanges().count == 1)
@@ -607,7 +629,7 @@ struct Device {
         let phone = try Device(server)
         let tablet = try Device(server)
         let recipes = ["Soup", "Stew", "Salad"].map { SyncRecipe(title: $0) }
-        for recipe in recipes { phone.context.save(recipe) }
+        for recipe in recipes { phone.context.insert(recipe) }
         try await phone.context.save()
         try await tablet.context.refresh()
         #expect(try await tablet.recipes().map(\.title) == ["Soup", "Stew", "Salad"])
@@ -621,7 +643,7 @@ struct Device {
     @Test func datesCrossToTheMillisecond() async throws {
         let phone = try Device(server)
         let recipe = SyncRecipe(title: "Soup", updated: Date(timeIntervalSince1970: 1_000.123_456))
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
         #expect(server.value("SyncRecipe", recipe.id, "updated", as: Double.self)?.rounded() == 1_000_123)
 
@@ -639,7 +661,7 @@ struct Device {
         let tablet = try Device(server)
         tablet.provider.pageSize = 2
         for index in 0..<5 {
-            phone.context.save(SyncRecipe(title: "Recipe \(index)"))
+            phone.context.insert(SyncRecipe(title: "Recipe \(index)"))
         }
         try await phone.context.save()
         try await tablet.context.refresh()
@@ -651,7 +673,7 @@ struct Device {
         let alice = try Device(server, publicZones: [.default])
         let bob = try Device(server, account: "bob", publicZones: [.default])
         var recipe = SyncRecipe(title: "Shared")
-        alice.context.save(recipe)
+        alice.context.insert(recipe)
         try await alice.context.save()
         #expect(server.record("SyncRecipe", recipe.id)?.owner == "alice")
         #expect(!server.has("SyncRecipe", recipe.id, "_owner"))
@@ -660,7 +682,7 @@ struct Device {
         try await bob.context.refresh()
         recipe = try #require(try await bob.recipes().first)
         recipe.title = "Bob's now"
-        bob.context.save(recipe)
+        bob.context.insert(recipe)
         try await bob.context.save()
         await bob.settle()
         #expect(bob.context.status == .failed(.rejected(type: "SyncRecipe", id: recipe.id)))
@@ -675,9 +697,9 @@ struct Device {
     @Test func localOnlyAndInMemoryZonesNeverSync() async throws {
         let phone = try Device(server)
         phone.context.zone = .localOnly
-        phone.context.save(SyncRecipe(title: "Draft"))
+        phone.context.insert(SyncRecipe(title: "Draft"))
         phone.context.zone = .inMemory
-        phone.context.save(SyncRecipe(title: "Scratch"))
+        phone.context.insert(SyncRecipe(title: "Scratch"))
         try await phone.context.refresh()
         #expect(server.count == 0)
         #expect(phone.provider.sentBatches.isEmpty)

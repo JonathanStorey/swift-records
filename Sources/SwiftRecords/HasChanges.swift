@@ -5,7 +5,7 @@ extension RecordContext {
     /// It is true for a record the context has never saved, and false again once an edit is undone.
     ///
     /// ```swift
-    /// Button("Save") { context.save(draft); dismiss() }
+    /// Button("Save") { context.insert(draft); dismiss() }
     ///     .disabled(!context.hasChanges(draft))
     /// ```
     ///
@@ -23,7 +23,7 @@ extension RecordContext {
 extension BackgroundContext {
     /// Whether this copy of a record differs from the stored one. See `RecordContext.hasChanges(_:)`.
     public func hasChanges<R: Record>(_ record: R) throws -> Bool {
-        guard let stored = try fetch(R.self, id: record.id) else { return true }
+        guard let stored = try self.record(R.self, for: record.id) else { return true }
         return !record.matches(stored)
     }
 }

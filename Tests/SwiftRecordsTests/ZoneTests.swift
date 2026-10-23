@@ -10,9 +10,9 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
         let context = container.mainContext
-        context.save(ToDo(title: "Main"))
+        context.insert(ToDo(title: "Main"))
         context.zone = "drafts"
-        context.save(ToDo(title: "Draft"))
+        context.insert(ToDo(title: "Draft"))
         try context.save()
 
         #expect(container.url() == directory.appendingPathComponent("_default.sqlite"))
@@ -26,10 +26,10 @@ import Testing
     @Test func pendingChangesStayInTheirZone() throws {
         let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false
-        context.save(ToDo(title: "Main"))
+        context.insert(ToDo(title: "Main"))
         context.zone = "archive"
-        context.save(ToDo(title: "Old"))
-        #expect(context.pendingChangeCount == 2)
+        context.insert(ToDo(title: "Old"))
+        #expect(context.unsavedChanges == 2)
 
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Old"])
         context.zone = .default
@@ -48,7 +48,7 @@ import Testing
     @Test func eachZoneKeepsItsOwnData() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
-        try await container.performBackgroundTask(in: "archive") { try $0.save(ToDo(title: "Old")) }
+        try await container.performBackgroundTask(in: "archive") { try $0.insert(ToDo(title: "Old")) }
         #expect(try container.fetch(ToDo.self).isEmpty)
 
         let reopened = try RecordContainer(directory: directory).mainContext
@@ -95,7 +95,7 @@ import Testing
     @Test func inMemoryZoneWritesNoFile() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
-        try await container.performBackgroundTask(in: .inMemory) { try $0.save(ToDo(title: "Scratch")) }
+        try await container.performBackgroundTask(in: .inMemory) { try $0.insert(ToDo(title: "Scratch")) }
         #expect(container.url(for: .inMemory) == nil)
         #expect(try await container.performBackgroundTask(in: .inMemory) { try $0.fetch(ToDo.self) }.map(\.title) == ["Scratch"])
         let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)

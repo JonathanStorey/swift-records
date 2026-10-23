@@ -158,7 +158,7 @@ struct DishV3 {
         #expect(try container.fetch(Person.self, ids: [people[0].id]).map(\.name) == ["P0"])
     }
 
-    @Test func deletesByIDAndPredicate() throws {
+    @Test func deletesByRecordAndPredicate() throws {
         let todos = (0..<6).map { ToDo(title: "T\($0)", priority: $0 % 2, subtasks: [Subtask(title: "S\($0)")]) }
         try container.save(todos)
 
@@ -178,7 +178,7 @@ struct DishV3 {
         await #expect(throws: Failure.self) {
             try await container.performBackgroundTask { context in
                 try context.transaction {
-                    try context.save((0..<20).map { Person(name: "P\($0)") })
+                    try context.insert((0..<20).map { Person(name: "P\($0)") })
                     throw Failure()
                 }
             }
@@ -217,7 +217,7 @@ struct DishV3 {
 
         let second = [first[0], ToDo(title: "New"), first[1]]
         context.apply(second, replacing: first)
-        context.save(ToDo(title: "Elsewhere"))
+        context.insert(ToDo(title: "Elsewhere"))
         try context.save()
         #expect(try context.fetch(ToDo.self).map(\.title) == ["A", "New", "B", "Elsewhere"])
     }
@@ -226,7 +226,7 @@ struct DishV3 {
         context.rollback()
         #expect(context.changeCount == 0)  // nothing pending, nothing to refresh
 
-        context.save(ToDo(title: "Discarded"))
+        context.insert(ToDo(title: "Discarded"))
         context.rollback()
         #expect(context.changeCount == 1)
         #expect(!context.hasChanges)
@@ -234,26 +234,26 @@ struct DishV3 {
     }
 
     @Test func failedSaveKeepsChangesPending() throws {
-        context.save(Measurement(value: .nan))
-        context.save(Person(name: "Kept"))
+        context.insert(Measurement(value: .nan))
+        context.insert(Person(name: "Kept"))
         #expect(throws: RecordsError.invalidValue(type: "Measurement", property: "value")) { try context.save() }
-        #expect(context.pendingChangeCount == 2)
+        #expect(context.unsavedChanges == 2)
         #expect(try context.container.fetch(Person.self).isEmpty)
 
         // Fixing the bad change lets the rest save.
         context.rollback()
-        context.save(Person(name: "Kept"))
+        context.insert(Person(name: "Kept"))
         try context.save()
         #expect(try context.container.fetch(Person.self).map(\.name) == ["Kept"])
     }
 
-    @Test func deletesByIDAndPredicate() throws {
+    @Test func deletesByRecordAndPredicate() throws {
         let todos = (0..<4).map { ToDo(title: "T\($0)", priority: $0) }
         context.apply(todos, replacing: [])
         try context.save()
 
-        context.delete(ToDo.self, id: todos[0].id)
-        context.delete(ToDo.self, where: #Predicate { $0.priority >= 2 })
+        context.delete(todos[0])
+        context.delete(record: ToDo.self, where: #Predicate { $0.priority >= 2 })
         try context.save()
         #expect(try context.fetch(ToDo.self).map(\.title) == ["T1"])
     }
@@ -263,16 +263,16 @@ struct DishV3 {
         try container.save((0..<4).map { Person(name: "P\($0)") })
         try await container.performBackgroundTask { background in
             let first = try #require(try background.fetch(Person.self).first)
-            try background.delete(Person.self, id: first.id)
-            try background.delete(Person.self, where: #Predicate { $0.name == "P3" })
+            try background.delete(first)
+            try background.delete(record: Person.self, where: #Predicate { $0.name == "P3" })
         }
-        #expect(try await context.fetch(Person.self).map(\.name) == ["P1", "P2"])
+        #expect(try context.fetch(Person.self).map(\.name) == ["P1", "P2"])
     }
 
     @Test func deleteAllDataStartsOver() throws {
         let container = context.container
         try container.save(ToDo(title: "Old", owner: Person(name: "Sam")))
-        context.save(ToDo(title: "Pending"))
+        context.insert(ToDo(title: "Pending"))
         let token = try container.changeToken
 
         try container.deleteAllData()
@@ -282,7 +282,7 @@ struct DishV3 {
         #expect(try container.changes().isEmpty)
 
         // The store works again, with change tokens that never repeat.
-        context.save(ToDo(title: "New"))
+        context.insert(ToDo(title: "New"))
         try context.save()
         #expect(try context.fetch(ToDo.self).map(\.title) == ["New"])
         #expect(try container.changeToken > token)
@@ -294,19 +294,19 @@ struct DishV3 {
             try await container.performBackgroundTask { background in
                 for batch in 0..<10 {
                     try background.transaction {
-                        try background.save((0..<50).map { Person(name: "Import \(batch)-\($0)") })
+                        try background.insert((0..<50).map { Person(name: "Import \(batch)-\($0)") })
                     }
                 }
             }
         }
         for index in 0..<50 {
-            context.save(ToDo(title: "Main \(index)"))
+            context.insert(ToDo(title: "Main \(index)"))
             try await context.save()
             await Task.yield()
         }
         try await importing.value
-        #expect(try await context.count(Person.self) == 500)
-        #expect(try await context.count(ToDo.self) == 50)
+        #expect(try context.fetchCount(RecordDescriptor<Person>()) == 500)
+        #expect(try context.fetchCount(RecordDescriptor<ToDo>()) == 50)
     }
 }
 

@@ -78,6 +78,11 @@ public final class RecordContext {
     /// so a received record's asset reads `nil` until its file lands.
     public private(set) var assetProgress: Double?
 
+    /// How many saved records have changes the sync server hasn't confirmed, across the zones this
+    /// context uses. It stays at 0 without a sync provider, and grows while the device is offline or
+    /// signed out.
+    public private(set) var unsyncedChanges = 0
+
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
 
@@ -188,6 +193,17 @@ public final class RecordContext {
 
     func syncPhaseChanged() {
         updateStatus()
+        updateUnsyncedChanges()
+    }
+
+    private func updateUnsyncedChanges() {
+        let count = observed.values.reduce(0) { total, entry in
+            guard entry.storage.sync != nil else { return total }
+            return total + ((try? entry.storage.store.pendingChangeCount()) ?? 0)
+        }
+        if count != unsyncedChanges {
+            unsyncedChanges = count
+        }
     }
 
     func assetTransferChanged() {
@@ -243,6 +259,7 @@ public final class RecordContext {
 
     private func didChange() {
         changeCount += 1
+        updateUnsyncedChanges()
         notifyHandlers()
     }
 
@@ -255,27 +272,20 @@ public final class RecordContext {
 
     public var hasChanges: Bool { !pending.isEmpty }
 
-    /// The number of unsaved changes. Repeated edits to one record count once, and storing an array's
-    /// order counts as one change.
-    public var pendingChangeCount: Int { pending.count }
+    /// The number of changes waiting for `save()`. Repeated edits to one record count once, and storing
+    /// an array's order counts as one change.
+    public var unsavedChanges: Int { pending.count }
 
     // MARK: Changes
 
-    /// Adds a new record at the end of its type's stored order. It throws `RecordsError.duplicateID` when a
-    /// record with the same ID is already stored or waiting to be saved, so it never overwrites one.
-    public func append<R: Record>(_ record: R) throws {
-        if case .saved? = try current(R.self, id: record.id, in: zone) {
-            throw RecordsError.duplicateID(type: R.table, id: record.id)
-        }
-        save(record)
+    /// Adds the record, or replaces the one with the same ID, when the context saves. A new record joins
+    /// the end of its type's stored order, and an existing one keeps its place. Views show it at once, and
+    /// `rollback()` takes it back until it's saved.
+    public func insert<R: Record>(_ record: R) {
+        insert(record, in: zone)
     }
 
-    /// Inserts the record, or updates it if one with the same ID exists.
-    public func save<R: Record>(_ record: R) {
-        save(record, in: zone)
-    }
-
-    func save<R: Record>(_ record: R, in zone: Zone) {
+    func insert<R: Record>(_ record: R, in zone: Zone) {
         enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .saved(record)) { try $0.save(record) }
     }
 
@@ -287,13 +297,10 @@ public final class RecordContext {
         enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(record) }
     }
 
-    public func delete<R: Record>(_ type: R.Type, id: R.ID) {
-        enqueue(key: Self.key(type, id: id, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(type, id: id) }
-    }
-
-    /// Deletes every record that matches the predicate when the context saves, applying each one's
-    /// delete rules. Without a predicate it deletes every record of the type.
-    public func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) {
+    /// Deletes every record of the type that matches the predicate when the context saves, applying each
+    /// one's delete rules: `context.delete(record: Recipe.self, where: #Predicate { $0.servings == 0 })`.
+    /// Without a predicate it deletes every record of the type.
+    public func delete<R: Record>(record type: R.Type, where predicate: Predicate<R>? = nil) {
         let deletes: @Sendable (Any) -> Bool = { record in
             guard let record = record as? R else { return false }
             return (try? predicate?.evaluate(record)) ?? true
@@ -301,6 +308,24 @@ public final class RecordContext {
         enqueue(
             key: "\(zone.name)|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
         ) { try $0.delete(type, where: predicate) }
+    }
+
+    /// Runs `body`, then saves everything pending in one commit. If `body` throws, the changes it made
+    /// are rolled back and earlier unsaved changes stay pending.
+    @discardableResult
+    public func transaction<T>(_ body: () throws -> T) throws -> T {
+        let before = pending
+        let result: T
+        do {
+            result = try body()
+        } catch {
+            pending = before
+            lastSaveSource = nil
+            didChange()
+            throw error
+        }
+        try save()
+        return result
     }
 
     /// Commits every pending change, in one transaction for each zone they touch. If the save fails, the
@@ -471,11 +496,6 @@ public final class RecordContext {
     }
 
     /// Runs `body` with the current zone's storage after every save already started, off the main actor.
-    private func read<T: Sendable>(_ body: @escaping @Sendable (ZoneStorage) throws -> T) async throws -> T {
-        let storage = try storage(for: zone)
-        return try await onWriter { try body(storage) }
-    }
-
     /// Runs `body` after every save already started, off the main actor.
     private func onWriter<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
@@ -487,98 +507,48 @@ public final class RecordContext {
 
     // MARK: Fetching
 
-    /// Saves pending changes, then fetches records in their stored order, so results always include your
-    /// own edits. Simple predicates on a record's own properties run as SQL. Anything else is evaluated
-    /// in memory.
-    public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
+    /// Saves pending changes, then fetches the records the descriptor matches in their stored order, so
+    /// results always include your own edits.
+    public func fetch<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [R] {
         try save()
-        return try storage(for: zone).fetch(type, where: predicate)
+        return try storage(for: zone).fetch(descriptor)
     }
 
-    /// Saves pending changes, then fetches one page: at most `limit` records, starting `offset` records
-    /// into the results. The slice's indices are the records' positions in the full results, so a page
-    /// fetched with an offset of 40 starts at index 40.
-    public func fetch<R: Record>(
-        _ type: R.Type = R.self,
-        where predicate: Predicate<R>? = nil,
-        limit: Int,
-        offset: Int = 0
-    ) throws -> RecordSlice<R> {
-        try save()
-        return try storage(for: zone).fetch(type, where: predicate, limit: limit, offset: offset)
+    /// Saves pending changes, then fetches every record of the type in its stored order.
+    public func fetch<R: Record>(_ type: R.Type) throws -> [R] {
+        try fetch(RecordDescriptor<R>())
     }
 
-    /// Saves pending changes, then counts in SQL when the predicate translates.
-    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
+    /// Saves pending changes, then counts the records the descriptor matches, in SQL when the predicate
+    /// translates.
+    public func fetchCount<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> Int {
         try save()
-        return try storage(for: zone).count(type, where: predicate)
+        return try storage(for: zone).fetchCount(descriptor)
+    }
+
+    /// Saves pending changes, then returns the IDs of the records the descriptor matches in their stored
+    /// order, without loading the records when the predicate translates to SQL.
+    public func fetchIdentifiers<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [UUID] {
+        try save()
+        return try storage(for: zone).fetchIdentifiers(descriptor)
+    }
+
+    /// The record with this ID as this context holds it, with any unsaved change, or `nil` if there's
+    /// none. It doesn't save, so a view can call it while it updates. The type can come from the
+    /// result: `let recipe: Recipe? = try context.record(for: id)`.
+    public func record<R: Record>(_ type: R.Type = R.self, for id: R.ID) throws -> R? {
+        switch try current(type, id: id, in: zone) {
+        case .saved(let record)?: record as? R
+        case .deleted?, nil: nil
+        }
     }
 
     /// The record as this context holds it: its pending change if it has one, otherwise the stored copy.
-    /// Unlike a fetch, it doesn't save, so a view can call it while it updates.
     func current<R: Record>(_ type: R.Type, id: R.ID, in zone: Zone) throws -> Latest? {
         if let latest = pending[Self.key(type, id: id, in: zone)]?.latest {
             return latest
         }
         return try storage(for: zone).fetch(type, id: id).map { .saved($0) }
-    }
-
-    public func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
-        try save()
-        return try storage(for: zone).fetch(type, id: id)
-    }
-
-    /// Saves pending changes, then fetches records by ID in the order given, skipping any that no longer
-    /// exist.
-    public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
-        try save()
-        return try storage(for: zone).fetch(type, ids: ids)
-    }
-
-    /// Saves pending changes, then fetches records by ID in their stored order, skipping any that no longer
-    /// exist. Use it to load an inverse relationship: `context.fetch(Cookbook.self, ids: recipe.cookbookIDs)`.
-    public func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
-        try save()
-        return try storage(for: zone).fetch(type, ids: ids)
-    }
-
-    // MARK: Fetching off the main actor
-
-    /// Saves pending changes, then fetches records off the main actor. See `fetch(_:where:)`.
-    public func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) async throws -> [R] {
-        try await save()
-        return try await read { try $0.fetch(type, where: predicate) }
-    }
-
-    /// Saves pending changes, then fetches one page off the main actor. See `fetch(_:where:limit:offset:)`.
-    public func fetch<R: Record>(
-        _ type: R.Type = R.self,
-        where predicate: Predicate<R>? = nil,
-        limit: Int,
-        offset: Int = 0
-    ) async throws -> RecordSlice<R> {
-        try await save()
-        return try await read { try $0.fetch(type, where: predicate, limit: limit, offset: offset) }
-    }
-
-    public func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) async throws -> Int {
-        try await save()
-        return try await read { try $0.count(type, where: predicate) }
-    }
-
-    public func fetch<R: Record>(_ type: R.Type, id: R.ID) async throws -> R? {
-        try await save()
-        return try await read { try $0.fetch(type, id: id) }
-    }
-
-    public func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) async throws -> [R] {
-        try await save()
-        return try await read { try $0.fetch(type, ids: ids) }
-    }
-
-    public func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) async throws -> [R] {
-        try await save()
-        return try await read { try $0.fetch(type, ids: ids) }
     }
 
     // MARK: Change tracking

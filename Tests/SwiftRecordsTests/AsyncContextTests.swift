@@ -16,49 +16,50 @@ import Testing
     }
 
     @Test func savesAndFetchesOffTheMainActor() async throws {
-        context.save(ToDo(title: "A", priority: 1))
-        context.save(ToDo(title: "B", priority: 2))
+        context.insert(ToDo(title: "A", priority: 1))
+        context.insert(ToDo(title: "B", priority: 2))
         try await context.save()
         #expect(!context.hasChanges)
         #expect(context.changeCount == 1)
 
-        context.save(ToDo(title: "C", priority: 3))
-        let all: [ToDo] = try await context.fetch(ToDo.self)
+        context.insert(ToDo(title: "C", priority: 3))
+        let all: [ToDo] = try context.fetch(ToDo.self)
         #expect(all.map(\.title) == ["A", "B", "C"])
-        let high: [ToDo] = try await context.fetch(ToDo.self, where: #Predicate { $0.priority >= 2 })
+        let high: [ToDo] = try context.fetch(RecordDescriptor<ToDo>(predicate: #Predicate { $0.priority >= 2 }))
         #expect(high.map(\.title) == ["B", "C"])
-        let page: RecordSlice<ToDo> = try await context.fetch(ToDo.self, limit: 1, offset: 1)
+        let page: [ToDo] = try context.fetch(RecordDescriptor<ToDo>(fetchLimit: 1, fetchOffset: 1))
         #expect(page.map(\.title) == ["B"])
-        let count: Int = try await context.count(ToDo.self)
+        let count: Int = try context.fetchCount(RecordDescriptor<ToDo>())
         #expect(count == 3)
-        let one: ToDo? = try await context.fetch(ToDo.self, id: all[0].id)
+        let one: ToDo? = try context.record(ToDo.self, for: all[0].id)
         #expect(one?.title == "A")
-        let some: [ToDo] = try await context.fetch(ToDo.self, ids: [all[2].id, all[0].id])
-        #expect(some.map(\.title) == ["C", "A"])
+        let ids = [all[2].id, all[0].id]
+        let some: [UUID] = try context.fetchIdentifiers(RecordDescriptor<ToDo>(predicate: #Predicate { ids.contains($0.id) }))
+        #expect(some == [all[0].id, all[2].id])
     }
 
     @Test func savesCommitInTheOrderTheyStarted() async throws {
         var todo = ToDo(title: "First")
-        context.save(todo)
+        context.insert(todo)
         let first = Task { try await context.save() }
         todo.title = "Second"
-        context.save(todo)
+        context.insert(todo)
         // The synchronous save waits for the async one, so the newer title wins.
         try saveNow()
         try await first.value
-        #expect(try await context.fetch(ToDo.self).map(\.title) == ["Second"])
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Second"])
     }
 
     @Test func failedAsyncSaveKeepsChangesPending() async throws {
-        context.save(Measurement(value: .nan))
+        context.insert(Measurement(value: .nan))
         await #expect(throws: RecordsError.self) { try await context.save() }
-        #expect(context.pendingChangeCount == 1)
+        #expect(context.unsavedChanges == 1)
     }
 
     @Test func autosaveCommitsOffTheMainActor() async throws {
         context.autosaveEnabled = true
         context.autosaveDelay = .zero
-        context.save(ToDo(title: "Auto"))
+        context.insert(ToDo(title: "Auto"))
         for _ in 0..<1_000 where context.changeCount == 0 {
             await Task.yield()
         }
@@ -69,7 +70,7 @@ import Testing
     @Test func failedAutosaveDiscardsOnlyItsChanges() async throws {
         context.autosaveEnabled = true
         context.autosaveDelay = .zero
-        context.save(Measurement(value: .nan))
+        context.insert(Measurement(value: .nan))
         for _ in 0..<1_000 where context.lastSaveError == nil {
             await Task.yield()
         }
@@ -88,7 +89,7 @@ import Testing
         let context = container.mainContext
         context.autosaveEnabled = false
         let person = Person(name: "Ana")
-        context.save(person)
+        context.insert(person)
         try await context.save()
 
         // A second connection stands in for an app extension.
@@ -102,7 +103,7 @@ import Testing
             await Task.yield()
         }
         #expect(context.changeCount > before)
-        #expect(try await context.fetch(Person.self).map(\.name) == ["Bea"])
+        #expect(try context.fetch(Person.self).map(\.name) == ["Bea"])
 
         // Nothing new, nothing to refresh.
         let after = context.changeCount
