@@ -488,6 +488,11 @@ most recently opened container on the default folder. It follows `context.zone`,
 switches every list at once. `@Records("pantry")` pins a property to one zone instead, and
 `@Records(.default)` to the default zone.
 
+Like `@Query`, `@Records` also takes a descriptor, which can limit how many records a view holds:
+`@Records(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20)) var firstOpen: [ToDo]`.
+Unsaved new records still join the end, so the view never shows more than the limit. Pass a zone first,
+`@Records("pantry", descriptor)`, to pin it.
+
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes

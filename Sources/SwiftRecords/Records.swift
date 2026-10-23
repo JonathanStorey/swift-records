@@ -76,7 +76,18 @@ public struct Records<Value: Sendable>: DynamicProperty {
 
     /// Records from the context's current zone, in their stored order. With an animation, the view animates as records arrive, change and leave.
     public init<R: Record>(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .following, query: .list(predicate), animation: animation)
+        self.init(zone: .following, query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
+    }
+
+    /// The records a descriptor matches, as `@Query` takes a `FetchDescriptor`. With a `fetchLimit`, the
+    /// view shows at most that many, so `RecordDescriptor<Recipe>(fetchLimit: 20)` shows the first 20.
+    public init<R: Record>(_ descriptor: RecordDescriptor<R>, animation: Animation? = nil) where Value == [R] {
+        self.init(zone: .following, query: .list(descriptor), animation: animation)
+    }
+
+    /// The records a descriptor matches in one zone, whatever the context's is.
+    public init<R: Record>(_ zone: Zone, _ descriptor: RecordDescriptor<R>, animation: Animation? = nil) where Value == [R] {
+        self.init(zone: .fixed(zone), query: .list(descriptor), animation: animation)
     }
 
     /// Every record of the element type, so `@Records var recipes: [Recipe]` needs no arguments and stays
@@ -87,7 +98,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
 
     /// Records from one zone whatever the context's is, such as `@Records("pantry")`. Pass `.default` for the default zone.
     public init<R: Record>(_ zone: Zone, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .fixed(zone), query: .list(predicate), animation: animation)
+        self.init(zone: .fixed(zone), query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
     }
 
     /// The records with these IDs in their stored order, such as an inverse's owners:
@@ -220,19 +231,24 @@ public struct Records<Value: Sendable>: DynamicProperty {
 }
 
 extension Records.Query {
-    static func list<R: Record>(_ predicate: Predicate<R>?) -> Self where Value == [R] {
+    static func list<R: Record>(_ descriptor: RecordDescriptor<R>) -> Self where Value == [R] {
+        let predicate = descriptor.predicate
+        let limit = descriptor.fetchLimit
         var refilter: (@MainActor ([R]) -> [R])?
         if let predicate {
             refilter = { records in (try? records.filter { try predicate.evaluate($0) }) ?? records }
         }
         return Self(
-            key: nil,
+            // A new page fetches again. Predicates aren't hashable, so a new one needs a new view identity.
+            key: descriptor.page.map { AnyHashable([$0.limit, $0.offset]) },
             empty: [],
-            fetch: { try $0.fetch(R.self, where: predicate) },
+            fetch: { try $0.fetch(descriptor) },
             refilter: refilter,
             write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
             overlay: { context, zone, stored, source in
-                context.overlay(stored, in: zone, source: source) { (try? predicate?.evaluate($0)) ?? true }
+                let records = context.overlay(stored, in: zone, source: source) { (try? predicate?.evaluate($0)) ?? true }
+                // Unsaved records join the end, so a page still holds at most its limit.
+                return limit.map { Array(records.prefix($0)) } ?? records
             }
         )
     }
@@ -288,7 +304,7 @@ extension RecordArray {
     @MainActor
     static func allRecordsQuery() -> Records<Self>.Query {
         typealias R = RecordElement
-        let query = Records<[R]>.Query.list(nil)
+        let query = Records<[R]>.Query.list(RecordDescriptor<R>())
         let fetch: @MainActor (ZoneStorage) throws -> Self = { try query.fetch($0) as! Self }
         var refilter: (@MainActor (Self) -> Self)?
         if let filter = query.refilter {
