@@ -1,25 +1,24 @@
 import Foundation
-import SwiftRecords
+@testable import SwiftRecords
 
 /// A stand-in sync server that several in-memory containers share, each playing one device. It checks
-/// tags the way CloudKit does: a save whose tag isn't the server's latest comes back as a conflict.
+/// `synced` dates the way the protocol asks: a save based on an older copy comes back as a conflict.
 final class TestServer: @unchecked Sendable {
     private let lock = NSLock()
-    private var records: [String: SyncRecord] = [:]
-    private var versions: [String: Int] = [:]
-    /// The sequence number of each record's latest change, deletions included.
-    private var changed: [String: Int] = [:]
+    /// Each record's latest change, deletions included, with the sequence number it was stored at.
+    private var latest: [String: (change: RecordChangeData, sequence: Int)] = [:]
+    private var assets: [String: Data] = [:]
     private var sequence = 0
+    /// Goes up with each `reset()`, so providers can tell the zone was deleted.
+    private(set) var epoch = 0
 
+    /// The signed-in account. Private zones keep each account's records apart.
     var account: String? = "alice"
     var isOnline = true
     var isFull = false
     var rejectedTypes: Set<String> = []
-
-    enum SaveResult {
-        case saved(SyncRecord)
-        case conflict(SyncRecord)
-    }
+    /// Zones every account shares. Only a record's owner can change it.
+    var publicZones: Set<Zone> = []
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -27,64 +26,106 @@ final class TestServer: @unchecked Sendable {
         return try body()
     }
 
-    private static func key(_ type: String, _ id: UUID) -> String { "\(type)|\(id)" }
+    /// Where a zone's records live: shared for a public zone, otherwise the account's own.
+    private func space(_ zone: Zone, account: String?) -> String {
+        "\(publicZones.contains(zone) ? "public" : account ?? "")|\(zone)|"
+    }
 
-    private static func tag(_ version: Int) -> Data { Data("v\(version)".utf8) }
+    private func key(_ zone: Zone, _ type: String, _ id: UUID, account: String?) -> String {
+        space(zone, account: account) + "\(type)|\(id)"
+    }
 
-    func save(_ record: SyncRecord) -> SaveResult {
+    /// Strictly later for each change.
+    private static func date(_ sequence: Int) -> Date {
+        Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
+    }
+
+    /// Stores a change from `user`, or answers with the newer copy it conflicts with.
+    func save(_ change: RecordChangeData, by user: String?) -> UploadResult {
         withLock {
-            let key = Self.key(record.type, record.id)
-            let current = versions[key]
-            if !record.isDeletion {
-                if let current, record.tag != Self.tag(current) {
-                    return .conflict(records[key] ?? SyncRecord(type: record.type, id: record.id, fields: nil))
+            let storageKey = key(change.zone, change.type, change.id, account: user)
+            let current = latest[storageKey]?.change
+            if !change.isDeletion, let current, current.synced != change.synced {
+                return .conflict(current)
+            }
+            var stored = change
+            if publicZones.contains(change.zone) {
+                if let owner = current?.owner, owner != user {
+                    return .rejected(id: change.id)
                 }
-                // A tag for a record the server deleted: the deletion is the server's newer copy.
-                if current == nil, record.tag != nil, changed[key] != nil {
-                    return .conflict(SyncRecord(type: record.type, id: record.id, fields: nil))
-                }
+                // The server, not the device, decides who owns a new record.
+                stored = Self.owned(change, by: current?.owner ?? user)
             }
             sequence += 1
-            changed[key] = sequence
-            guard !record.isDeletion else {
-                records[key] = nil
-                versions[key] = nil
-                return .saved(record)
-            }
-            let version = (current ?? 0) + 1
-            var stored = record
-            stored.tag = Self.tag(version)
-            records[key] = stored
-            versions[key] = version
-            return .saved(stored)
+            let date = Self.date(sequence)
+            latest[storageKey] = (stored.syncing(at: date), sequence)
+            return .synced(id: change.id, at: date)
         }
     }
 
-    /// Each record's latest change after `cursor`, and the new cursor.
-    func changes(since cursor: Int) -> ([SyncRecord], Int) {
+    private static func owned(_ change: RecordChangeData, by owner: String?) -> RecordChangeData {
+        switch change {
+        case .save(let id, let zone, let type, let json, _, let synced):
+            .save(id: id, zone: zone, type: type, json: json, owner: owner, synced: synced)
+        case .delete(let id, let zone, let type, _, let synced):
+            .delete(id: id, zone: zone, type: type, owner: owner, synced: synced)
+        }
+    }
+
+    /// Stores a record as if another device had saved it.
+    func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, json: String) {
+        let change = RecordChangeData.save(id: id, zone: zone, type: type, json: Data(json.utf8), owner: nil, synced: nil)
         withLock {
-            let keys = changed.filter { $0.value > cursor }.sorted { $0.value < $1.value }.map(\.key)
-            let changes = keys.map { key -> SyncRecord in
-                if let record = records[key] { return record }
-                let parts = key.split(separator: "|")
-                return SyncRecord(type: String(parts[0]), id: UUID(uuidString: String(parts[1]))!, fields: nil)
-            }
-            return (changes, sequence)
+            sequence += 1
+            latest[key(zone, type, id, account: account)] = (change.syncing(at: Self.date(sequence)), sequence)
         }
     }
 
-    func record(_ type: String, _ id: UUID) -> SyncRecord? {
-        withLock { records[Self.key(type, id)] }
+    /// The zone's latest changes for `user` after `cursor`, oldest first, at most `limit`, and the new cursor.
+    func changes(in zone: Zone, for user: String?, since cursor: Int, limit: Int) -> (changes: [RecordChangeData], cursor: Int, hasMore: Bool) {
+        withLock {
+            let prefix = space(zone, account: user)
+            let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
+            let page = found.prefix(limit)
+            return (page.map(\.change), page.last?.sequence ?? cursor, found.count > limit)
+        }
     }
 
-    var count: Int { withLock { records.count } }
+    /// The stored JSON of a record the current account can see.
+    func record(_ type: String, _ id: UUID, zone: Zone = .default) -> RecordChangeData? {
+        withLock { latest[key(zone, type, id, account: account)]?.change }
+    }
 
-    /// Deletes the whole zone, as when a person deletes the app's data in Settings.
+    /// One field of a stored record, decoded as it crosses the wire.
+    func value<T: Decodable>(_ type: String, _ id: UUID, _ field: String, as valueType: T.Type) -> T? {
+        guard case .save(_, _, _, let json, _, _)? = record(type, id),
+              let member = (try? WireJSON.members(of: json))?[field] else { return nil }
+        return try? WireJSON.decoder.decode(T.self, from: member)
+    }
+
+    /// Whether a stored record's JSON has the field at all.
+    func has(_ type: String, _ id: UUID, _ field: String) -> Bool {
+        guard case .save(_, _, _, let json, _, _)? = record(type, id) else { return false }
+        return (try? WireJSON.members(of: json))?[field] != nil
+    }
+
+    /// Records stored, not counting deletions, across every account.
+    var count: Int { withLock { latest.values.filter { !$0.change.isDeletion }.count } }
+
+    func storeAsset(_ data: Data, id: String) {
+        withLock { assets[id] = data }
+    }
+
+    func asset(_ id: String) -> Data? {
+        withLock { assets[id] }
+    }
+
+    /// Deletes everything, as when a person deletes the app's data in Settings.
     func reset() {
         withLock {
-            records = [:]
-            versions = [:]
-            changed = [:]
+            latest = [:]
+            assets = [:]
+            epoch += 1
         }
     }
 }
@@ -93,66 +134,78 @@ final class TestServer: @unchecked Sendable {
 final class TestProvider: SyncProvider, @unchecked Sendable {
     let server: TestServer
     private let lock = NSLock()
-    private var report: (@Sendable (SyncEvent) async -> Void)?
-    private var cursor = 0
-    private var batches: [[SyncRecord]] = []
-    /// Saves on the server without reporting `.sent`, as if the app quit before hearing back.
+    private var batches: [[RecordChangeData]] = []
+    private var epoch: Int
+    /// Saves on the server without answering, as if the app quit before hearing back.
     var dropsAcknowledgements = false
+    /// Signs this device in as someone other than the server's account, `.some(nil)` for signed out.
+    var account: String??
+    /// Changes per download page.
+    var pageSize = 100
 
-    init(server: TestServer) {
+    init(server: TestServer, account: String?? = nil) {
         self.server = server
+        self.account = account
+        epoch = server.withLock { server.epoch }
     }
 
-    /// Every batch the container asked to send.
-    var sentBatches: [[SyncRecord]] { lock.withLock { batches } }
+    /// Every batch the container asked to upload.
+    var sentBatches: [[RecordChangeData]] { lock.withLock { batches } }
 
-    func open(state: Data?, report: @escaping @Sendable (SyncEvent) async -> Void) async {
-        lock.withLock {
-            self.report = report
-            cursor = state.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
-        }
-        await report(.accountChanged(server.withLock { server.account }))
+    private var user: String? {
+        lock.withLock { account } ?? server.withLock { server.account }
     }
 
-    func send(_ records: [SyncRecord]) async {
-        lock.withLock { batches.append(records) }
-        let (online, full, rejected) = server.withLock { (server.isOnline, server.isFull, server.rejectedTypes) }
-        guard online else { return await emit(.notSent(records, because: .unreachable)) }
-        guard !full else { return await emit(.notSent(records, because: .storageFull)) }
-        var sent: [SyncRecord] = []
-        var conflicts: [SyncRecord] = []
-        var refused: [SyncRecord] = []
-        for record in records {
-            if rejected.contains(record.type) {
-                refused.append(record)
-                continue
-            }
-            switch server.save(record) {
-            case .saved(let stored): sent.append(stored)
-            case .conflict(let copy): conflicts.append(copy)
-            }
+    /// Throws what a real server would before doing any work.
+    private func check() throws {
+        let (online, current) = server.withLock { (server.isOnline, server.epoch) }
+        guard online else { throw SyncError.offline }
+        let reset = lock.withLock {
+            defer { epoch = current }
+            return epoch != current
         }
-        if !sent.isEmpty, !dropsAcknowledgements {
-            await emit(.sent(sent, state: nil))
+        if reset { throw SyncError.serverReset }
+    }
+
+    func userID() async throws -> String? {
+        user
+    }
+
+    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] {
+        lock.withLock { batches.append(changes) }
+        try check()
+        let (full, rejected) = server.withLock { (server.isFull, server.rejectedTypes) }
+        guard !full else { throw SyncError.storageFull }
+        let user = user
+        let results: [UploadResult] = changes.map { change in
+            rejected.contains(change.type) ? .rejected(id: change.id) : server.save(change, by: user)
         }
-        if !conflicts.isEmpty {
-            await emit(.received(conflicts, state: nil))
-        }
-        if !refused.isEmpty {
-            await emit(.notSent(refused, because: .rejected))
+        guard dropsAcknowledgements else { return results }
+        return results.filter {
+            if case .synced = $0 { return false }
+            return true
         }
     }
 
-    func fetch() async {
-        guard server.withLock({ server.isOnline }) else { return }
-        let (changes, cursor) = server.changes(since: lock.withLock { self.cursor })
-        lock.withLock { self.cursor = cursor }
-        await emit(.received(changes, state: Data(String(cursor).utf8)))
+    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
+        try check()
+        let start = cursor.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+        let page = server.changes(in: zone, for: user, since: start, limit: pageSize)
+        return RecordDownload(changes: page.changes, cursor: Data(String(page.cursor).utf8), hasMore: page.hasMore)
     }
 
-    /// Reports an event as if the server had caused it.
-    func emit(_ event: SyncEvent) async {
-        guard let report = lock.withLock({ report }) else { return }
-        await report(event)
+    func uploadAssets(_ assets: [RecordAssetData]) async throws {
+        try check()
+        for asset in assets {
+            server.storeAsset(try Data(contentsOf: asset.file), id: asset.id)
+        }
+    }
+
+    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
+        try check()
+        guard let data = server.asset(id) else { throw SyncError.offline }
+        let file = directory.appendingPathComponent(id)
+        try data.write(to: file)
+        return file
     }
 }

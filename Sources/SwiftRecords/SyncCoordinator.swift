@@ -1,7 +1,8 @@
 import Foundation
 
-/// Drives a container's sync provider: opens it with its saved state, sends pending changes in batches,
-/// applies what it reports, and works out the sync part of each context's status.
+/// Drives a zone's sync provider. Each pass checks the account, uploads pending changes in batches, and
+/// with a refresh downloads the server's changes, then works out the sync part of each context's status.
+/// Calls that arrive during a pass share the next one.
 actor SyncCoordinator {
     /// Where syncing stands, which a context combines with its own saves into `status`.
     enum Phase: Sendable, Hashable {
@@ -25,10 +26,16 @@ actor SyncCoordinator {
     }
 
     static let batchSize = 200
-    private static let stateKey = "provider.state"
+    /// Upload rounds in one pass, so a server that answers every change with a conflict can't keep it going.
+    private static let maxRounds = 20
+    private static let cursorKey = "provider.cursor"
     private static let accountKey = "provider.account"
 
     private let provider: any SyncProvider
+    private let zone: Zone
+    /// Whether everyone shares the zone. Its records carry their owner, signing out doesn't touch them, and
+    /// it downloads without an account.
+    private let isPublic: Bool
     private let store: RecordStore
     private let policies: Policies
     private let phaseChanged: @Sendable (Phase) -> Void
@@ -39,14 +46,24 @@ actor SyncCoordinator {
         }
     }
 
-    /// Changes handed to the provider and not yet acknowledged, with the fields each carried.
-    private var inFlight: [Key: (change: PendingChange, fields: SyncFields?)] = [:]
-    private var opening: Task<Void, Never>?
-    private var fetching = 0
+    private var opened = false
+    /// The pass running now. Callers that arrive meanwhile ask for another and wait for it.
+    private var running: Task<Void, Never>?
+    private var passRequested = false
+    private var uploadRequested = false
+    private var downloadRequested = false
+    private var account: String?
     private var signedOut = false
+    /// What went wrong in the pass running now, which ends in `failed`.
+    private var failure: RecordsError?
 
-    init(provider: any SyncProvider, store: RecordStore, policies: Policies, phaseChanged: @escaping @Sendable (Phase) -> Void) {
+    init(
+        provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore, policies: Policies,
+        phaseChanged: @escaping @Sendable (Phase) -> Void
+    ) {
         self.provider = provider
+        self.zone = zone
+        self.isPublic = isPublic
         self.store = store
         self.policies = policies
         self.phaseChanged = phaseChanged
@@ -54,182 +71,234 @@ actor SyncCoordinator {
 
     // MARK: Calls from contexts
 
-    /// Opens the provider the first time it's needed. Later calls wait for that to finish.
+    /// Retries records an earlier version couldn't store, then uploads what is pending.
     func open() async {
-        if opening == nil {
-            opening = Task { await openProvider() }
-        }
-        await opening?.value
+        prepare()
+        await run(download: false)
     }
 
-    /// Sends what is pending, unless a batch is already waiting for the server.
+    /// Uploads what is pending.
     func send() async {
-        await open()
-        await sendNext()
+        prepare()
+        await run(download: false)
     }
 
-    /// Sends what is pending, then fetches the server's changes. Throws the error that ends in `failed`.
+    /// Uploads what is pending, then downloads the server's changes. Throws the error that ends in `failed`.
     func refresh() async throws {
-        await open()
-        await sendNext()
-        if !signedOut {
-            fetching += 1
-            if phase == .idle {
-                phase = .syncing
-            }
-            await provider.fetch()
-            fetching -= 1
-            settle()
-        }
+        prepare()
+        await run(download: true)
         if case .failed(let error) = phase {
             throw error
         }
     }
 
-    // MARK: Driving the provider
+    /// Downloads the server's changes without uploading first.
+    func download() async {
+        prepare()
+        await run(download: true, upload: false)
+    }
 
-    private func openProvider() async {
-        let state = try? store.syncValue(forKey: Self.stateKey)
+    // MARK: Passes
+
+    private func prepare() {
+        guard !opened else { return }
+        opened = true
         // Records an earlier version of the app couldn't store may fit now.
         if let parked = (try? store.retryParked(policy: policies.merge))?.first {
             phase = .failed(.incompatibleRecord(type: parked.type, id: parked.id))
         }
-        await provider.open(state: state) { [weak self] event in
-            await self?.handle(event)
-        }
-        await sendNext()
     }
 
-    private func sendNext() async {
-        guard !signedOut, inFlight.isEmpty else { return }
-        var batch: [SyncRecord] = []
-        for change in (try? store.pendingChanges()) ?? [] {
-            guard batch.count < Self.batchSize else { break }
-            guard let (record, fields) = try? store.syncRecord(for: change) else { continue }
-            inFlight[Key(table: change.table, id: change.id)] = (change, fields)
-            batch.append(record)
-        }
-        guard !batch.isEmpty else {
-            settle()
+    private func run(download: Bool, upload: Bool = true) async {
+        downloadRequested = downloadRequested || download
+        uploadRequested = uploadRequested || upload
+        if let running {
+            passRequested = true
+            await running.value
             return
         }
-        phase = .syncing
-        await provider.send(batch)
+        let task = Task { await self.loop() }
+        running = task
+        await task.value
     }
 
-    /// Ends `syncing` once nothing is in flight.
-    private func settle() {
-        if phase == .syncing, inFlight.isEmpty, fetching == 0 {
-            phase = .idle
-        }
+    private func loop() async {
+        var passes = 0
+        repeat {
+            passes += 1
+            passRequested = false
+            let download = downloadRequested
+            let upload = uploadRequested
+            downloadRequested = false
+            uploadRequested = false
+            await pass(download: download, upload: upload)
+        } while passRequested && passes < Self.maxRounds
+        running = nil
     }
 
-    // MARK: Events
-
-    func handle(_ event: SyncEvent) async {
-        switch event {
-        case .received(let records, let state):
-            do {
-                let incompatible = try store.transaction {
-                    let incompatible = try store.applyReceived(records, policy: policies.merge)
-                    if let state {
-                        try store.setSyncValue(state, forKey: Self.stateKey)
-                    }
-                    return incompatible
-                }
-                if let record = incompatible.first {
-                    phase = .failed(.incompatibleRecord(type: record.type, id: record.id))
-                } else if phase == .offline {
-                    // Hearing from the server means it can be reached again.
-                    phase = .syncing
-                }
-            } catch {
-                phase = .failed(Self.recordsError(error))
+    private func pass(download: Bool, upload: Bool) async {
+        failure = nil
+        do {
+            guard try await checkAccount() else { return }
+            if upload, !signedOut {
+                try await uploadPending()
             }
-            // A server copy of a record in flight answers its send: it was merged and goes again.
-            var answered = false
-            for record in records where inFlight.removeValue(forKey: Key(table: record.type, id: record.id)) != nil {
-                answered = true
-            }
-            if answered, inFlight.isEmpty {
-                await sendNext()
-            }
-            settle()
-
-        case .sent(let records, let state):
-            let acknowledged = records.compactMap { record in
-                inFlight.removeValue(forKey: Key(table: record.type, id: record.id)).map { (entry: $0, tag: record.tag) }
-            }
-            do {
-                try store.transaction {
-                    for (entry, tag) in acknowledged {
-                        try store.acknowledge(entry.change, sent: entry.fields, tag: tag)
-                    }
-                    if let state {
-                        try store.setSyncValue(state, forKey: Self.stateKey)
-                    }
-                }
-                // Getting through clears being offline or full. A record that won't decode stays reported.
-                if case .failed(.incompatibleRecord) = phase {} else {
-                    phase = .syncing
-                }
-            } catch {
-                phase = .failed(Self.recordsError(error))
-            }
-            if inFlight.isEmpty {
-                await sendNext()
-            }
-
-        case .notSent(let records, let reason):
-            for record in records {
-                inFlight[Key(table: record.type, id: record.id)] = nil
-            }
-            switch reason {
-            case .unreachable:
-                phase = .offline
-            case .storageFull:
-                phase = .failed(.storageFull)
-            case .rejected:
-                if let record = records.first {
-                    phase = .failed(.rejected(type: record.type, id: record.id))
+            if download {
+                try await downloadChanges()
+                // Merging with the server's copies leaves edits to send.
+                if upload, !signedOut, !((try? store.pendingChanges()) ?? []).isEmpty {
+                    try await uploadPending()
                 }
             }
-
-        case .accountChanged(let account):
-            await accountChanged(to: account)
-
-        case .serverReset:
-            inFlight = [:]
+            if let failure {
+                phase = .failed(failure)
+            } else if case .failed(.incompatibleRecord) = phase {
+                // A record that won't decode stays reported.
+            } else {
+                phase = .idle
+            }
+        } catch SyncError.serverReset {
             apply(policies.onServerReset)
-            await sendNext()
-
-        case .stateChanged(let state):
-            try? store.setSyncValue(state, forKey: Self.stateKey)
+            passRequested = true
+            downloadRequested = downloadRequested || download
+            uploadRequested = true
+        } catch SyncError.storageFull {
+            phase = .failed(.storageFull)
+        } catch let error as RecordsError {
+            phase = .failed(error)
+        } catch {
+            phase = .offline
         }
     }
 
-    private func accountChanged(to account: String?) async {
+    /// Shows `syncing`, unless a record that won't decode is being reported.
+    private func markSyncing() {
+        if case .failed(.incompatibleRecord) = phase { return }
+        phase = .syncing
+    }
+
+    // MARK: Uploading
+
+    private func uploadPending() async throws {
+        var skipped: Set<Key> = []
+        for _ in 0..<Self.maxRounds {
+            var batch: [UUID: (change: PendingChange, record: SyncRecord, fields: SyncFields?)] = [:]
+            var order: [UUID] = []
+            for change in try store.pendingChanges() {
+                guard batch.count < Self.batchSize else { break }
+                guard !skipped.contains(Key(table: change.table, id: change.id)), batch[change.id] == nil,
+                      let (record, fields) = try? store.syncRecord(for: change) else { continue }
+                batch[change.id] = (change, record, fields)
+                order.append(change.id)
+            }
+            guard !order.isEmpty else { return }
+            markSyncing()
+            let records = order.map { batch[$0]!.record }
+            let assets = try store.unsentAssets(in: records, zone: zone)
+            if !assets.isEmpty {
+                try await provider.uploadAssets(assets)
+                try store.markAssetsUploaded(assets.map(\.id))
+            }
+            let owner = isPublic ? account : nil
+            let changes = try records.map { try store.change(for: $0, zone: zone, owner: owner) }
+            let results = try await provider.uploadRecordChanges(changes)
+
+            var answered: Set<UUID> = []
+            var conflicts: [RecordChangeData] = []
+            try store.transaction {
+                for result in results {
+                    switch result {
+                    case .synced(let id, let date):
+                        guard let entry = batch[id], answered.insert(id).inserted else { continue }
+                        try store.acknowledge(entry.change, sent: entry.fields, synced: date)
+                    case .conflict(let server):
+                        guard batch[server.id] != nil, answered.insert(server.id).inserted else { continue }
+                        conflicts.append(server)
+                    case .rejected(let id):
+                        guard let entry = batch[id], answered.insert(id).inserted else { continue }
+                        skipped.insert(Key(table: entry.change.table, id: id))
+                        failure = .rejected(type: entry.change.table, id: id)
+                    }
+                }
+            }
+            // Changes the provider didn't answer wait for the next pass.
+            for id in order where !answered.contains(id) {
+                skipped.insert(Key(table: batch[id]!.change.table, id: id))
+            }
+            // A conflict's merge stays pending and goes in the next round, based on the server's copy.
+            if !conflicts.isEmpty {
+                try await receive(conflicts)
+            }
+        }
+    }
+
+    // MARK: Downloading
+
+    private func downloadChanges() async throws {
+        markSyncing()
+        var cursor = try store.syncValue(forKey: Self.cursorKey)
+        while true {
+            let page = try await provider.downloadRecordChanges(in: zone, after: cursor)
+            try await receive(page.changes, cursor: page.cursor)
+            cursor = page.cursor
+            guard page.hasMore, !page.changes.isEmpty else { return }
+        }
+    }
+
+    /// Fetches the asset files the changes need, then applies the changes, and the cursor with them.
+    private func receive(_ changes: [RecordChangeData], cursor: Data? = nil) async throws {
+        for id in store.missingAssets(in: changes) {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = try await provider.downloadAsset(id: id, zone: zone, into: directory)
+            try store.placeDownloadedAsset(at: file, id: id)
+        }
+        let incompatible = try store.transaction {
+            let incompatible = try store.applyReceived(changes, policy: policies.merge)
+            if let cursor {
+                try store.setSyncValue(cursor, forKey: Self.cursorKey)
+            }
+            return incompatible
+        }
+        if let change = incompatible.first {
+            failure = .incompatibleRecord(type: change.type, id: change.id)
+        }
+    }
+
+    // MARK: Accounts
+
+    /// Applies an account change. Returns false when there is nothing to do until someone signs in.
+    private func checkAccount() async throws -> Bool {
+        let current = try await provider.userID()
+        account = current
         let stored = (try? store.syncValue(forKey: Self.accountKey)).flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } }
-        guard let account else {
+        guard let current else {
             signedOut = true
-            inFlight = [:]
             if stored != nil {
-                apply(policies.onSignOut)
+                if !isPublic {
+                    apply(policies.onSignOut)
+                }
                 try? store.setSyncValue(nil, forKey: Self.accountKey)
             }
-            phase = .signedOut
-            return
+            // Anyone can read a public zone.
+            guard isPublic else {
+                phase = .signedOut
+                return false
+            }
+            return true
         }
         signedOut = false
         if phase == .signedOut {
             phase = .idle
         }
-        guard account != stored else { return }
-        inFlight = [:]
+        guard current != stored else { return true }
         // A first sign-in uploads everything here. Another account's data follows the switch policy.
-        apply(stored == nil ? .keepLocalData : policies.onAccountSwitch)
-        try? store.setSyncValue(Data(account.utf8), forKey: Self.accountKey)
-        await sendNext()
+        if !isPublic {
+            apply(stored == nil ? .keepLocalData : policies.onAccountSwitch)
+        }
+        try? store.setSyncValue(Data(current.utf8), forKey: Self.accountKey)
+        return true
     }
 
     private func apply(_ policy: AccountPolicy) {
@@ -238,11 +307,10 @@ actor SyncCoordinator {
             case .keepLocalData:
                 try store.markAllPending()
             case .deleteLocalData:
-                // Keep the provider's state: it describes the server, which still has everything.
-                let state = try store.syncValue(forKey: Self.stateKey)
                 try store.deleteAllData()
-                try store.setSyncValue(state, forKey: Self.stateKey)
             }
+            // Whatever the server has is downloaded again from the beginning.
+            try store.setSyncValue(nil, forKey: Self.cursorKey)
         } catch {
             phase = .failed(Self.recordsError(error))
         }

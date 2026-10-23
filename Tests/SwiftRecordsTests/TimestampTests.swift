@@ -103,6 +103,6 @@ struct Journal {
         #expect(milliseconds(received.modified) == milliseconds(sent.modified))
         #expect(received.created?.timeIntervalSince1970 == milliseconds(sent.created).map { $0 / 1000 })
         #expect(received.synced != nil)
-        #expect(server.record("Journal", entry.id)?.fields?["synced"] == nil)
+        #expect(!server.has("Journal", entry.id, "synced"))
     }
 }

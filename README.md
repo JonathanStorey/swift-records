@@ -310,7 +310,7 @@ Every save keeps a record's bookkeeping beside it, out of the record's own prope
 let meta = try context.metadata(ToDo.self, id: todo.id)
 meta?.version     // goes up once per save that changes the record's values, links or order
 meta?.modified    // when that save happened
-meta?.tag         // the sync server's opaque tag, if any
+meta?.tag         // sync bookkeeping: the server's synced date for this copy, if any
 ```
 
 Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
@@ -342,21 +342,34 @@ The async `save()` and autosave send. The synchronous `save()` only commits, and
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
 errors, and changes wait on the device until they can go.
 
-The provider is transport only. It has three requirements, `open(state:report:)`, `send(_:)` and
-`fetch()`, and answers through `SyncEvent`s such as `.received`, `.sent` and `.accountChanged`. Records
-cross as `SyncRecord`s whose fields are `SyncValue`s, an enum with one case per `CKRecordValue` type,
-so anyone can write a provider. For CloudKit:
+The provider is transport only, so anyone can write one: a CloudKit provider, a central database or a
+folder of files. Each call returns what happened, and the container drives it:
 
-| swift-records | CKRecord |
-| --- | --- |
-| Record type and `id` | `recordType` and `recordName` |
-| `.string`, `.int`, `.double`, `.date`, `.data` | the same types (dates cross to the millisecond, as CloudKit keeps them) |
-| `.bool`, `.uuid`, `.url` | `Int64` 0 or 1, and strings |
-| `.reference(_:action:)`, a child's `@Reference(to:)` | `CKRecord.Reference` with the same action |
-| `SyncRecord.parent` | `CKRecord.parent`, which `CKShare` follows |
-| `.ids`, a relationship in order | a plain `[String]`, not references |
-| `.url` of an `@Asset` | `CKAsset` |
-| `SyncRecord.position`, the order of a `@Records` list | an `Int64` field the provider names |
+```swift
+public protocol SyncProvider: AnyObject, Sendable {
+    func userID() async throws -> String?
+    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult]
+    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload
+    func uploadAssets(_ assets: [RecordAssetData]) async throws
+    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
+}
+```
+
+The unit of sync is a whole record, `RecordChangeData`: `.save(id:zone:type:json:owner:synced:)` or
+`.delete(id:zone:type:owner:synced:)`. The JSON reads like the record, with relationships as arrays of
+IDs, assets as their file IDs, and `_position` and `_modified` for list order and edit time. The server
+stamps every accepted change with a strictly later `synced` date and returns it as `.synced(id:at:)`. An
+upload carries the date of the copy it was edited from, and a server whose copy is newer answers
+`.conflict` with that copy, which the container merges and sends again. A server can use the newest
+`synced` date as its download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a
+whole call fails.
+
+Assets travel on their own. A file never changes once stored, so an asset can't conflict, and each one
+is uploaded once, before the first record that uses it.
+
+`publicZones` names zones everyone shares. Their records carry the user who created them as `owner`,
+the server refuses changes from anyone else, signing out never deletes them, and they download without
+an account.
 
 Inverses aren't sent. The container owns the rules:
 
