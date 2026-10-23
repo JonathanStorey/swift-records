@@ -375,6 +375,11 @@ public final class RecordContext {
         for storage in storages {
             try await storage.sync?.refresh()
         }
+        // Refresh views now rather than on the commit observer's later hop, so they show what arrived
+        // by the time a pull-to-refresh ends.
+        for storage in storages {
+            zoneDidCommit(storage.zone)
+        }
     }
 
     /// Blocks until async saves already started have committed.

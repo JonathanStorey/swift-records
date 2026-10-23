@@ -118,6 +118,23 @@ struct Device {
         #expect(try await tablet.context.fetch(SyncStep.self).map(\.recipes) == [[recipe.id], [recipe.id]])
     }
 
+    @Test func refreshUpdatesViewsBeforeReturning() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        try await tablet.context.refresh()
+        var refreshes = 0
+        let view = NSObject()
+        tablet.context.onChange(for: view) { refreshes += 1 }
+
+        phone.context.save(SyncRecipe(title: "Toast"))
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        // A pull-to-refresh spinner stops when this returns, so views must already show the new record.
+        #expect(refreshes > 0)
+        let stored = try tablet.container.defaultStorage.fetch(SyncRecipe.self)
+        #expect(tablet.context.overlay(stored, in: .default) { _ in true }.map(\.title) == ["Toast"])
+    }
+
     @Test func onlyTheAsyncSaveSends() async throws {
         let phone = try Device(server)
         try await phone.context.refresh()   // opening the provider sends what is pending, so open it first
