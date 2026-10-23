@@ -75,9 +75,11 @@ import Testing
     }
 
     @Test func namesAreLowercased() throws {
-        #expect(try Zone("Drafts") == "drafts")
+        let drafts = try Zone("Drafts")
+        let mixed = try Zone("my_drafts-2")
+        #expect(drafts == "drafts")
         #expect(Zone(stringLiteral: "Pantry").name == "pantry")
-        #expect(try Zone("my_drafts-2").name == "my_drafts-2")
+        #expect(mixed.name == "my_drafts-2")
     }
 
     @Test func zonesRoundTripThroughJSON() throws {

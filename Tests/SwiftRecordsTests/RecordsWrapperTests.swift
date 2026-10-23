@@ -53,11 +53,11 @@ private func makeLists() -> [RecipeList] {
         #expect(try query.fetch(container.defaultStorage)?.title == "One")
 
         todo.title = "Edited"
-        query.write(context, nil, todo, nil, ObjectIdentifier(container))
+        query.write(context, .default, todo, nil, ObjectIdentifier(container))
         try context.save()
         #expect(try query.fetch(container.defaultStorage)?.title == "Edited")
 
-        query.write(context, nil, nil, todo, ObjectIdentifier(container))
+        query.write(context, .default, nil, todo, ObjectIdentifier(container))
         try context.save()
         #expect(try query.fetch(container.defaultStorage) == nil)
     }
@@ -70,15 +70,15 @@ private func makeLists() -> [RecipeList] {
         let view = ObjectIdentifier(container)
 
         let all = Records<[ToDo]>.Query.list(nil)
-        #expect(all.overlay(context, nil, try all.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        #expect(all.overlay(context, .default, try all.fetch(container.defaultStorage), view).map(\.title) == ["New"])
         let done = Records<[ToDo]>.Query.list(#Predicate<ToDo> { $0.done })
-        #expect(done.overlay(context, nil, try done.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        #expect(done.overlay(context, .default, try done.fetch(container.defaultStorage), view).map(\.title) == ["New"])
         let ids = Records<[ToDo]>.Query.list(ids: [todo.id])
-        #expect(ids.overlay(context, nil, try ids.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        #expect(ids.overlay(context, .default, try ids.fetch(container.defaultStorage), view).map(\.title) == ["New"])
         let one = Records<ToDo?>.Query.single(id: todo.id)
-        #expect(one.overlay(context, nil, try one.fetch(container.defaultStorage), view)?.title == "New")
+        #expect(one.overlay(context, .default, try one.fetch(container.defaultStorage), view)?.title == "New")
         let bare = [ToDo].allRecordsQuery()
-        #expect(bare.overlay(context, nil, try bare.fetch(container.defaultStorage), view).map(\.title) == ["New"])
+        #expect(bare.overlay(context, .default, try bare.fetch(container.defaultStorage), view).map(\.title) == ["New"])
     }
 }
 #endif
