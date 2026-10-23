@@ -12,6 +12,11 @@ import Foundation
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
 /// can't miss each other's changes. Deleting a zone's folder counts as a server reset.
 ///
+/// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder,
+/// and anywhere else the folder is checked every `watchInterval`. When iCloud keeps two versions of a
+/// record file because devices wrote it at once, `NSFileVersion` settles them: the copy with the later
+/// `synced` date stays, as a whole record.
+///
 /// iCloud needs the iCloud capability with iCloud Documents turned on. While the person is signed out of
 /// iCloud, the container reports `signedOut`.
 public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
@@ -32,10 +37,29 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     public let location: Location
     private let lock = NSLock()
+    /// How often a folder outside iCloud is checked for other devices' changes, or `nil` to check only
+    /// on refresh. iCloud folders are watched as they change.
+    public let watchInterval: Duration?
     private var resolved: URL??
+    private var pushes: [UUID: AsyncStream<[Zone]>.Continuation] = [:]
+    private var watching = false
+    private var poller: Task<Void, Never>?
+    /// Change marks this provider wrote, which its own watcher ignores.
+    private var ownMarks: Set<String> = []
+    #if canImport(Darwin)
+    private var query: MetadataWatcher?
+    #endif
 
-    public init(location: Location = .iCloud) {
+    public init(location: Location = .iCloud, watchInterval: Duration? = .seconds(10)) {
         self.location = location
+        self.watchInterval = watchInterval
+    }
+
+    deinit {
+        poller?.cancel()
+        #if canImport(Darwin)
+        query?.stop()
+        #endif
     }
 
     /// The folder the zones live in, or `nil` while it isn't available, as when signed out of iCloud.
@@ -98,6 +122,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     public func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] {
         let root = try root()
+        defer { mark(Set(changes.map(\.zone)), in: root) }
         return try lock.withLock {
             try changes.map { change in
                 let file = Self.recordFile(change.type, change.id, in: root.appendingPathComponent(change.zone.name))
@@ -140,6 +165,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     public func uploadAssets(_ assets: [RecordAssetData]) async throws {
         let root = try root()
+        defer { mark(Set(assets.map(\.zone)), in: root) }
         let manager = FileManager.default
         for asset in assets {
             let folder = root.appendingPathComponent(asset.zone.name).appendingPathComponent(Self.assetsFolder, isDirectory: true)
@@ -167,6 +193,148 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
             try FileManager.default.copyItem(at: url, to: destination)
         }
         return destination
+    }
+
+    public func pushedChanges() -> AsyncStream<[Zone]>? {
+        let (stream, continuation) = AsyncStream<[Zone]>.makeStream()
+        let id = UUID()
+        lock.withLock { pushes[id] = continuation }
+        continuation.onTermination = { [weak self] _ in
+            self?.removePushes(id)
+        }
+        startWatching()
+        return stream
+    }
+
+    // MARK: Watching
+
+    private static let markFile = "_changed"
+
+    private func removePushes(_ id: UUID) {
+        lock.withLock { pushes[id] = nil }
+    }
+
+    private func send(_ zones: Set<Zone>) {
+        guard !zones.isEmpty else { return }
+        let sorted = zones.sorted { $0.name < $1.name }
+        for continuation in lock.withLock({ Array(pushes.values) }) {
+            continuation.yield(sorted)
+        }
+    }
+
+    private func startWatching() {
+        let start = lock.withLock {
+            defer { watching = true }
+            return !watching
+        }
+        guard start else { return }
+        if location.isICloud {
+            #if canImport(Darwin)
+            let scope = location == .iCloudDrive ? NSMetadataQueryUbiquitousDocumentsScope : NSMetadataQueryUbiquitousDataScope
+            let watcher = MetadataWatcher(scope: scope) { [weak self] paths in
+                guard let self, let root = self.directory else { return }
+                self.send(Self.zones(forPaths: paths, under: root))
+            }
+            lock.withLock { query = watcher }
+            #endif
+        } else if let interval = watchInterval {
+            let task = Task { [weak self] in
+                // The first check also pushes whatever changed before watching began.
+                var last: [Zone: String] = [:]
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval)
+                    guard let self else { return }
+                    let now = self.marks()
+                    let own = self.lock.withLock { self.ownMarks }
+                    let changed = now.filter { last[$0.key] != $0.value && !own.contains($0.value) }
+                    last = now
+                    self.send(Set(changed.keys))
+                }
+            }
+            lock.withLock { poller = task }
+        }
+    }
+
+    /// Leaves a fresh mark in each zone written to, which other devices' watchers notice.
+    private func mark(_ zones: Set<Zone>, in root: URL) {
+        for zone in zones {
+            let token = UUID().uuidString
+            lock.withLock { _ = ownMarks.insert(token) }
+            let file = root.appendingPathComponent(zone.name).appendingPathComponent(Self.markFile)
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? Self.coordinate(writing: file) { url in
+                try Data(token.utf8).write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    /// Each zone folder's latest mark.
+    private func marks() -> [Zone: String] {
+        guard let root = directory,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [:] }
+        var marks: [Zone: String] = [:]
+        for name in names {
+            guard let zone = Self.zone(named: name),
+                  let data = try? Data(contentsOf: root.appendingPathComponent(name).appendingPathComponent(Self.markFile)) else {
+                continue
+            }
+            marks[zone] = String(decoding: data, as: UTF8.self)
+        }
+        return marks
+    }
+
+    /// The zones that files at these paths belong to, from the folder each sits in under `root`.
+    static func zones(forPaths paths: [String], under root: URL) -> Set<Zone> {
+        let prefix = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+        var zones: Set<Zone> = []
+        for path in paths {
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+            guard resolved.hasPrefix(prefix),
+                  let first = resolved.dropFirst(prefix.count).split(separator: "/").first,
+                  let zone = zone(named: String(first)) else { continue }
+            zones.insert(zone)
+        }
+        return zones
+    }
+
+    private static func zone(named name: String) -> Zone? {
+        [Zone.default, .inMemory, .localOnly].first { $0.name == name } ?? (try? Zone(name))
+    }
+
+    // MARK: Conflicting versions
+
+    /// Settles the versions iCloud kept when devices wrote a record file at once. The copy with the later
+    /// `synced` date stays.
+    private static func resolveConflicts(at file: URL) {
+        #if canImport(Darwin)
+        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: file), !conflicts.isEmpty else { return }
+        let current = try? decode(Data(contentsOf: file))
+        let others = conflicts.map { try? decode(Data(contentsOf: $0.url)) }
+        let best = newest([current] + others)
+        try? coordinate(writing: file) { url in
+            if best > 0 {
+                _ = try conflicts[best - 1].replaceItem(at: url, options: [])
+            }
+            for conflict in conflicts {
+                conflict.isResolved = true
+            }
+            try NSFileVersion.removeOtherVersionsOfItem(at: url)
+        }
+        #endif
+    }
+
+    /// The index of the copy to keep: the latest `synced` date, and the first of any tie.
+    static func newest(_ copies: [RecordChangeData?]) -> Int {
+        var best = 0
+        var bestDate = Int64.min
+        for (index, copy) in copies.enumerated() {
+            let date = copy?.synced.map(Self.milliseconds) ?? Int64.min
+            if date > bestDate {
+                best = index
+                bestDate = date
+            }
+        }
+        return best
     }
 
     // MARK: Files
@@ -262,7 +430,12 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     // A record file holds the change's own JSON under "record", so it reads like the record.
     private static func read(_ file: URL) throws -> RecordChangeData? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        let members = try WireJSON.members(of: try coordinatedData(at: file))
+        resolveConflicts(at: file)
+        return try decode(try coordinatedData(at: file))
+    }
+
+    static func decode(_ data: Data) throws -> RecordChangeData {
+        let members = try WireJSON.members(of: data)
         let decoder = JSONDecoder()
         func value<T: Decodable>(_ key: String, _ type: T.Type) throws -> T? {
             try members[key].map { try decoder.decode(T.self, from: $0) }
@@ -367,3 +540,41 @@ extension FileSyncProvider.Location {
         }
     }
 }
+
+#if canImport(Darwin)
+/// Watches an iCloud scope and reports the paths of files that arrive, change or leave, including when a
+/// file another device wrote finishes downloading.
+final class MetadataWatcher: NSObject, @unchecked Sendable {
+    private let query = NSMetadataQuery()
+    private let changed: @Sendable ([String]) -> Void
+
+    init(scope: String, changed: @escaping @Sendable ([String]) -> Void) {
+        self.changed = changed
+        super.init()
+        query.searchScopes = [scope]
+        query.predicate = NSPredicate(format: "%K LIKE %@", NSMetadataItemFSNameKey, "*")
+        NotificationCenter.default.addObserver(self, selector: #selector(update(_:)), name: .NSMetadataQueryDidUpdate, object: query)
+        // A query needs a run loop, so it lives on the main one.
+        DispatchQueue.main.async { self.query.start() }
+    }
+
+    func stop() {
+        NotificationCenter.default.removeObserver(self)
+        DispatchQueue.main.async { self.query.stop() }
+    }
+
+    @objc private func update(_ notification: Notification) {
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+        var paths: [String] = []
+        for key in [NSMetadataQueryUpdateAddedItemsKey, NSMetadataQueryUpdateChangedItemsKey, NSMetadataQueryUpdateRemovedItemsKey] {
+            for item in notification.userInfo?[key] as? [NSMetadataItem] ?? [] {
+                if let path = item.value(forAttribute: NSMetadataItemPathKey) as? String {
+                    paths.append(path)
+                }
+            }
+        }
+        changed(paths)
+    }
+}
+#endif

@@ -112,6 +112,12 @@ actor SyncCoordinator {
         await run(download: true, upload: false)
     }
 
+    /// Downloads after the provider pushes word that the zone changed, then sends any edits the merge left.
+    func pushed() async {
+        prepare()
+        await run(download: true)
+    }
+
     /// Waits for the asset transfers running now, and any a finished pass has asked for.
     func transfers() async {
         while let transferring {

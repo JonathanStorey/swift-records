@@ -352,6 +352,7 @@ public protocol SyncProvider: AnyObject, Sendable {
     func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload
     func uploadAssets(_ assets: [RecordAssetData]) async throws
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
+    func pushedChanges() -> AsyncStream<[Zone]>?      // optional, defaults to nil
 }
 ```
 
@@ -363,6 +364,10 @@ upload carries the date of the copy it was edited from, and a server whose copy 
 `.conflict` with that copy, which the container merges and sends again. A server can use the newest
 `synced` date as its download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a
 whole call fails.
+
+A provider that hears about changes, such as from push notifications, returns a stream from
+`pushedChanges()`. The container downloads each zone the stream names, so views update without a
+refresh.
 
 Assets travel on their own, in the background. `refresh()` syncs records only and returns once they're
 stored. After each pass the container uploads files the server doesn't have and downloads the ones
@@ -425,6 +430,12 @@ them. Downloads remember every file they've seen rather than a time, so devices 
 can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
 capability with iCloud Documents on, and while the person is signed out, `status` is `.signedOut`.
 For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder shows in Files.
+
+Other devices' changes arrive on their own through `pushedChanges()`. In iCloud an `NSMetadataQuery`
+watches the folder, including when another device's file finishes downloading. Other folders are
+checked every `watchInterval` (10 seconds by default, `nil` to turn it off). When two devices write a
+record file at once, iCloud keeps both versions, and `NSFileVersion` settles them by keeping the copy
+with the later `synced` date as a whole record.
 
 ## SwiftUI
 

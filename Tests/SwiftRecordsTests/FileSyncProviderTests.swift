@@ -7,8 +7,8 @@ import Testing
 @Suite struct FileSyncProviderTests {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FileSync-\(UUID().uuidString)")
 
-    private func device() throws -> RecordContainer {
-        let provider = FileSyncProvider(location: .other(directory: folder))
+    private func device(watchInterval: Duration? = nil) throws -> RecordContainer {
+        let provider = FileSyncProvider(location: .other(directory: folder), watchInterval: watchInterval)
         let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: { _ in provider })
         container.mainContext.autosaveEnabled = false
         return container
@@ -148,6 +148,70 @@ import Testing
         #expect(!written.contains("1700000000000"))
     }
 
+    // MARK: Pushed changes
+
+    @Test func changesArriveWithoutARefresh() async throws {
+        let tablet = try device(watchInterval: .milliseconds(20))
+        let phone = try device()
+        phone.mainContext.save(SyncRecipe(title: "Soup"))
+        try await phone.mainContext.save()
+        // The tablet's watcher sees the phone's mark and downloads on its own.
+        var titles: [String] = []
+        for _ in 0..<250 where titles.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+            titles = try await recipes(tablet).map(\.title)
+        }
+        #expect(titles == ["Soup"])
+    }
+
+    @Test func ownChangesArentPushed() async throws {
+        let provider = FileSyncProvider(location: .other(directory: folder), watchInterval: .milliseconds(10))
+        let other = FileSyncProvider(location: .other(directory: folder), watchInterval: nil)
+        let pushes = try #require(provider.pushedChanges())
+        let heard = Heard()
+        let listener = Task {
+            for await zones in pushes {
+                await heard.add(zones)
+            }
+        }
+        defer { listener.cancel() }
+        let save = RecordChangeData.save(id: UUID(), zone: "notes", type: "Note", json: Data("{}".utf8), owner: nil, synced: nil)
+        _ = try await provider.uploadRecordChanges([save])
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await heard.zones.isEmpty)
+
+        _ = try await other.uploadRecordChanges([.save(id: UUID(), zone: "notes", type: "Note", json: Data("{}".utf8), owner: nil, synced: nil)])
+        for _ in 0..<250 where await heard.zones.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(await heard.zones == [["notes"]])
+    }
+
+    @Test func iCloudPathsMapToZones() {
+        let root = URL(fileURLWithPath: "/tmp/Container/Records")
+        let zones = FileSyncProvider.zones(forPaths: [
+            "/tmp/Container/Records/_default/Recipe/a.json",
+            "/tmp/Container/Records/notes/_assets/photo.jpg",
+            "/tmp/Container/Records/notes/Note/b.json",
+            "/tmp/Container/Other/c.json",
+            "/tmp/Container/Records/Bad Name/d.json",
+        ], under: root)
+        #expect(zones == [.default, "notes"])
+    }
+
+    @Test func conflictingVersionsKeepTheLaterSync() {
+        func copy(_ milliseconds: Double?) -> RecordChangeData {
+            .save(
+                id: UUID(), zone: .default, type: "Recipe", json: Data("{}".utf8), owner: nil,
+                synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) }
+            )
+        }
+        #expect(FileSyncProvider.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)
+        // A tie keeps the current file, and an unreadable version never wins.
+        #expect(FileSyncProvider.newest([copy(3_000), copy(3_000)]) == 0)
+        #expect(FileSyncProvider.newest([nil, copy(nil), copy(5)]) == 2)
+    }
+
     @Test func locations() async throws {
         let provider = FileSyncProvider(location: .other(directory: folder))
         #expect(provider.directory == folder.appendingPathComponent("Records", isDirectory: true))
@@ -158,5 +222,14 @@ import Testing
         #expect(FileSyncProvider().directory == nil)
         #expect(try await FileSyncProvider().userID() == nil)
         #endif
+    }
+}
+
+/// Pushes a listener heard.
+private actor Heard {
+    private(set) var zones: [[Zone]] = []
+
+    func add(_ push: [Zone]) {
+        zones.append(push)
     }
 }
