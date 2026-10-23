@@ -25,11 +25,11 @@ import Testing
 
     @Test func appendsShowBeforeSaving() throws {
         let soup = Draft(title: "Soup")
-        context.save(soup)
+        context.insert(soup)
         try context.save()
 
         let stew = Draft(title: "Stew")
-        try context.append(stew)
+        context.insert(stew)
         #expect(try stored().map(\.title) == ["Soup"])
         #expect(try shown().map(\.title) == ["Soup", "Stew"])
     }
@@ -37,12 +37,12 @@ import Testing
     @Test func editsAndDeletesShowBeforeSaving() throws {
         var soup = Draft(title: "Soup")
         let stew = Draft(title: "Stew")
-        context.save(soup)
-        context.save(stew)
+        context.insert(soup)
+        context.insert(stew)
         try context.save()
 
         soup.title = "Broth"
-        context.save(soup)
+        context.insert(soup)
         context.delete(stew)
         #expect(try shown().map(\.title) == ["Broth"])
 
@@ -51,18 +51,18 @@ import Testing
     }
 
     @Test func deletesByPredicateShowBeforeSaving() throws {
-        context.save(Draft(title: "Soup"))
-        context.save(Draft(title: "Stew"))
-        context.save(Draft(title: "Bread"))
+        context.insert(Draft(title: "Soup"))
+        context.insert(Draft(title: "Stew"))
+        context.insert(Draft(title: "Bread"))
         try context.save()
 
-        context.delete(Draft.self, where: #Predicate { $0.title.starts(with: "S") })
+        context.delete(record: Draft.self, where: #Predicate { $0.title.starts(with: "S") })
         #expect(try shown().map(\.title) == ["Bread"])
         // A save after the delete brings a record back, as it does when they commit.
-        context.save(Draft(title: "Salad"))
+        context.insert(Draft(title: "Salad"))
         #expect(try shown().map(\.title) == ["Bread", "Salad"])
 
-        context.delete(Draft.self)
+        context.delete(record: Draft.self)
         #expect(try shown().isEmpty)
         context.rollback()
         #expect(try shown().map(\.title) == ["Soup", "Stew", "Bread"])
@@ -70,25 +70,25 @@ import Testing
 
     @Test func filtersApplyToUnsavedRecords() throws {
         var soup = Draft(title: "Soup")
-        context.save(soup)
+        context.insert(soup)
         try context.save()
 
         let predicate = #Predicate<Draft> { $0.title.starts(with: "S") }
-        context.save(Draft(title: "Salad"))
-        context.save(Draft(title: "Bread"))
+        context.insert(Draft(title: "Salad"))
+        context.insert(Draft(title: "Bread"))
         soup.title = "Broth"
-        context.save(soup)
+        context.insert(soup)
         #expect(try shown(predicate).map(\.title) == ["Salad"])
     }
 
     @Test func singleRecordsShowBeforeSaving() throws {
         var soup = Draft(title: "Soup")
-        context.save(soup)
+        context.insert(soup)
         try context.save()
         let fetched = try context.storage(for: .default).fetch(Draft.self, id: soup.id)
 
         soup.title = "Broth"
-        context.save(soup)
+        context.insert(soup)
         #expect(context.overlay(fetched, id: soup.id, in: .default)?.title == "Broth")
         context.delete(soup)
         #expect(context.overlay(fetched, id: soup.id, in: .default) == nil)
@@ -96,7 +96,7 @@ import Testing
 
     @Test func otherZonesStayOut() throws {
         context.zone = "pantry"
-        try context.append(Draft(title: "Flour"))
+        context.insert(Draft(title: "Flour"))
         context.zone = .default
         #expect(try shown().isEmpty)
     }
@@ -104,8 +104,8 @@ import Testing
     @Test func aViewsOwnOrderApplies() throws {
         let soup = Draft(title: "Soup")
         let stew = Draft(title: "Stew")
-        context.save(soup)
-        context.save(stew)
+        context.insert(soup)
+        context.insert(stew)
         try context.save()
 
         let view = ObjectIdentifier(container)
@@ -119,13 +119,13 @@ import Testing
         let start = context.sequence
         context.apply([Draft(title: "Soup")], replacing: [], source: view)
         #expect(!context.hasPendingChanges(after: start, excluding: view))
-        context.save(Draft(title: "Stew"))
+        context.insert(Draft(title: "Stew"))
         #expect(context.hasPendingChanges(after: start, excluding: view))
         #expect(!context.hasPendingChanges(after: context.sequence, excluding: view))
     }
 
     @Test func changesShowWhileSaving() async throws {
-        try context.append(Draft(title: "Soup"))
+        context.insert(Draft(title: "Soup"))
         var done = false
         let saving = Task {
             try await context.save()

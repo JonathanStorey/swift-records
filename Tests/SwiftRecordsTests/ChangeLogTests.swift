@@ -147,7 +147,7 @@ import Testing
     @Test func readingChangesSavesPendingEditsFirst() throws {
         let start = try context.changeToken
         let todo = ToDo(title: "Pending")
-        context.save(todo)
+        context.insert(todo)
 
         #expect(try context.changes(since: start).map(\.id) == [todo.id])
         #expect(!context.hasChanges)
@@ -157,7 +157,7 @@ import Testing
         let deletes = try context.changes(since: start)
         #expect(deletes.map(\.kind) == [.delete])
         let later = ToDo(title: "Later")
-        context.save(later)
+        context.insert(later)
         #expect(try context.changes(since: start).map(\.id) == [todo.id, later.id])
     }
 }

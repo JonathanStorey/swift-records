@@ -263,7 +263,7 @@ extension Records.Query {
                         assertionFailure("@Records(id:) is bound to \(id), so its record's id can't change to \(new.id)")
                         return
                     }
-                    context.save(new, in: zone)
+                    context.insert(new, in: zone)
                 } else if let previous {
                     context.delete(previous, in: zone)
                 }

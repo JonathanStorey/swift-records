@@ -78,26 +78,26 @@ struct Journal {
         let (_, tablet) = try device()
         try await phone.refresh()   // open the provider first, which sends what is pending
         var entry = Journal(text: "Hello")
-        phone.save(entry)
+        phone.insert(entry)
         try commit(phone)   // committed, not sent
         #expect(try phone.container.fetch(Journal.self, id: entry.id)?.synced == nil)
 
         try await phone.save()
-        entry = try #require(try await phone.fetch(Journal.self, id: entry.id))
+        entry = try #require(try phone.record(Journal.self, for: entry.id))
         #expect(entry.synced != nil)
 
         entry.text = "Hello again"
-        phone.save(entry)
+        phone.insert(entry)
         try commit(phone)
         #expect(try phone.container.fetch(Journal.self, id: entry.id)?.synced == nil)
         try await phone.save()
-        let sent = try #require(try await phone.fetch(Journal.self, id: entry.id))
+        let sent = try #require(try phone.record(Journal.self, for: entry.id))
         #expect(sent.synced != nil)
 
         // The other device gets the same created and modified times, to the millisecond a server keeps,
         // and its own synced time.
         try await tablet.refresh()
-        let received = try #require(try await tablet.fetch(Journal.self, id: entry.id))
+        let received = try #require(try tablet.record(Journal.self, for: entry.id))
         let milliseconds = { (date: Date?) in date.map { ($0.timeIntervalSince1970 * 1000).rounded() } }
         #expect(milliseconds(received.created) == milliseconds(sent.created))
         #expect(milliseconds(received.modified) == milliseconds(sent.modified))

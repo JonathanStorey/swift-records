@@ -23,8 +23,6 @@ public enum RecordsError: Error, Hashable, Sendable {
     /// A stored or received record doesn't decode as this version of the app's type. A received one is kept
     /// and tried again after the app updates.
     case incompatibleRecord(type: String, id: UUID)
-    /// `append(_:)` was given a record whose ID is already stored or waiting to be saved.
-    case duplicateID(type: String, id: UUID)
 }
 
 extension RecordsError {

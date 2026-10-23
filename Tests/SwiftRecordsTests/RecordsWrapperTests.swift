@@ -66,7 +66,7 @@ private func makeLists() -> [RecipeList] {
         let context = container.mainContext
         context.autosaveEnabled = false
         let todo = ToDo(title: "New", done: true)
-        try context.append(todo)
+        context.insert(todo)
         let view = ObjectIdentifier(container)
 
         let all = Records<[ToDo]>.Query.list(nil)

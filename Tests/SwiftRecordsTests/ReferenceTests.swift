@@ -210,7 +210,7 @@ struct MisplacedReference {
     @Test func referencesAndListsCrossAsIDs() async throws {
         let phone = try Device(server)
         let recipe = SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")])
-        phone.context.save(recipe)
+        phone.context.insert(recipe)
         try await phone.context.save()
 
         #expect(server.value("SyncStep", recipe.steps[0].id, "recipe", as: UUID.self) == recipe.id)
@@ -218,15 +218,15 @@ struct MisplacedReference {
 
         let tablet = try Device(server)
         try await tablet.context.refresh()
-        #expect(try await tablet.context.fetch(SyncStep.self).map(\.recipe) == [recipe.id])
+        #expect(try tablet.context.fetch(SyncStep.self).map(\.recipe) == [recipe.id])
     }
 
     @Test func aChildsReferenceDecidesWhichParentHoldsIt() async throws {
         let phone = try Device(server)
         let soup = SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")])
         let stew = SyncRecipe(title: "Stew")
-        phone.context.save(soup)
-        phone.context.save(stew)
+        phone.context.insert(soup)
+        phone.context.insert(stew)
         try await phone.context.save()
 
         // Another device moved the step to the stew, and its recipes' lists haven't arrived yet.

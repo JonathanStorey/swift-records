@@ -460,6 +460,18 @@ extension RecordStore {
         try db.run("UPDATE \(quoted(table)) SET \"_tag\" = ? WHERE id = ?", [tag.map { .blob($0) } ?? .null, id])
     }
 
+    /// How many records have changes the server doesn't have.
+    func pendingChangeCount() throws -> Int {
+        try locked {
+            let rows = try db.run("""
+                SELECT COUNT(*) AS n FROM "_records_changes" c
+                LEFT JOIN "_records_sync" s ON s.record_table = c.record_table AND s.record_id = c.record_id
+                WHERE c.version > COALESCE(s.acked, 0)
+                """)
+            return Int(rows.first?["n"]?.integerValue ?? 0)
+        }
+    }
+
     /// Every change the server doesn't have, oldest first.
     func pendingChanges() throws -> [PendingChange] {
         try locked {

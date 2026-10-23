@@ -782,6 +782,25 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
+    /// The IDs of the records that match, in their stored order, without decoding the records when the
+    /// predicate translates to SQL.
+    func ids<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [UUID] {
+        try locked {
+            guard tableExists(R.table) else { return [] }
+            try prepare(R.self)
+            guard let (clause, bindings) = try whereClause(predicate) else {
+                return try fetchRecords(R.self, where: predicate, page: page).map(\.id)
+            }
+            var sql = "SELECT id FROM \(quoted(R.table))\(clause) ORDER BY \"_position\", id"
+            var values = bindings
+            if let page {
+                sql += " LIMIT ? OFFSET ?"
+                values += [.integer(Int64(page.limit)), .integer(Int64(page.offset))]
+            }
+            return try db.run(sql, values).map { try ValueCoding.decode(UUID.self, from: $0["id"] ?? .null) }
+        }
+    }
+
     /// The SQL `WHERE` clause for a predicate: empty for none, or nil when it must run in memory.
     private func whereClause<R: Record>(_ predicate: Predicate<R>?) throws -> (String, [SQLiteValue])? {
         guard let predicate else { return ("", []) }
@@ -1135,18 +1154,18 @@ extension RecordStore: RelationLoader {
 
 /// One page of fetched records. Its indices are the records' positions in the full results, so a page
 /// fetched with an offset of 40 starts at index 40. It is read-only: edit a record and save it to change it.
-public struct RecordSlice<R: Record>: RandomAccessCollection, Sendable {
+package struct RecordSlice<R: Record>: RandomAccessCollection, Sendable {
     private let records: [R]
-    public let startIndex: Int
+    package let startIndex: Int
 
     init(_ records: [R], startIndex: Int) {
         self.records = records
         self.startIndex = startIndex
     }
 
-    public var endIndex: Int { startIndex + records.count }
+    package var endIndex: Int { startIndex + records.count }
 
-    public subscript(position: Int) -> R {
+    package subscript(position: Int) -> R {
         records[position - startIndex]
     }
 }

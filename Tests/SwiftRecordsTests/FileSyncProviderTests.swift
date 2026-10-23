@@ -26,7 +26,7 @@ import Testing
         let phone = try device()
         let tablet = try device()
         let recipe = SyncRecipe(title: "Soup", servings: 4)
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
 
         let json = try String(contentsOf: recordFile(recipe.id), encoding: .utf8)
@@ -45,16 +45,16 @@ import Testing
         let phone = try device()
         let tablet = try device()
         var recipe = SyncRecipe(title: "Soup")
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
         try await tablet.mainContext.refresh()
 
         recipe.title = "Stew"
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
         var other = try #require(try await recipes(tablet).first)
         other.servings = 6
-        tablet.mainContext.save(other)
+        tablet.mainContext.insert(other)
         // The tablet's copy is out of date, so its upload conflicts and merges with the phone's.
         try await tablet.mainContext.refresh()
         try await phone.mainContext.refresh()
@@ -69,7 +69,7 @@ import Testing
         let phone = try device()
         let tablet = try device()
         let recipe = SyncRecipe(title: "Soup")
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
         try await tablet.mainContext.refresh()
 
@@ -89,7 +89,7 @@ import Testing
         let tablet = try device()
         var recipe = SyncRecipe(title: "Photo")
         recipe.photo = Data([1, 2, 3])
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
         await phone.defaultStorage.sync?.transfers()
 
@@ -104,7 +104,7 @@ import Testing
     @Test func deletingTheFolderIsAReset() async throws {
         let phone = try device()
         let recipe = SyncRecipe(title: "Soup")
-        phone.mainContext.save(recipe)
+        phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
         try await phone.mainContext.refresh()
 
@@ -141,7 +141,7 @@ import Testing
         // An edit is checked against the hand-written file's synced date and accepted.
         var edited = recipe
         edited.servings = 3
-        phone.mainContext.save(edited)
+        phone.mainContext.insert(edited)
         try await phone.mainContext.save()
         let written = try String(contentsOf: recordFile(id), encoding: .utf8)
         #expect(written.contains(#""servings":3"#))
@@ -153,7 +153,7 @@ import Testing
     @Test func changesArriveWithoutARefresh() async throws {
         let tablet = try device(watchInterval: .milliseconds(20))
         let phone = try device()
-        phone.mainContext.save(SyncRecipe(title: "Soup"))
+        phone.mainContext.insert(SyncRecipe(title: "Soup"))
         try await phone.mainContext.save()
         // The tablet's watcher sees the phone's mark and downloads on its own.
         var titles: [String] = []

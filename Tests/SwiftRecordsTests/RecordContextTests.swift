@@ -8,8 +8,8 @@ import Testing
 
     @Test func batchesChangesUntilSave() throws {
         context.autosaveEnabled = false
-        context.save(ToDo(title: "One"))
-        context.save(ToDo(title: "Two"))
+        context.insert(ToDo(title: "One"))
+        context.insert(ToDo(title: "Two"))
         #expect(context.hasChanges)
         #expect(try context.container.fetch(ToDo.self).isEmpty)
 
@@ -19,35 +19,81 @@ import Testing
         #expect(try context.container.fetch(ToDo.self).count == 2)
     }
 
-    @Test func appendRefusesAnExistingID() throws {
+    @Test func insertAddsAtTheEndOrReplacesInPlace() throws {
         context.autosaveEnabled = false
-        let first = ToDo(title: "First")
-        try context.append(first)
-        #expect(throws: RecordsError.duplicateID(type: "ToDo", id: first.id)) { try context.append(first) }
-
+        var first = ToDo(title: "First")
+        context.insert(first)
+        context.insert(ToDo(title: "Second"))
         try context.save()
-        #expect(throws: RecordsError.duplicateID(type: "ToDo", id: first.id)) { try context.append(first) }
 
-        try context.append(ToDo(title: "Second"))
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["First", "Second"])
+        first.title = "Edited"
+        context.insert(first)
+        #expect(try context.record(ToDo.self, for: first.id)?.title == "Edited")
+        try context.save()
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Edited", "Second"])
 
-        // Once deleted, the ID is free again.
+        // Once deleted, the record goes back in at the end.
         context.delete(first)
         try context.save()
-        try context.append(first)
+        context.insert(first)
         try context.save()
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["Second", "First"])
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Second", "Edited"])
+    }
+
+    @Test func recordShowsUnsavedChangesWithoutSaving() throws {
+        context.autosaveEnabled = false
+        let todo = ToDo(title: "Draft")
+        context.insert(todo)
+        let found: ToDo? = try context.record(for: todo.id)
+        #expect(found?.title == "Draft")
+        #expect(context.unsavedChanges == 1)
+        context.delete(todo)
+        #expect(try context.record(ToDo.self, for: todo.id) == nil)
+        #expect(context.unsavedChanges == 1)
+    }
+
+    @Test func descriptorsPageCountAndListIDs() throws {
+        context.autosaveEnabled = false
+        let todos = (0..<5).map { ToDo(title: "T\($0)", priority: $0) }
+        context.apply(todos, replacing: [])
+        let odd = #Predicate<ToDo> { $0.priority % 2 == 1 }
+        #expect(try context.fetch(RecordDescriptor(predicate: odd)).map(\.title) == ["T1", "T3"])
+        #expect(try context.fetch(RecordDescriptor<ToDo>(fetchLimit: 2, fetchOffset: 1)).map(\.title) == ["T1", "T2"])
+        #expect(try context.fetchCount(RecordDescriptor<ToDo>()) == 5)
+        #expect(try context.fetchCount(RecordDescriptor<ToDo>(fetchLimit: 2, fetchOffset: 4)) == 1)
+        let high = #Predicate<ToDo> { $0.priority >= 3 }
+        #expect(try context.fetchIdentifiers(RecordDescriptor(predicate: high)) == [todos[3].id, todos[4].id])
+        #expect(try context.fetchIdentifiers(RecordDescriptor<ToDo>(fetchLimit: 1)) == [todos[0].id])
+    }
+
+    @Test func transactionSavesOrRollsBackItsOwnChanges() throws {
+        context.autosaveEnabled = false
+        context.insert(ToDo(title: "Earlier"))
+        struct Stop: Error {}
+        #expect(throws: Stop.self) {
+            try context.transaction {
+                context.insert(ToDo(title: "Dropped"))
+                throw Stop()
+            }
+        }
+        #expect(context.unsavedChanges == 1)
+
+        try context.transaction {
+            context.insert(ToDo(title: "Kept"))
+        }
+        #expect(!context.hasChanges)
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Earlier", "Kept"])
     }
 
     @Test func fetchIncludesPendingChanges() throws {
         context.autosaveEnabled = false
-        context.save(ToDo(title: "Pending"))
+        context.insert(ToDo(title: "Pending"))
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Pending"])
     }
 
     @Test func autosavesOnNextTurn() async throws {
         context.autosaveDelay = .zero
-        context.save(ToDo(title: "Auto"))
+        context.insert(ToDo(title: "Auto"))
         #expect(context.changeCount == 0)
         for _ in 0..<100 where context.changeCount == 0 {
             await Task.yield()
@@ -78,13 +124,13 @@ import Testing
         let folder = Folder(name: "Kept", items: [Subtask(title: "Item")])
         try context.container.save(folder)
 
-        context.save(ToDo(title: "Should not land"))
+        context.insert(ToDo(title: "Should not land"))
         context.delete(folder)
         // Copying a file that does not exist fails the whole batch.
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID()).jpg")
         var photo = Photo()
         photo.$image = Asset(contentsOf: missing)
-        context.save(photo)
+        context.insert(photo)
         #expect(throws: (any Error).self) { try context.save() }
         #expect(try context.container.fetch(ToDo.self).isEmpty)
         #expect(try context.container.fetch(Folder.self, id: folder.id) != nil)
@@ -94,18 +140,18 @@ import Testing
         context.autosaveEnabled = false
         var todo = ToDo(title: "T")
         let other = ToDo(title: "Other")
-        context.save(todo)
-        context.save(other)
+        context.insert(todo)
+        context.insert(other)
         for title in ["Ty", "Typ", "Typed"] {
             todo.title = title
-            context.save(todo)
+            context.insert(todo)
         }
-        #expect(context.pendingChangeCount == 2)
+        #expect(context.unsavedChanges == 2)
         try context.save()
-        #expect(context.pendingChangeCount == 0)
+        #expect(context.unsavedChanges == 0)
         #expect(try context.container.fetch(ToDo.self).map(\.title).sorted() == ["Other", "Typed"])
 
-        context.save(other)
+        context.insert(other)
         context.delete(other)
         try context.save()
         #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Typed"])
@@ -116,7 +162,7 @@ import Testing
         var todo = ToDo(title: "")
         for letter in "Hello" {
             todo.title.append(letter)
-            context.save(todo)
+            context.insert(todo)
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(context.changeCount == 0)

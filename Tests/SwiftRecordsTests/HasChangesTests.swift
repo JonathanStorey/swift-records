@@ -34,7 +34,7 @@ struct DraftStep {
         var draft = Draft(title: "Soup")
         #expect(context.hasChanges(draft))
 
-        context.save(draft)
+        context.insert(draft)
         #expect(!context.hasChanges(draft))
         try context.save()
         #expect(!context.hasChanges(draft))
@@ -50,7 +50,7 @@ struct DraftStep {
 
     @Test func relatedRecordsCount() throws {
         var draft = Draft(title: "Soup", steps: [DraftStep(text: "Boil")])
-        context.save(draft)
+        context.insert(draft)
         try context.save()
 
         draft.steps[0].text = "Simmer"
@@ -63,16 +63,16 @@ struct DraftStep {
     @Test func ignoresWhatTheContainerSets() throws {
         let step = DraftStep(text: "Boil")
         let draft = Draft(title: "Soup", tags: ["a", "b", "c"], steps: [step])
-        context.save(draft)
+        context.insert(draft)
         try context.save()
 
         // The stored copy now has a modified date, and its step an inverse, that this copy lacks.
-        let stored = try #require(try context.fetch(Draft.self, id: draft.id))
+        let stored = try #require(try context.record(Draft.self, for: draft.id))
         #expect(stored.modified != nil)
         #expect(!context.hasChanges(draft))
 
         // Another draft sharing the step changes only its inverse.
-        context.save(Draft(title: "Broth", steps: [step]))
+        context.insert(Draft(title: "Broth", steps: [step]))
         try context.save()
         #expect(!context.hasChanges(step))
         #expect(!context.hasChanges(stored))
@@ -80,16 +80,16 @@ struct DraftStep {
 
     @Test func comparesAssetsByFile() throws {
         var draft = Draft(title: "Soup")
-        context.save(draft)
+        context.insert(draft)
         try context.save()
 
         draft.image = Data([1, 2, 3])
         #expect(context.hasChanges(draft))
-        context.save(draft)
+        context.insert(draft)
         try context.save()
         #expect(!context.hasChanges(draft))
 
-        let stored = try #require(try context.fetch(Draft.self, id: draft.id))
+        let stored = try #require(try context.record(Draft.self, for: draft.id))
         #expect(!context.hasChanges(stored))
         var replaced = stored
         replaced.image = Data([1, 2, 3])
@@ -100,7 +100,7 @@ struct DraftStep {
         let draft = Draft(title: "Soup")
         try await container.performBackgroundTask { context in
             #expect(try context.hasChanges(draft))
-            try context.save(draft)
+            try context.insert(draft)
             #expect(try !context.hasChanges(draft))
         }
     }

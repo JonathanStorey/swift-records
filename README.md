@@ -43,30 +43,28 @@ schema. You read and write through a context.
 let container = try RecordContainer()                // Application Support/Records
 let context = container.mainContext                  // one per container, on the main actor
 
-try context.append(todo)                             // a new ToDo, its Person and every Note
-context.save(todo)                                   // inserts or updates
-let open = try context.fetch(ToDo.self, where: #Predicate { !$0.done })
-let parents = try context.fetch(ToDo.self, ids: note.todoIDs)
+context.insert(todo)                                 // a new ToDo, its Person and every Note
+context.insert(edited)                               // replaces the record with the same ID
+let open = try context.fetch(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }))
+let todo: ToDo? = try context.record(for: id)        // or record(ToDo.self, for: id)
 context.delete(todo)
-context.delete(ToDo.self, where: #Predicate { $0.done })   // or delete(ToDo.self, id: id)
+context.delete(record: ToDo.self, where: #Predicate { $0.done })
 try context.save()                                   // or let autosave commit once edits pause
 ```
 
-`append(_:)` adds a new record at the end of the stored order and throws `RecordsError.duplicateID` if
-the ID is already stored or pending, so it never overwrites anything. `save(_:)` inserts or updates.
+The names follow `ModelContext`. `insert(_:)` adds a record at the end of its type's stored order, or
+replaces the one with the same ID in place, as SwiftData does for a unique ID. `record(for:)` returns a
+record with any unsaved change and never saves, so a view can call it while it updates.
 
-The main context collects changes and commits them together, either when you call `save()` or
-automatically once edits pause for `autosaveDelay`. Every fetch saves first, so results include your
-own edits. Records come back in their stored order. To show them in another order, sort a copy.
+Changes live in memory until `save()` commits them to disk, which autosave does once edits pause for
+`autosaveDelay`. Until then `rollback()` discards them, and `unsavedChanges` counts them. Every fetch
+saves first, so results include your own edits. Records come back in their stored order. To show them
+in another order, sort a copy. `transaction { }` runs a block and saves its changes in one commit, or
+rolls back just that block's changes if it throws.
 
-Saving and fetching also come in `async` versions, which do the database work off the main actor and
-suspend instead of blocking while a background import holds the file. Autosave always uses them. In
-async code the compiler picks them, so add `await`. The synchronous versions stay for everything else.
-
-```swift
-try await context.save()
-let open = try await context.fetch(ToDo.self, where: #Predicate { !$0.done })
-```
+`save()` also comes in an `async` version, which commits off the main actor and suspends instead of
+blocking while a background import holds the file. Autosave always uses it. For fetches off the main
+actor, use a background context.
 
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. A failed autosave sets `lastSaveError` and rolls back, since nothing could retry it.
@@ -82,7 +80,7 @@ For work off the main actor, such as an import, use a background context. Its sa
 try await container.performBackgroundTask { context in
     for start in stride(from: 0, to: downloaded.count, by: 200) {
         let batch = Array(downloaded[start..<min(start + 200, downloaded.count)])
-        try context.transaction { try context.save(batch) }
+        try context.transaction { try context.insert(batch) }
     }
 }
 ```
@@ -121,13 +119,13 @@ deletes and fetches go. It starts as `.default`.
 let container = try RecordContainer()     // Application Support/Records
 let context = container.mainContext
 
-context.save(recipe)                      // _default.sqlite
+context.insert(recipe)                    // _default.sqlite
 context.zone = "drafts"
-context.save(draft)                       // drafts.sqlite, opened on first use
+context.insert(draft)                     // drafts.sqlite, opened on first use
 let drafts = try context.fetch(Recipe.self)
 context.zone = .default                   // back to the default zone
 
-try await container.performBackgroundTask(in: "drafts") { try $0.save(imported) }
+try await container.performBackgroundTask(in: "drafts") { try $0.insert(imported) }
 context.zone = .inMemory                  // never written to disk, never synced
 context.zone = .localOnly                 // _local.sqlite, never synced
 let scratch = try RecordContainer(inMemory: true)   // every zone lives in memory
@@ -218,8 +216,8 @@ one comment. The child holds its parent's ID, which is a column you can query an
 owners' IDs, so name it for that, such as `todoIDs`.
 
 - Deleting an owner, or removing the label from its array, only unlinks it.
-- Loading full records would recurse forever with value types, so fetch the owners with
-  `context.fetch(_:ids:)`, which returns them in stored order.
+- Loading full records would recurse forever with value types, so fetch the owners with a predicate,
+  `#Predicate<ToDo> { ids.contains($0.id) }` on a local `let ids = label.todoIDs`, which runs as SQL.
 - It is read-only, with no initial value: the container fills it from the owners' links, so link or
   unlink from the owner's side.
 - `#Predicate { $0.todoIDs.contains(todo.id) }` runs as SQL, like `contains { }` on a forward
@@ -241,7 +239,7 @@ struct Photo {
     @Asset(fileExtension: "jpg") var image: Data? = nil
 }
 
-context.save(Photo(image: jpeg))
+context.insert(Photo(image: jpeg))
 let photo = try context.fetch(Photo.self).first
 let url = photo?.$image.url      // the stored file, for AsyncImage, QuickLook or AVPlayer
 let bytes = photo?.image         // read from disk on first access, then cached
@@ -259,12 +257,13 @@ let bytes = photo?.image         // read from disk on first access, then cached
 ## Paging and counting
 
 ```swift
-let page = try context.fetch(ToDo.self, where: #Predicate { !$0.done }, limit: 20, offset: 40)
-page.indices            // 40..<60, the records' positions in the full results
-try context.count(ToDo.self, where: #Predicate { $0.done })   // SELECT COUNT(*) when it translates
+let page = try context.fetch(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20, fetchOffset: 40))
+try context.fetchCount(RecordDescriptor<ToDo>(predicate: #Predicate { $0.done }))   // SELECT COUNT(*) when it translates
+try context.fetchIdentifiers(RecordDescriptor<ToDo>())   // IDs only, without loading the records
 ```
 
-A page is a read-only `RecordSlice`, read straight from SQL when the predicate translates.
+`RecordDescriptor` mirrors SwiftData's `FetchDescriptor`. A page is read straight from SQL when the
+predicate translates.
 
 ## Timestamps
 
@@ -293,7 +292,7 @@ a predicate on it runs in memory. A bare `@Timestamp` means `.modified`.
 holds, which suits an edit sheet that keeps a draft in `@State`:
 
 ```swift
-Button("Save") { context.save(draft); dismiss() }
+Button("Save") { context.insert(draft); dismiss() }
     .disabled(!context.hasChanges(draft))
 ```
 
@@ -340,7 +339,8 @@ try await context.refresh()    // also fetches the server's changes, for pull-to
 
 The async `save()` and autosave send. The synchronous `save()` only commits, and its changes go with
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
-errors, and changes wait on the device until they can go.
+errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
+the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
 
 The provider is transport only, so anyone can write one: a CloudKit provider, a central database or a
 folder of files. Each call returns what happened, and the container drives it:
@@ -491,7 +491,7 @@ switches every list at once. `@Records("pantry")` pins a property to one zone in
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes
-made through `@Environment(\.recordContext)`, such as `try context.append(todo)`. A new record joins the end
+made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new record joins the end
 of a list, a filtered list drops records its filter rejects, and a rollback takes them back out. Deletes by
 predicate hide their matches at once too. The array's order is stored, so moves persist, and records always come back in that order.
 A filtered list reorders only its own records within the slots they already hold, leaving the rest in

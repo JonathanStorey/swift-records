@@ -51,7 +51,7 @@ import Testing
         context.autosaveEnabled = false
         let todo = ToDo(title: "A")
         context.apply([todo], replacing: [], source: ObjectIdentifier(NSObject()))
-        context.save(ToDo(title: "B"))
+        context.insert(ToDo(title: "B"))
         try context.save()
         #expect(context.lastSaveSource == nil)
     }
