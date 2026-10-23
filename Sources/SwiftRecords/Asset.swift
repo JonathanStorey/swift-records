@@ -18,6 +18,10 @@ import Foundation
 /// A fetched record doesn't load its files. Reading the property loads the file once and keeps it with
 /// that copy of the record, so prefer `$photo.url` where a URL will do, such as for images in a list.
 ///
+/// With a sync provider, records arrive first and their files follow in the background, so a received
+/// record's asset reads `nil` until its file lands. Views refresh when it does, and
+/// `RecordContext.assetProgress` reports how far the transfers have got.
+///
 /// Outside a container, such as with `JSONEncoder`, the property encodes and decodes as plain `Data?`.
 @propertyWrapper
 public struct Asset: Hashable, Sendable, Codable {
@@ -89,10 +93,11 @@ public struct Asset: Hashable, Sendable, Codable {
         set { self = newValue }
     }
 
-    /// The stored file. `nil` until the record has been saved and fetched back, and for an empty asset.
+    /// The stored file. `nil` until the record has been saved and fetched back, for an empty asset, and
+    /// while a synced record's file is still downloading.
     public var url: URL? {
-        if case .stored(let url)? = storage?.source { return url }
-        return nil
+        guard case .stored(let url)? = storage?.source, FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     /// The file's unique name in the assets folder, or `nil` for an empty asset.

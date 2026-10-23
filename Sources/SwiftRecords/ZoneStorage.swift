@@ -24,6 +24,11 @@ package final class ZoneStorage: @unchecked Sendable {
         didSet { context?.syncPhaseChanged() }
     }
 
+    /// How far the zone's asset files have got moving to and from the server, `nil` when none are.
+    @MainActor private(set) var assetTransfer: SyncCoordinator.Transfer? {
+        didSet { context?.assetTransferChanged() }
+    }
+
     init(
         zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false,
         policies: SyncCoordinator.Policies
@@ -33,9 +38,20 @@ package final class ZoneStorage: @unchecked Sendable {
         try store.register(types, syncSafe: syncProvider != nil)
         guard let syncProvider else { return }
         store.syncEnabled = true
-        let sync = SyncCoordinator(provider: syncProvider, zone: zone, isPublic: isPublic, store: store, policies: policies) { [weak self] phase in
-            Task { @MainActor in self?.syncPhase = phase }
-        }
+        let sync = SyncCoordinator(
+            provider: syncProvider, zone: zone, isPublic: isPublic, store: store, policies: policies,
+            phaseChanged: { [weak self] phase in
+                Task { @MainActor in self?.syncPhase = phase }
+            },
+            transferChanged: { [weak self] transfer, landed in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.assetTransfer = transfer
+                    // The record already points at the file, so only views need to know it's here.
+                    if landed { self.context?.assetDidLand(in: zone) }
+                }
+            }
+        )
         self.sync = sync
         Task { await sync.open() }
     }

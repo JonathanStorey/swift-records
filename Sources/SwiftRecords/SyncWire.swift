@@ -204,22 +204,20 @@ extension RecordStore {
 // MARK: - Assets
 
 extension RecordStore {
-    /// The asset files these records use that haven't been uploaded yet.
-    func unsentAssets(in records: [SyncRecord], zone: Zone) throws -> [RecordAssetData] {
-        var assets: [String: RecordAssetData] = [:]
-        for record in records {
-            guard let fields = record.fields, let type = registered[record.type] else { continue }
-            for name in Self.assetFieldNames(type) {
-                guard case .url(let url)? = fields[name] else { continue }
-                let id = url.lastPathComponent
-                guard assets[id] == nil else { continue }
-                let sent = try db.run("SELECT 1 FROM \"_records_uploaded_assets\" WHERE name = ?", [.text(id)])
-                if sent.isEmpty {
-                    assets[id] = RecordAssetData(id: id, zone: zone, file: url)
-                }
+    /// The zone's asset files that are here but not yet on the server, oldest name first.
+    func unsentAssets(zone: Zone) throws -> [RecordAssetData] {
+        try locked {
+            let rows = try db.run("""
+                SELECT name FROM "_records_assets"
+                WHERE name NOT IN (SELECT name FROM "_records_uploaded_assets") ORDER BY name
+                """)
+            return rows.compactMap { row in
+                guard case .text(let name)? = row["name"] else { return nil }
+                let file = assetURL(named: name)
+                guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+                return RecordAssetData(id: name, zone: zone, file: file)
             }
         }
-        return assets.keys.sorted().map { assets[$0]! }
     }
 
     /// Records that the server has these asset files.
@@ -231,38 +229,35 @@ extension RecordStore {
         }
     }
 
-    /// The asset files these changes use that aren't on this device yet.
-    func missingAssets(in changes: [RecordChangeData]) -> [String] {
-        var missing: [String] = []
-        for change in changes {
-            guard let record = try? syncRecord(from: change), let fields = record.fields, let type = registered[record.type] else {
-                continue
-            }
-            for name in Self.assetFieldNames(type) {
-                guard case .url(let url)? = fields[name], !FileManager.default.fileExists(atPath: url.path) else { continue }
-                if !missing.contains(url.lastPathComponent) {
-                    missing.append(url.lastPathComponent)
-                }
+    /// The asset files that records here use but that haven't arrived yet.
+    func missingAssets() throws -> [String] {
+        try locked {
+            try db.run("SELECT name FROM \"_records_assets\" ORDER BY name").compactMap { row in
+                guard case .text(let name)? = row["name"],
+                      !FileManager.default.fileExists(atPath: assetURL(named: name).path) else { return nil }
+                return name
             }
         }
-        return missing
     }
 
-    /// Moves a downloaded asset file into the assets folder under its ID, ready for the record that uses it.
-    /// The server already has it, so it isn't uploaded again.
-    func placeDownloadedAsset(at file: URL, id: String) throws {
-        let manager = FileManager.default
-        try manager.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
-        let destination = assetURL(named: id)
-        try? manager.removeItem(at: destination)
-        try manager.moveItem(at: file, to: destination)
-        try markAssetsUploaded([id])
-    }
-
-    private static func assetFieldNames(_ type: any Record.Type) -> [String] {
-        func names<R: Record>(_ type: R.Type) -> [String] {
-            R.schema.fields.filter(\.isAsset).map(\.name)
+    /// Moves a downloaded asset file into the assets folder under its ID, where the record that uses it
+    /// already points. The server already has it, so it isn't uploaded again. Returns false when no record
+    /// uses it any more, and the file is dropped.
+    @discardableResult
+    func placeDownloadedAsset(at file: URL, id: String) throws -> Bool {
+        try locked {
+            let manager = FileManager.default
+            let held = try !db.run("SELECT 1 FROM \"_records_assets\" WHERE name = ?", [.text(id)]).isEmpty
+            guard held else {
+                try? manager.removeItem(at: file)
+                return false
+            }
+            try manager.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
+            let destination = assetURL(named: id)
+            try? manager.removeItem(at: destination)
+            try manager.moveItem(at: file, to: destination)
+            try markAssetsUploaded([id])
+            return true
         }
-        return names(type)
     }
 }

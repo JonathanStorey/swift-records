@@ -364,8 +364,18 @@ upload carries the date of the copy it was edited from, and a server whose copy 
 `synced` date as its download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a
 whole call fails.
 
-Assets travel on their own. A file never changes once stored, so an asset can't conflict, and each one
-is uploaded once, before the first record that uses it.
+Assets travel on their own, in the background. `refresh()` syncs records only and returns once they're
+stored. After each pass the container uploads files the server doesn't have and downloads the ones
+received records point to, one file at a time. Until a file lands, its record's asset reads `nil` and
+`$image.url` is `nil`, and views refresh when it arrives. A file that fails, such as one whose record
+arrived before its upload finished, is tried again after the next pass. A file never changes once
+stored, so an asset can't conflict, and each one is uploaded once.
+
+```swift
+if let progress = context.assetProgress {
+    ProgressView(value: progress)    // 0 to 1 by file count, nil when nothing is moving
+}
+```
 
 `publicZones` names zones everyone shares. Their records carry the user who created them as `owner`,
 the server refuses changes from anyone else, signing out never deletes them, and they download without

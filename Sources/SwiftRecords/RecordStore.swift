@@ -343,8 +343,9 @@ final class RecordStore: @unchecked Sendable {
             try manager.copyItem(at: source, to: destination)
             fileChanges[fileChanges.count - 1].created.append(destination)
         case .stored(let source):
-            // A fetched asset: copy its file unless it is already here, such as one released earlier in this transaction.
-            if !(owner == nil && manager.fileExists(atPath: destination.path)) {
+            // A fetched asset: copy its file unless it is already here, such as one released earlier in this
+            // transaction. A synced record's file may not have downloaded yet, and arrives under its name later.
+            if manager.fileExists(atPath: source.path), !(owner == nil && manager.fileExists(atPath: destination.path)) {
                 try manager.copyItem(at: source, to: destination)
                 fileChanges[fileChanges.count - 1].created.append(destination)
             }

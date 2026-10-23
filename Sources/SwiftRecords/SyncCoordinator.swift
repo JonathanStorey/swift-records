@@ -2,7 +2,8 @@ import Foundation
 
 /// Drives a zone's sync provider. Each pass checks the account, uploads pending changes in batches, and
 /// with a refresh downloads the server's changes, then works out the sync part of each context's status.
-/// Calls that arrive during a pass share the next one.
+/// Calls that arrive during a pass share the next one. Asset files move separately, in the background
+/// after each pass, so records never wait for them.
 actor SyncCoordinator {
     /// Where syncing stands, which a context combines with its own saves into `status`.
     enum Phase: Sendable, Hashable {
@@ -11,6 +12,12 @@ actor SyncCoordinator {
         case offline
         case signedOut
         case failed(RecordsError)
+    }
+
+    /// How far the current asset transfers have got, by file count.
+    struct Transfer: Sendable, Hashable {
+        var done: Int
+        var total: Int
     }
 
     struct Policies: Sendable {
@@ -39,6 +46,8 @@ actor SyncCoordinator {
     private let store: RecordStore
     private let policies: Policies
     private let phaseChanged: @Sendable (Phase) -> Void
+    /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
+    private let transferChanged: @Sendable (Transfer?, _ landed: Bool) -> Void
 
     private(set) var phase: Phase = .idle {
         didSet {
@@ -50,6 +59,9 @@ actor SyncCoordinator {
     /// The pass running now. Callers that arrive meanwhile ask for another and wait for it.
     private var running: Task<Void, Never>?
     private var passRequested = false
+    /// The asset transfers running now, and whether a pass has finished since they started.
+    private var transferring: Task<Void, Never>?
+    private var transferRequested = false
     private var uploadRequested = false
     private var downloadRequested = false
     private var account: String?
@@ -59,7 +71,8 @@ actor SyncCoordinator {
 
     init(
         provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore, policies: Policies,
-        phaseChanged: @escaping @Sendable (Phase) -> Void
+        phaseChanged: @escaping @Sendable (Phase) -> Void,
+        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) -> Void = { _, _ in }
     ) {
         self.provider = provider
         self.zone = zone
@@ -67,6 +80,7 @@ actor SyncCoordinator {
         self.store = store
         self.policies = policies
         self.phaseChanged = phaseChanged
+        self.transferChanged = transferChanged
     }
 
     // MARK: Calls from contexts
@@ -96,6 +110,13 @@ actor SyncCoordinator {
     func download() async {
         prepare()
         await run(download: true, upload: false)
+    }
+
+    /// Waits for the asset transfers running now, and any a finished pass has asked for.
+    func transfers() async {
+        while let transferring {
+            await transferring.value
+        }
     }
 
     // MARK: Passes
@@ -134,6 +155,7 @@ actor SyncCoordinator {
             await pass(download: download, upload: upload)
         } while passRequested && passes < Self.maxRounds
         running = nil
+        startTransfers()
     }
 
     private func pass(download: Bool, upload: Bool) async {
@@ -194,11 +216,6 @@ actor SyncCoordinator {
             guard !order.isEmpty else { return }
             markSyncing()
             let records = order.map { batch[$0]!.record }
-            let assets = try store.unsentAssets(in: records, zone: zone)
-            if !assets.isEmpty {
-                try await provider.uploadAssets(assets)
-                try store.markAssetsUploaded(assets.map(\.id))
-            }
             let owner = isPublic ? account : nil
             let changes = try records.map { try store.change(for: $0, zone: zone, owner: owner) }
             let results = try await provider.uploadRecordChanges(changes)
@@ -245,15 +262,8 @@ actor SyncCoordinator {
         }
     }
 
-    /// Fetches the asset files the changes need, then applies the changes, and the cursor with them.
+    /// Applies the changes, and the cursor with them. Their asset files follow in the background.
     private func receive(_ changes: [RecordChangeData], cursor: Data? = nil) async throws {
-        for id in store.missingAssets(in: changes) {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: directory) }
-            let file = try await provider.downloadAsset(id: id, zone: zone, into: directory)
-            try store.placeDownloadedAsset(at: file, id: id)
-        }
         let incompatible = try store.transaction {
             let incompatible = try store.applyReceived(changes, policy: policies.merge)
             if let cursor {
@@ -264,6 +274,59 @@ actor SyncCoordinator {
         if let change = incompatible.first {
             failure = .incompatibleRecord(type: change.type, id: change.id)
         }
+    }
+
+    // MARK: Assets
+
+    private func startTransfers() {
+        if transferring != nil {
+            transferRequested = true
+            return
+        }
+        transferring = Task {
+            await self.transferLoop()
+        }
+    }
+
+    private func transferLoop() async {
+        repeat {
+            transferRequested = false
+            await transferAssets()
+        } while transferRequested
+        transferring = nil
+    }
+
+    /// Uploads the files the server doesn't have, then downloads the ones records here are waiting for,
+    /// one file at a time. A file that fails waits for the next pass, as when its record arrived before
+    /// the device that made it finished uploading it.
+    private func transferAssets() async {
+        let uploads = signedOut ? [] : (try? store.unsentAssets(zone: zone)) ?? []
+        let downloads = signedOut && !isPublic ? [] : (try? store.missingAssets()) ?? []
+        var progress = Transfer(done: 0, total: uploads.count + downloads.count)
+        guard progress.total > 0 else { return }
+        transferChanged(progress, false)
+        for asset in uploads {
+            if (try? await provider.uploadAssets([asset])) != nil {
+                try? store.markAssetsUploaded([asset.id])
+            }
+            progress.done += 1
+            transferChanged(progress, false)
+        }
+        for id in downloads {
+            let landed = (try? await downloadAsset(id)) ?? false
+            progress.done += 1
+            transferChanged(progress, landed)
+        }
+        transferChanged(nil, false)
+    }
+
+    private func downloadAsset(_ id: String) async throws -> Bool {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: directory) }
+        let file = try await provider.downloadAsset(id: id, zone: zone, into: directory)
+        return try store.placeDownloadedAsset(at: file, id: id)
     }
 
     // MARK: Accounts
