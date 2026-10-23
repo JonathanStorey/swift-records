@@ -116,6 +116,38 @@ import Testing
         #expect(try await recipes(phone).map(\.title) == ["Soup"])
     }
 
+    @Test func handWrittenFilesDownload() async throws {
+        // Files written by something other than a container, such as a script or another app.
+        let zone = folder.appendingPathComponent("Records/_default")
+        let id = UUID()
+        try FileManager.default.createDirectory(at: zone.appendingPathComponent("SyncRecipe/_ignored"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: zone.appendingPathComponent("_assets"), withIntermediateDirectories: true)
+        try Data([4, 5, 6]).write(to: zone.appendingPathComponent("_assets/photo.jpg"))
+        let json = """
+            {"id":"\(id.uuidString)","record":{"photo":"photo.jpg","servings":2,"title":"Bread"},\
+            "synced":1700000000000,"type":"SyncRecipe","zone":"_default"}
+            """
+        try Data(json.utf8).write(to: recordFile(id))
+
+        let phone = try device()
+        try await phone.mainContext.refresh()
+        await phone.defaultStorage.sync?.transfers()
+        let recipe = try #require(try await recipes(phone).first)
+        #expect(recipe.id == id)
+        #expect(recipe.title == "Bread")
+        #expect(recipe.servings == 2)
+        #expect(recipe.photo == Data([4, 5, 6]))
+
+        // An edit is checked against the hand-written file's synced date and accepted.
+        var edited = recipe
+        edited.servings = 3
+        phone.mainContext.save(edited)
+        try await phone.mainContext.save()
+        let written = try String(contentsOf: recordFile(id), encoding: .utf8)
+        #expect(written.contains(#""servings":3"#))
+        #expect(!written.contains("1700000000000"))
+    }
+
     @Test func locations() async throws {
         let provider = FileSyncProvider(location: .other(directory: folder))
         #expect(provider.directory == folder.appendingPathComponent("Records", isDirectory: true))
