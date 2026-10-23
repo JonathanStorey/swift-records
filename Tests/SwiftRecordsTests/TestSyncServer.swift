@@ -4,6 +4,8 @@ import Foundation
 /// A stand-in sync server that several in-memory containers share, each playing one device. It checks
 /// `synced` dates the way the protocol asks: a save based on an older copy comes back as a conflict.
 final class TestServer: @unchecked Sendable {
+    /// Tells servers apart, as a provider's URL would.
+    let name = UUID().uuidString
     private let lock = NSLock()
     /// Each record's latest change, deletions included, with the sequence number it was stored at.
     private var latest: [String: (change: RecordChangeData, sequence: Int)] = [:]
@@ -147,6 +149,8 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     var failsAssetUploads = false
     /// Runs before each asset download.
     var beforeAssetDownload: (@Sendable () async -> Void)?
+
+    var identifier: String { server.name }
 
     init(server: TestServer, account: String?? = nil) {
         self.server = server

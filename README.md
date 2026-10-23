@@ -342,6 +342,12 @@ the next send. `refresh()` throws only what leaves `status` at `failed`: offline
 errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
 the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
 
+You can switch providers later, for example to a bigger server as traffic grows. Each provider has an
+`identifier`, its type name by default, so return something like the server's URL when one type can reach
+several servers. When a zone's provider identifier changes, the container treats the new server as empty:
+it keeps every local record, uploads them all and downloads from the beginning, whatever `onAccountSwitch`
+says, since a new server's user IDs needn't match the old one's.
+
 The provider is transport only, so anyone can write one: a CloudKit provider, a central database or a
 folder of files. Each call returns what happened, and the container drives it:
 
