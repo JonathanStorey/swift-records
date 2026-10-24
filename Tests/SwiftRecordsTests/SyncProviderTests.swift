@@ -158,6 +158,17 @@ struct Device {
         #expect(phone.provider.sentBatches.map(\.count) == [200, 200, 50])
     }
 
+    @Test func anUploadOfAnySizeFinishesInOnePass() async throws {
+        let phone = try Device(server)
+        try await phone.container.performBackgroundTask { context in
+            try context.insert((0..<4_100).map { SyncCook(name: "Cook \($0)") })
+        }
+        try await phone.context.save()
+        #expect(server.count == 4_100)
+        #expect(phone.provider.sentBatches.count == 21)
+        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+    }
+
     @Test func serverChangesAreNotSentBack() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)

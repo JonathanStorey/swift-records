@@ -458,13 +458,13 @@ extension RecordStore {
         }
     }
 
-    /// Every change the server doesn't have, oldest first.
-    func pendingChanges() throws -> [PendingChange] {
+    /// The changes the server doesn't have, oldest first, at most `limit` of them.
+    func pendingChanges(limit: Int = .max) throws -> [PendingChange] {
         try locked {
             try db.run("""
                 SELECT record_table, record_id, kind, version FROM "_records_meta"
-                WHERE kind IS NOT NULL AND version > acked ORDER BY seq
-                """).compactMap { row in
+                WHERE kind IS NOT NULL AND version > acked ORDER BY seq LIMIT ?
+                """, [.integer(Int64(min(limit, Int(Int64.max))))]).compactMap { row in
                 guard case .text(let table) = row["record_table"], case .text(let kind) = row["kind"],
                       let kind = RecordChange.Kind(rawValue: kind) else { return nil }
                 return PendingChange(
@@ -555,6 +555,11 @@ extension RecordStore {
         let pending = entry.map { $0.version > Int(sync?["acked"]?.integerValue ?? 0) } ?? false
         // A delete has no properties to merge, so it settles by the policy for clashes.
         let deletePolicy = policy.clashPolicy
+
+        // The copy this device last stored, such as its own upload coming back, has nothing new.
+        if !pending, record.fields != nil, let tag = record.tag, case .blob(let stored)? = sync?["tag"], stored == tag {
+            return
+        }
 
         guard let values = record.fields else {
             // A server delete beats a local edit, unless local changes always win.
