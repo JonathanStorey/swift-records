@@ -472,13 +472,13 @@ no sync metadata, so the result is a new record with no change tag. It maps fiel
 
 ```swift
 let record = try CKRecordEncoder().encode(recipe)                     // CloudKit's default zone
-let other = try CKRecordEncoder(zoneID: recipesZone).encode(recipe)
+let other = try CKRecordEncoder(zone: "recipes").encode(recipe)        // the CloudKit zone "recipes"
 ```
 
 A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
 reference is whatever the struct holds, which saving it through its parent sets. An asset still in memory
 is written to a temporary file for its `CKAsset`. It throws `RecordsError.invalidValue` when a property
-won't encode.
+won't encode, and `RecordsError.unsyncedZone` for `.inMemory` or `.localOnly`, which never sync.
 
 ### Syncing through iCloud files
 

@@ -119,7 +119,8 @@ extension CloudRecord {
 /// row and no sync metadata, so the result is a new record with no change tag.
 ///
 /// ```swift
-/// let ckRecord = try CKRecordEncoder().encode(recipe)
+/// let ckRecord = try CKRecordEncoder().encode(recipe)                   // CloudKit's default zone
+/// let pantryRecord = try CKRecordEncoder(zone: "pantry").encode(item)  // the CloudKit zone "pantry"
 /// ```
 ///
 /// Fields map as they do when the container syncs. Every stored property is a field of the same name. A
@@ -128,16 +129,19 @@ extension CloudRecord {
 /// with that action. Lists of strings, numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any
 /// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamp(.synced)` aren't stored.
 public struct CKRecordEncoder {
-    /// The zone new records go in. CloudKit's default zone unless set.
-    public var zoneID: CKRecordZone.ID
+    /// The zone records go in. `.default` is CloudKit's default zone, and any other zone is the CloudKit
+    /// zone of the same name.
+    public var zone: Zone
 
-    public init(zoneID: CKRecordZone.ID = CKRecordZone.default().zoneID) {
-        self.zoneID = zoneID
+    public init(zone: Zone = .default) {
+        self.zone = zone
     }
 
-    /// Throws `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)`
-    /// that throws.
+    /// Throws `RecordsError.unsyncedZone` when `zone` is `.inMemory` or `.localOnly`, which never sync, and
+    /// `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)` that throws.
     public func encode<R: Record>(_ record: R) throws -> CKRecord {
+        guard zone.canSync else { throw RecordsError.unsyncedZone(zone) }
+        let zoneID = zone == .default ? CKRecordZone.default().zoneID : CKRecordZone.ID(zoneName: zone.name, ownerName: CKCurrentUserDefaultName)
         let cloud = try RecordStore.cloudRecord(of: record)
         let ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
         cloud.fill(ckRecord)

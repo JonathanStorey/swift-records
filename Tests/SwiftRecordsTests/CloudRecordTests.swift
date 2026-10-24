@@ -182,9 +182,9 @@ import CloudKit
     @Test func structsEncodeWithoutAContainer() throws {
         var recipe = SyncRecipe(title: "Soup", servings: 4, tags: ["winter"], steps: [SyncStep(text: "Chop")])
         recipe.photo = Data([1, 2, 3])
-        let custom = CKRecordZone.ID(zoneName: "Recipes", ownerName: CKCurrentUserDefaultName)
+        let custom = CKRecordZone.ID(zoneName: "recipes", ownerName: CKCurrentUserDefaultName)
 
-        let record = try CKRecordEncoder(zoneID: custom).encode(recipe)
+        let record = try CKRecordEncoder(zone: "recipes").encode(recipe)
         #expect(record.recordID == CKRecord.ID(recordName: recipe.id.uuidString, zoneID: custom))
         #expect(record.recordType == "SyncRecipe")
         #expect(record.recordChangeTag == nil)
@@ -203,6 +203,12 @@ import CloudKit
         #expect(reference.recordID.recordName == recipe.id.uuidString)
         #expect(reference.recordID.zoneID == CKRecordZone.default().zoneID)
         #expect(reference.action == .deleteSelf)
+    }
+
+    @Test func zonesThatNeverSyncThrow() {
+        for zone in [Zone.inMemory, .localOnly] {
+            #expect(throws: RecordsError.unsyncedZone(zone)) { try CKRecordEncoder(zone: zone).encode(SyncRecipe(title: "Soup")) }
+        }
     }
 }
 #endif

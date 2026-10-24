@@ -13,6 +13,8 @@ public enum RecordsError: Error, Hashable, Sendable {
     case unknownInverse(String)
     /// A zone name, once lowercased, isn't 1 to 64 letters, digits, `-` or `_` starting with a letter.
     case invalidZoneName(String)
+    /// A zone that never syncs, `.inMemory` or `.localOnly`, was given where a sync server's zone is needed.
+    case unsyncedZone(Zone)
     /// A registered record type is set up in a way that would lose or mix up data, such as two types
     /// stored under one name. `reason` says what to fix.
     case invalidSchema(type: String, reason: String)
