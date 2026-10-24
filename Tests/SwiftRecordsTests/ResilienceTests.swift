@@ -29,7 +29,7 @@ import Testing
 
         // Once the other write ends, the retry a second later saves the change.
         try other.execute("COMMIT")
-        for _ in 0..<100 where context.unsavedChanges > 0 {
+        for _ in 0..<100 where context.unsavedChanges > 0 || context.lastSaveError != nil {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(context.lastSaveError == nil)
