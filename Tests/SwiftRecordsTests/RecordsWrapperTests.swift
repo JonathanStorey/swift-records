@@ -15,6 +15,10 @@ private struct WrapperUses {
     @Records("pantry") var pantry: [Person]
     @Records(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20)) var firstOpen: [ToDo]
     @Records("pantry", RecordDescriptor<Person>(fetchLimit: 5)) var someone: [Person]
+    @Records(sort: \ToDo.title) var byTitle: [ToDo]
+    @Records(sort: \ToDo.due, order: .reverse) var byDue: [ToDo]
+    @Records(filter: #Predicate<ToDo> { !$0.done }, sort: [SortDescriptor(\ToDo.priority, order: .reverse)]) var urgent: [ToDo]
+    @Records("pantry", sort: [SortDescriptor(\Person.name)]) var people: [Person]
 }
 
 /// A bare `@Records` stays out of the memberwise initializer, as `@Query` does.
@@ -62,6 +66,26 @@ private func makeLists() -> [RecipeList] {
         _ = query.write(context, .default, nil, todo, ObjectIdentifier(container))
         try context.save()
         #expect(try query.fetch(container.defaultStorage) == nil)
+    }
+
+    @Test func sortedListsKeepTheirOrderThroughEdits() throws {
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        try container.save([ToDo(title: "Low", priority: 1), ToDo(title: "High", priority: 9)])
+        let query = Records<[ToDo]>.Query.list(RecordDescriptor(sortBy: [SortDescriptor(\ToDo.priority, order: .reverse)]))
+        let stored = try query.fetch(container.defaultStorage)
+        #expect(stored.map(\.title) == ["High", "Low"])
+
+        // Raising a priority through the binding moves the row up, and a new row lands in its place.
+        var edited = stored
+        edited[1].priority = 10
+        edited.append(ToDo(title: "Middle", priority: 5))
+        let shown = query.write(context, .default, edited, stored, ObjectIdentifier(container))
+        #expect(shown.map(\.title) == ["Low", "High", "Middle"])
+        #expect(query.overlay(context, .default, stored).map(\.title) == ["Low", "High", "Middle"])
+
+        let other = Records<[ToDo]>.Query.list(RecordDescriptor(sortBy: [SortDescriptor(\ToDo.priority)]))
+        #expect(query.key != other.key)
     }
 
     @Test func descriptorPagesHoldAtMostTheirLimit() throws {

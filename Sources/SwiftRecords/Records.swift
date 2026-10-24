@@ -14,8 +14,15 @@ import SwiftUI
 /// ```
 ///
 /// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through the
-/// container's `mainContext`. Records are listed by ID and the array's order isn't stored, so to show
-/// them in another order, sort a copy for display.
+/// container's `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
+///
+/// ```swift
+/// @Records(sort: \.servings, order: .reverse) var recipes: [Recipe]
+/// @Records(filter: #Predicate<Recipe> { $0.servings > 2 }, sort: [SortDescriptor(\.title)]) var large: [Recipe]
+/// ```
+///
+/// The array's order isn't stored. An edit through the binding moves the record to where it sorts, and
+/// moving rows changes nothing.
 ///
 /// It can also load records by ID, such as an inverse's owners or one record a view was handed:
 ///
@@ -50,7 +57,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
         /// Writes a binding's new value to the context and returns what the view shows, which for a list is
-        /// the records sorted by ID, since the order isn't stored.
+        /// the records in the query's order, since the array's order isn't stored.
         let write: @MainActor (RecordContext, _ zone: Zone, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Value
         /// Lays the context's unsaved changes over fetched values, so views show them before they commit.
         let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: Value) -> Value
@@ -76,9 +83,28 @@ public struct Records<Value: Sendable>: DynamicProperty {
         self.animation = animation
     }
 
-    /// Records from the context's current zone, sorted by ID. With an animation, the view animates as records arrive, change and leave.
-    public init<R: Record>(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .following, query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
+    /// Records from the context's current zone, in the descriptors' order and then by ID. With an animation,
+    /// the view animates as records arrive, change and leave.
+    public init<R: Record>(
+        filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [], animation: Animation? = nil
+    ) where Value == [R] {
+        self.init(zone: .following, query: .list(RecordDescriptor(predicate: predicate, sortBy: sort)), animation: animation)
+    }
+
+    /// Records from the context's current zone sorted by one property, as `@Query(sort: \.title)`.
+    public init<R: Record, Property: Comparable>(
+        filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property> & Sendable, order: SortOrder = .forward,
+        animation: Animation? = nil
+    ) where Value == [R] {
+        self.init(filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
+    }
+
+    /// Records from the context's current zone sorted by one optional property, with `nil` first in forward order.
+    public init<R: Record, Property: Comparable>(
+        filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property?> & Sendable, order: SortOrder = .forward,
+        animation: Animation? = nil
+    ) where Value == [R] {
+        self.init(filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
     }
 
     /// The records a descriptor matches, as `@Query` takes a `FetchDescriptor`. With a `fetchLimit`, the
@@ -99,8 +125,10 @@ public struct Records<Value: Sendable>: DynamicProperty {
     }
 
     /// Records from one zone whatever the context's is, such as `@Records("pantry")`. Pass `.default` for the default zone.
-    public init<R: Record>(_ zone: Zone, filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .fixed(zone), query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
+    public init<R: Record>(
+        _ zone: Zone, filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [], animation: Animation? = nil
+    ) where Value == [R] {
+        self.init(zone: .fixed(zone), query: .list(RecordDescriptor(predicate: predicate, sortBy: sort)), animation: animation)
     }
 
     /// The records with these IDs, sorted by ID, such as an inverse's owners:
@@ -238,22 +266,25 @@ extension Records.Query {
     static func list<R: Record>(_ descriptor: RecordDescriptor<R>) -> Self where Value == [R] {
         let predicate = descriptor.predicate
         let limit = descriptor.fetchLimit
+        let order = RecordOrder(descriptor.sortBy)
         var refilter: (@MainActor ([R]) -> [R])?
         if let predicate {
             refilter = { records in (try? records.filter { try predicate.evaluate($0) }) ?? records }
         }
         return Self(
-            // A new filter or page fetches again.
+            // A new filter, sort or page fetches again.
             key: AnyHashable([
-                predicate.map(PredicateFingerprint.of), descriptor.fetchLimit.map(AnyHashable.init),
+                predicate.map(PredicateFingerprint.of), AnyHashable(descriptor.sortBy), descriptor.fetchLimit.map(AnyHashable.init),
                 AnyHashable(descriptor.fetchOffset),
             ]),
             empty: [],
             fetch: { try $0.fetch(descriptor) },
             refilter: refilter,
-            write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
+            write: { context, zone, new, previous, source in
+                context.apply(new, replacing: previous, in: zone, source: source, order: order)
+            },
             overlay: { context, zone, stored in
-                let records = context.overlay(stored, in: zone) { (try? predicate?.evaluate($0)) ?? true }
+                let records = context.overlay(stored, in: zone, order: order) { (try? predicate?.evaluate($0)) ?? true }
                 // A page still holds at most its limit with unsaved records added.
                 return limit.map { Array(records.prefix($0)) } ?? records
             }

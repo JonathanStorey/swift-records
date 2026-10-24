@@ -582,7 +582,7 @@ final class RecordStore: @unchecked Sendable {
             if let (clause, bindings) = try whereClause(predicate) {
                 ids = try db.run("SELECT id FROM \(quoted(R.table))\(clause)", bindings).map { $0["id"]! }
             } else {
-                ids = try fetchRecords(R.self, where: predicate, page: nil).map { try $0.sqlID }
+                ids = try fetchRecords(R.self, where: predicate, order: RecordOrder([]), page: nil).map { try $0.sqlID }
             }
             for id in ids {
                 try deleteRow(R.table, id: id)
@@ -697,11 +697,11 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    /// Fetches records matching a predicate, sorted by ID.
+    /// Fetches records matching a predicate, in the descriptors' order and then by ID.
     ///
     /// Simple predicates on a record's own properties run as SQL. Anything else is evaluated in memory.
-    func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
-        try locked { try fetchRecords(R.self, where: predicate, page: nil) }
+    func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil, sortBy: [SortDescriptor<R>] = []) throws -> [R] {
+        try locked { try fetchRecords(R.self, where: predicate, order: RecordOrder(sortBy), page: nil) }
     }
 
     /// Fetches one page of records: at most `limit` of them, starting `offset` records into the results.
@@ -711,12 +711,13 @@ final class RecordStore: @unchecked Sendable {
     func fetch<R: Record>(
         _ type: R.Type = R.self,
         where predicate: Predicate<R>? = nil,
+        sortBy: [SortDescriptor<R>] = [],
         limit: Int,
         offset: Int = 0
     ) throws -> RecordSlice<R> {
         precondition(limit >= 0 && offset >= 0, "limit and offset must not be negative")
         return try locked {
-            RecordSlice(try fetchRecords(R.self, where: predicate, page: (limit, offset)), startIndex: offset)
+            RecordSlice(try fetchRecords(R.self, where: predicate, order: RecordOrder(sortBy), page: (limit, offset)), startIndex: offset)
         }
     }
 
@@ -725,7 +726,7 @@ final class RecordStore: @unchecked Sendable {
             guard tableExists(R.table) else { return 0 }
             try prepare(R.self)
             guard let (clause, bindings) = try whereClause(predicate) else {
-                return try fetchRecords(R.self, where: predicate, page: nil).count
+                return try fetchRecords(R.self, where: predicate, order: RecordOrder([]), page: nil).count
             }
             let rows = try db.run("SELECT COUNT(*) AS n FROM \(quoted(R.table))\(clause)", bindings)
             guard case .integer(let n) = rows.first?["n"] else { return 0 }
@@ -733,16 +734,19 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    /// The IDs of the records that match, sorted, without decoding the records when the
-    /// predicate translates to SQL.
-    func ids<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [UUID] {
+    /// The IDs of the records that match, in order, without decoding the records when the predicate and
+    /// sort translate to SQL.
+    func ids<R: Record>(
+        _ type: R.Type, where predicate: Predicate<R>?, sortBy: [SortDescriptor<R>] = [], page: (limit: Int, offset: Int)?
+    ) throws -> [UUID] {
         try locked {
             guard tableExists(R.table) else { return [] }
             try prepare(R.self)
-            guard let (clause, bindings) = try whereClause(predicate) else {
-                return try fetchRecords(R.self, where: predicate, page: page).map(\.id)
+            let order = RecordOrder(sortBy)
+            guard let (clause, bindings) = try whereClause(predicate), let orderBy = try orderClause(order) else {
+                return try fetchRecords(R.self, where: predicate, order: order, page: page).map(\.id)
             }
-            var sql = "SELECT id FROM \(quoted(R.table))\(clause) ORDER BY id"
+            var sql = "SELECT id FROM \(quoted(R.table))\(clause)\(orderBy)"
             var values = bindings
             if let page {
                 sql += " LIMIT ? OFFSET ?"
@@ -774,19 +778,31 @@ final class RecordStore: @unchecked Sendable {
         return (" WHERE " + clause.sql, clause.bindings)
     }
 
-    /// Loads matching records sorted by ID, optionally one page of them.
+    /// The SQL `ORDER BY` clause for an order, or nil when it sorts in Swift.
+    private func orderClause<R: Record>(_ order: RecordOrder<R>) throws -> String? {
+        guard let columns = order.columns else { return nil }
+        try ensureColumns(columns.map(\.column), in: R.table)
+        return " ORDER BY " + (columns.map { quoted($0.column) + ($0.descending ? " DESC" : "") } + ["id"]).joined(separator: ", ")
+    }
+
+    /// Loads matching records in order, optionally one page of them.
     ///
     /// When only some of a predicate's `&&` terms translate, SQL narrows the rows by those and the whole
-    /// predicate checks the rest in memory, so a fetch never reads more of the table than it must.
-    private func fetchRecords<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [R] {
+    /// predicate checks the rest in memory, so a fetch never reads more of the table than it must. An
+    /// order SQL can't run sorts in Swift, after every match is loaded.
+    private func fetchRecords<R: Record>(
+        _ type: R.Type, where predicate: Predicate<R>?, order: RecordOrder<R>, page: (limit: Int, offset: Int)?
+    ) throws -> [R] {
         guard tableExists(R.table) else { return [] }
         try prepare(R.self)
         var translated = try whereClause(predicate)
-        let exact = translated != nil
-        if !exact, let predicate, let clause = PredicateTranslator.translateTerms(predicate) {
+        let exactFilter = translated != nil
+        if !exactFilter, let predicate, let clause = PredicateTranslator.translateTerms(predicate) {
             translated = try whereClause(clause, for: R.self)
         }
-        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY id"
+        let orderBy = try orderClause(order)
+        let exact = exactFilter && orderBy != nil
+        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + (orderBy ?? " ORDER BY id")
         var bindings = translated?.1 ?? []
         if let page, exact {
             sql += " LIMIT ? OFFSET ?"
@@ -796,8 +812,13 @@ final class RecordStore: @unchecked Sendable {
         var records = try prefetching(R.table, rows: rows) {
             try decodeRows(R.self, rows)
         }
-        if !exact, let predicate {
+        if !exactFilter, let predicate {
             records = try records.filter { try predicate.evaluate($0) }
+        }
+        if orderBy == nil {
+            records = order.sorted(records)
+        }
+        if !exact {
             if let page {
                 let start = min(page.offset, records.count)
                 records = Array(records[start..<min(start + page.limit, records.count)])

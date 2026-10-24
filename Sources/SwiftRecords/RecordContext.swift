@@ -514,8 +514,8 @@ public final class RecordContext {
 
     // MARK: Fetching
 
-    /// Saves pending changes, then fetches the records the descriptor matches, sorted by ID, so
-    /// results always include your own edits.
+    /// Saves pending changes, then fetches the records the descriptor matches in its order, so results
+    /// always include your own edits.
     public func fetch<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [R] {
         try save()
         return try storage(for: zone).fetch(descriptor)
@@ -533,8 +533,8 @@ public final class RecordContext {
         return try storage(for: zone).fetchCount(descriptor)
     }
 
-    /// Saves pending changes, then returns the IDs of the records the descriptor matches, sorted, without
-    /// loading the records when the predicate translates to SQL.
+    /// Saves pending changes, then returns the IDs of the records the descriptor matches in its order,
+    /// without loading the records when the predicate and sort translate to SQL.
     public func fetchIdentifiers<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [UUID] {
         try save()
         return try storage(for: zone).fetchIdentifiers(descriptor)
@@ -600,9 +600,9 @@ public final class RecordContext {
     }
 
     /// Records as fetched, with this context's unsaved saves and deletes of the type laid over them, so views
-    /// show them before they commit. A saved record replaces its stored copy, or takes its place by ID,
-    /// and leaves if `includes` rejects it. A delete by predicate removes the records it matches.
-    func overlay<R: Record>(_ stored: [R], in zone: Zone, includes: (R) -> Bool) -> [R] {
+    /// show them before they commit. A saved record takes its place in `order`, and leaves if `includes`
+    /// rejects it. A delete by predicate removes the records it matches.
+    func overlay<R: Record>(_ stored: [R], in zone: Zone, order: RecordOrder<R> = RecordOrder([]), includes: (R) -> Bool) -> [R] {
         let changes = unsaved.filter { $0.change.zone == zone && $0.change.table == R.table }
         guard !changes.isEmpty else { return stored }
         var records = stored
@@ -610,13 +610,12 @@ public final class RecordContext {
             switch change.latest {
             case .saved(let any)?:
                 guard let record = any as? R else { continue }
-                let position = records.firstIndex { $0.id == record.id }
-                if !includes(record) {
-                    if let position { records.remove(at: position) }
-                } else if let position {
-                    records[position] = record
-                } else {
-                    records.insert(record, at: records.firstIndex { record.id.precedes($0.id) } ?? records.endIndex)
+                // An edit can change where the record sorts, so it leaves its old place either way.
+                if let position = records.firstIndex(where: { $0.id == record.id }) {
+                    records.remove(at: position)
+                }
+                if includes(record) {
+                    records.insert(record, at: records.firstIndex { order.areInOrder(record, $0) } ?? records.endIndex)
                 }
             case .deleted?:
                 // A record change's key ends with the record's ID.
@@ -645,11 +644,13 @@ public final class RecordContext {
     // MARK: Arrays
 
     /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the ones
-    /// that changed are updated. The array's order isn't stored, so it returns the records sorted by ID, as
+    /// that changed are updated. The array's order isn't stored, so it returns the records in `order`, as
     /// a fetch lists them. This is what the `@Records` binding calls when SwiftUI writes to it.
     /// Without a zone it applies to the context's current one.
     @discardableResult
-    func apply<R: Record>(_ records: [R], replacing previous: [R], in zone: Zone? = nil, source: ObjectIdentifier? = nil) -> [R] {
+    func apply<R: Record>(
+        _ records: [R], replacing previous: [R], in zone: Zone? = nil, source: ObjectIdentifier? = nil, order: RecordOrder<R> = RecordOrder([])
+    ) -> [R] {
         let zone = zone ?? self.zone
         let kept = Set(records.map(\.id))
         for record in previous where !kept.contains(record.id) {
@@ -660,7 +661,7 @@ public final class RecordContext {
         for record in records where !(before[record.id].map { StructuralEquality.equal($0, record) } ?? false) {
             enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
         }
-        return records.sorted { $0.id.precedes($1.id) }
+        return order.sorted(records)
     }
 
     private static func key<R: Record>(_ record: R, in zone: Zone) -> String {

@@ -58,9 +58,10 @@ record with any unsaved change and never saves, so a view can call it while it u
 
 Changes live in memory until `save()` commits them to disk, which autosave does once edits pause for
 `autosaveDelay`. Until then `rollback()` discards them, and `unsavedChanges` counts them. Every fetch
-saves first, so results include your own edits. Records come back sorted by ID, which is stable but
-carries no meaning, so sort a copy to show them another way. A `@Timestamp(.created)` property gives
-you creation order, and a property of your own can hold a manual order. `transaction { }` runs a block
+saves first, so results include your own edits. Records come back in a descriptor's `sortBy` order, and
+by ID where that leaves a tie or when there's none. ID order is stable but carries no meaning. A
+`@Timestamp(.created)` property gives you creation order, and a property of your own can hold a manual
+order. `transaction { }` runs a block
 and saves its changes in one commit, or rolls back just that block's changes if it throws.
 
 `save()` also comes in an `async` version, which commits off the main actor and suspends instead of
@@ -261,6 +262,19 @@ let bytes = photo?.image         // read from disk on first access, then cached
 - To copy a large file in without loading it, assign `photo.$image = Asset(contentsOf: url)`.
 - Outside a container, such as with `JSONEncoder`, the property encodes as plain `Data?`.
 
+## Sorting
+
+`RecordDescriptor` and `@Records` take Foundation's `SortDescriptor`, as `FetchDescriptor` and `@Query` do:
+
+```swift
+let latest = try context.fetch(RecordDescriptor<ToDo>(sortBy: [SortDescriptor(\.due, order: .reverse)]))
+```
+
+Sorting by a number or a date, optional or not, runs as SQL `ORDER BY`, so a sorted page reads only its
+own rows. `nil` comes first in forward order, as `SortDescriptor` puts it. Any other sort runs in Swift
+after the matches load. That includes strings, because `SortDescriptor` compares them the localized way
+by default, which SQLite can't match. Records that tie on every descriptor come by ID.
+
 ## Paging and counting
 
 ```swift
@@ -270,7 +284,7 @@ try context.fetchIdentifiers(RecordDescriptor<ToDo>())   // IDs only, without lo
 ```
 
 `RecordDescriptor` mirrors SwiftData's `FetchDescriptor`. A page is read straight from SQL when the
-predicate translates.
+predicate and sort translate.
 
 ## Timestamps
 
@@ -515,7 +529,14 @@ As with SwiftData, `.recordContainer(_:)` puts the container in the environment,
 `@Environment(\.recordContext)` reads its main context, the one `@Records` writes through. A bare
 `@Records var todos: [ToDo]` takes no arguments, so `ContentView()` needs none either.
 
-`@Records(filter:animation:)` animates the list's changes, including ones from a background import.
+Like `@Query`, `@Records` sorts by one property or by a list of descriptors:
+
+```swift
+@Records(sort: \.title) var todos: [ToDo]
+@Records(filter: #Predicate<ToDo> { !$0.done }, sort: [SortDescriptor(\.priority, order: .reverse)]) var open: [ToDo]
+```
+
+`@Records(filter:sort:animation:)` animates the list's changes, including ones from a background import.
 
 `@Records` also loads records by ID, and keeps them current the same way:
 
@@ -542,10 +563,10 @@ Unsaved new records still count toward it, so the view never shows more than the
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes
-made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new record takes its
-place by ID, a filtered list drops records its filter rejects, and a rollback takes them back out. Deletes
-by predicate hide their matches at once too. The array's order isn't stored, so a list stays sorted by ID
-and a move through the binding changes nothing. Sort a copy to display records another way.
+made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new or edited record
+takes its place in the list's sort, a filtered list drops records its filter rejects, and a rollback takes
+them back out. Deletes by predicate hide their matches at once too. The array's order isn't stored, so a
+move through the binding changes nothing.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
@@ -565,7 +586,7 @@ swift run -c release Benchmarks --compare before.json                 # each tim
 ```
 
 It covers a background import, saving on the main context, fetching every record with its nested
-children, fetching by ID, indexed and unindexed predicates, counting, paging, editing, reordering
+children, fetching by ID, indexed and unindexed predicates, counting, paging, sorting, editing, reordering
 children, cascading deletes, uploading and downloading a whole store, syncing 100 edits into a large
 store, and resyncing everything with a new server. Each step checks its result, so a run also fails
 when an operation goes wrong at scale. `Benchmarks/linux-baseline.json` is a run in the `swift:6.1-noble` image that CI uses, on a cloud VM.

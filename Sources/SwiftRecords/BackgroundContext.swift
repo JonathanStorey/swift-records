@@ -44,7 +44,7 @@ public struct BackgroundContext {
 
     // MARK: Fetching
 
-    /// Fetches the records the descriptor matches, sorted by ID.
+    /// Fetches the records the descriptor matches, in its order.
     public func fetch<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [R] {
         try storage.fetch(descriptor)
     }
