@@ -184,7 +184,7 @@ extension RecordStore {
         func invalid(_ reason: String) -> RecordsError {
             .invalidSchema(type: R.table, reason: reason)
         }
-        let names = Set(R.cachedSchema.fields.map(\.name))
+        let names = Set(R.cachedSchema.fields.map { $0.name })
         var oldNames: [String: String] = [:]
         for field in R.cachedSchema.fields {
             if let target = relationTarget(field), !declaresRelationship(target, field.keyPath) {
