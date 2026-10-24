@@ -120,14 +120,16 @@ extension ZoneStorage {
         try store.fetch(type, ids: ids)
     }
 
-    package func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
-        try store.fetch(type, where: predicate)
+    package func fetch<R: Record>(
+        _ type: R.Type = R.self, where predicate: Predicate<R>? = nil, sortBy: [SortDescriptor<R>] = []
+    ) throws -> [R] {
+        try store.fetch(type, where: predicate, sortBy: sortBy)
     }
 
     package func fetch<R: Record>(
-        _ type: R.Type = R.self, where predicate: Predicate<R>? = nil, limit: Int, offset: Int = 0
+        _ type: R.Type = R.self, where predicate: Predicate<R>? = nil, sortBy: [SortDescriptor<R>] = [], limit: Int, offset: Int = 0
     ) throws -> RecordSlice<R> {
-        try store.fetch(type, where: predicate, limit: limit, offset: offset)
+        try store.fetch(type, where: predicate, sortBy: sortBy, limit: limit, offset: offset)
     }
 
     package func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
