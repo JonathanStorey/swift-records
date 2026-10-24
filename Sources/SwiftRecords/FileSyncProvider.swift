@@ -430,49 +430,49 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         Date(timeIntervalSince1970: Double(milliseconds) / 1000)
     }
 
-    // A record file holds the change's own JSON under "record", so it reads like the record.
+    // A record file holds the change's fields under "record", so it reads like the record.
     private static func read(_ file: URL) throws -> RecordChangeData? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
         resolveConflicts(at: file)
         return try decode(try coordinatedData(at: file))
     }
 
-    static func decode(_ data: Data) throws -> RecordChangeData {
-        let members = try WireJSON.members(of: data)
+    /// A record file: the change, with dates as milliseconds since 1970.
+    private struct RecordFile: Codable {
+        var id: UUID
+        var zone: Zone
+        var type: String
+        var owner: String?
+        var synced: Int64?
+        var record: [String: RecordValue]?
+    }
+
+    private static let fileEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return encoder
+    }()
+
+    private static let fileDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        func value<T: Decodable>(_ key: String, _ type: T.Type) throws -> T? {
-            try members[key].map { try decoder.decode(T.self, from: $0) }
-        }
-        guard let id = try value("id", UUID.self), let zone = try value("zone", Zone.self),
-              let type = try value("type", String.self) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let owner = try value("owner", String.self)
-        let synced = try value("synced", Int64.self).map { date(milliseconds: $0) }
-        if let json = members["record"] {
-            return .save(id: id, zone: zone, type: type, json: json, owner: owner, synced: synced)
-        }
-        return .delete(id: id, zone: zone, type: type, owner: owner, synced: synced)
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return decoder
+    }()
+
+    static func decode(_ data: Data) throws -> RecordChangeData {
+        let file = try fileDecoder.decode(RecordFile.self, from: data)
+        return RecordChangeData(
+            id: file.id, zone: file.zone, type: file.type, fields: file.record,
+            metadata: SyncMetadata(synced: file.synced.map { date(milliseconds: $0) }, owner: file.owner)
+        )
     }
 
     private static func write(_ change: RecordChangeData, to file: URL) throws {
-        let encoder = JSONEncoder()
-        var members: [String: Data] = [
-            "id": try encoder.encode(change.id),
-            "zone": try encoder.encode(change.zone),
-            "type": try encoder.encode(change.type),
-        ]
-        if let owner = change.owner {
-            members["owner"] = try encoder.encode(owner)
-        }
-        // Milliseconds since 1970, as dates are in the record.
-        if let synced = change.synced {
-            members["synced"] = try encoder.encode(milliseconds(synced))
-        }
-        if case .save(_, _, _, let json, _, _) = change {
-            members["record"] = json
-        }
-        let data = try WireJSON.object(members)
+        let data = try fileEncoder.encode(RecordFile(
+            id: change.id, zone: change.zone, type: change.type, owner: change.metadata.owner,
+            synced: change.synced.map(milliseconds), record: change.fields
+        ))
         try mapping {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try coordinate(writing: file) { url in

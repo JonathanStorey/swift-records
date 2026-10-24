@@ -52,68 +52,134 @@ extension SyncProvider {
     public var identifier: String { String(reflecting: Self.self) }
 }
 
-/// One record as it crosses to or from a server: a whole record saved, or a deletion.
+/// One record as it crosses to or from a server, shaped like a `CKRecord`: its values in `fields`, and the
+/// server's bookkeeping beside them in `metadata`. A deletion has no fields.
 ///
-/// `json` holds every stored property by name, relationships as arrays of IDs and assets as their IDs.
-/// Treat it as opaque: store it and hand it back. Fields from newer app versions are kept and sent back untouched.
-public enum RecordChangeData: Sendable, Hashable, Codable {
-    /// A record's latest values. `type` is the stored type name, such as `"Recipe"`. `owner` is the user who
-    /// created it, set only in public zones. `synced` is when the server accepted this copy, or `nil` for a
-    /// record the server has never accepted.
-    case save(id: UUID, zone: Zone, type: String, json: Data, owner: String?, synced: Date?)
-    /// A deletion. `synced` is the server's date for the copy that was deleted.
-    case delete(id: UUID, zone: Zone, type: String, owner: String?, synced: Date?)
+/// `fields` holds every stored property by name, as CloudKit stores it: a relationship is its records' IDs
+/// in order as `.strings`, a child's `@Reference(to:)` is a `.reference`, and an asset is its ID. Treat the
+/// fields as opaque where you can: store them and hand them back. Fields from newer app versions are kept
+/// and sent back untouched.
+public struct RecordChangeData: Sendable, Hashable, Codable {
+    public var id: UUID
+    public var zone: Zone
+    /// The stored type name, such as `"Recipe"`.
+    public var type: String
+    /// The record's values, or `nil` for a deletion.
+    public var fields: [String: RecordValue]?
+    public var metadata: SyncMetadata
 
-    public var id: UUID {
-        switch self {
-        case .save(let id, _, _, _, _, _), .delete(let id, _, _, _, _): id
-        }
+    public init(id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, metadata: SyncMetadata = SyncMetadata()) {
+        self.id = id
+        self.zone = zone
+        self.type = type
+        self.fields = fields
+        self.metadata = metadata
     }
 
-    public var zone: Zone {
-        switch self {
-        case .save(_, let zone, _, _, _, _), .delete(_, let zone, _, _, _): zone
-        }
-    }
+    public var isDeletion: Bool { fields == nil }
 
-    public var type: String {
-        switch self {
-        case .save(_, _, let type, _, _, _), .delete(_, _, let type, _, _): type
-        }
-    }
-
-    public var owner: String? {
-        switch self {
-        case .save(_, _, _, _, let owner, _), .delete(_, _, _, let owner, _): owner
-        }
-    }
-
-    public var synced: Date? {
-        switch self {
-        case .save(_, _, _, _, _, let synced), .delete(_, _, _, _, let synced): synced
-        }
-    }
+    /// When the server accepted this copy. The same as `metadata.synced`.
+    public var synced: Date? { metadata.synced }
 
     /// The same change stamped with the server's date, as a server stores it.
     public func syncing(at date: Date) -> RecordChangeData {
-        switch self {
-        case .save(let id, let zone, let type, let json, let owner, _):
-            .save(id: id, zone: zone, type: type, json: json, owner: owner, synced: date)
-        case .delete(let id, let zone, let type, let owner, _):
-            .delete(id: id, zone: zone, type: type, owner: owner, synced: date)
+        var change = self
+        change.metadata.synced = date
+        return change
+    }
+}
+
+/// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
+public enum RecordValue: Sendable, Hashable {
+    case string(String)
+    /// Any integer, and a `Bool` as 0 or 1.
+    case int(Int64)
+    case double(Double)
+    case date(Date)
+    /// `Data`, or the JSON of any other `Codable` value.
+    case bytes(Data)
+    case strings([String])
+    case ints([Int64])
+    case doubles([Double])
+    case dates([Date])
+    /// A child's reference to its parent, as a `CKRecord.Reference`.
+    case reference(UUID, action: ReferenceAction)
+    /// An asset, by its ID. The file crosses separately, through `uploadAssets(_:)` and `downloadAsset(id:zone:into:)`.
+    case asset(String)
+}
+
+extension RecordValue: Codable {
+    // A single key names the kind, so a value written to a file reads plainly: {"string":"Soup"}.
+    private enum CodingKeys: String, CodingKey {
+        case string, int, double, date, bytes, strings, ints, doubles, dates, reference, action, asset
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard let key = container.allKeys.first(where: { $0 != .action }) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "No value"))
+        }
+        switch key {
+        case .string: self = .string(try container.decode(String.self, forKey: key))
+        case .int: self = .int(try container.decode(Int64.self, forKey: key))
+        case .double: self = .double(try container.decode(Double.self, forKey: key))
+        case .date: self = .date(try container.decode(Date.self, forKey: key))
+        case .bytes: self = .bytes(try container.decode(Data.self, forKey: key))
+        case .strings: self = .strings(try container.decode([String].self, forKey: key))
+        case .ints: self = .ints(try container.decode([Int64].self, forKey: key))
+        case .doubles: self = .doubles(try container.decode([Double].self, forKey: key))
+        case .dates: self = .dates(try container.decode([Date].self, forKey: key))
+        case .reference:
+            let action = try container.decodeIfPresent(ReferenceAction.self, forKey: .action) ?? .none
+            self = .reference(try container.decode(UUID.self, forKey: key), action: action)
+        case .asset: self = .asset(try container.decode(String.self, forKey: key))
+        case .action: preconditionFailure("Excluded above")
         }
     }
 
-    public var isDeletion: Bool {
-        if case .delete = self { return true }
-        return false
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .string(let value): try container.encode(value, forKey: .string)
+        case .int(let value): try container.encode(value, forKey: .int)
+        case .double(let value): try container.encode(value, forKey: .double)
+        case .date(let value): try container.encode(value, forKey: .date)
+        case .bytes(let value): try container.encode(value, forKey: .bytes)
+        case .strings(let value): try container.encode(value, forKey: .strings)
+        case .ints(let value): try container.encode(value, forKey: .ints)
+        case .doubles(let value): try container.encode(value, forKey: .doubles)
+        case .dates(let value): try container.encode(value, forKey: .dates)
+        case .reference(let id, let action):
+            try container.encode(id, forKey: .reference)
+            if action != .none { try container.encode(action, forKey: .action) }
+        case .asset(let id): try container.encode(id, forKey: .asset)
+        }
+    }
+}
+
+/// What the server keeps about a record beside its values, like a `CKRecord`'s system fields.
+public struct SyncMetadata: Sendable, Hashable, Codable {
+    /// When the server accepted this copy, or `nil` for a record it has never accepted. The server stamps
+    /// each accepted change with a strictly later date.
+    public var synced: Date?
+    /// The user who created the record, set only in public zones.
+    public var owner: String?
+    /// The provider's own bookkeeping for the copy, such as a `CKRecord`'s archived system fields. The
+    /// container stores it with the record and hands it back, untouched, with the record's next upload.
+    public var systemFields: Data?
+
+    public init(synced: Date? = nil, owner: String? = nil, systemFields: Data? = nil) {
+        self.synced = synced
+        self.owner = owner
+        self.systemFields = systemFields
     }
 }
 
 /// What happened to one uploaded change.
 public enum UploadResult: Sendable, Hashable {
-    /// Accepted. The server stamped this date.
-    case synced(id: UUID, at: Date)
+    /// Accepted. The server stamped this date. `systemFields` is the provider's new bookkeeping for the
+    /// saved copy, such as a `CKRecord`'s archived system fields, which goes back with the next upload.
+    case synced(id: UUID, at: Date, systemFields: Data? = nil)
     /// The server holds a newer copy, which may be a deletion. The container merges it and uploads again.
     case conflict(RecordChangeData)
     /// Refused for good, such as a record too large or one owned by someone else.

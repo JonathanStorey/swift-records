@@ -52,31 +52,24 @@ final class TestServer: @unchecked Sendable {
             }
             var stored = change
             if publicZones.contains(change.zone) {
-                if let owner = current?.owner, owner != user {
+                if let owner = current?.metadata.owner, owner != user {
                     return .rejected(id: change.id)
                 }
                 // The server, not the device, decides who owns a new record.
-                stored = Self.owned(change, by: current?.owner ?? user)
+                stored.metadata.owner = current?.metadata.owner ?? user
             }
             sequence += 1
             let date = Self.date(sequence)
+            // Like a change tag, the server's own bookkeeping for this copy.
+            stored.metadata.systemFields = Data("copy \(sequence)".utf8)
             latest[storageKey] = (stored.syncing(at: date), sequence)
-            return .synced(id: change.id, at: date)
-        }
-    }
-
-    private static func owned(_ change: RecordChangeData, by owner: String?) -> RecordChangeData {
-        switch change {
-        case .save(let id, let zone, let type, let json, _, let synced):
-            .save(id: id, zone: zone, type: type, json: json, owner: owner, synced: synced)
-        case .delete(let id, let zone, let type, _, let synced):
-            .delete(id: id, zone: zone, type: type, owner: owner, synced: synced)
+            return .synced(id: change.id, at: date, systemFields: stored.metadata.systemFields)
         }
     }
 
     /// Stores a record as if another device had saved it.
-    func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, json: String) {
-        let change = RecordChangeData.save(id: id, zone: zone, type: type, json: Data(json.utf8), owner: nil, synced: nil)
+    func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, fields: [String: RecordValue]) {
+        let change = RecordChangeData(id: id, zone: zone, type: type, fields: fields)
         withLock {
             sequence += 1
             latest[key(zone, type, id, account: account)] = (change.syncing(at: Self.date(sequence)), sequence)
@@ -93,22 +86,25 @@ final class TestServer: @unchecked Sendable {
         }
     }
 
-    /// The stored JSON of a record the current account can see.
+    /// The stored copy of a record the current account can see.
     func record(_ type: String, _ id: UUID, zone: Zone = .default) -> RecordChangeData? {
         withLock { latest[key(zone, type, id, account: account)]?.change }
     }
 
-    /// One field of a stored record, decoded as it crosses the wire.
-    func value<T: Decodable>(_ type: String, _ id: UUID, _ field: String, as valueType: T.Type) -> T? {
-        guard case .save(_, _, _, let json, _, _)? = record(type, id),
-              let member = (try? WireJSON.members(of: json))?[field] else { return nil }
-        return try? WireJSON.decoder.decode(T.self, from: member)
+    /// One field of a stored record, as it crosses the wire.
+    func value(_ type: String, _ id: UUID, _ field: String) -> RecordValue? {
+        record(type, id)?.fields?[field]
     }
 
-    /// Whether a stored record's JSON has the field at all.
+    /// The ID of the asset file a stored record's field points to.
+    func assetID(_ type: String, _ id: UUID, _ field: String) -> String? {
+        guard case .asset(let asset)? = value(type, id, field) else { return nil }
+        return asset
+    }
+
+    /// Whether a stored record has the field at all.
     func has(_ type: String, _ id: UUID, _ field: String) -> Bool {
-        guard case .save(_, _, _, let json, _, _)? = record(type, id) else { return false }
-        return (try? WireJSON.members(of: json))?[field] != nil
+        value(type, id, field) != nil
     }
 
     /// Records stored, not counting deletions, across every account.

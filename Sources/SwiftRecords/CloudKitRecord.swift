@@ -6,31 +6,36 @@ import Foundation
 extension RecordContainer {
     /// The `CKRecord` a save becomes, or `nil` for a deletion, which you delete by `RecordContainer.recordID(for:in:)`.
     ///
-    /// Every stored property is a field of the same name. A relationship such as `var notes: [Note]` is a
-    /// list of its records' names in order, never forward references, and each note is its own `CKRecord`.
-    /// A child's `@Reference(to:action:)` is a `CKRecord.Reference` with that action. Lists of strings,
-    /// numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any other `Codable` value is its
-    /// JSON as `Data`. Inverses and `@Timestamp(.synced)` aren't stored.
+    /// Each field is copied as it is: a `RecordValue` is already what CloudKit stores. A relationship such as
+    /// `var notes: [Note]` is a list of its records' names in order, never forward references, and each note
+    /// is its own `CKRecord`. A child's `@Reference(to:action:)` is a `CKRecord.Reference` with that action,
+    /// and an asset is a `CKAsset` of its file here.
     ///
-    /// Pass the server's last copy as `base`, such as one rebuilt from its encoded system fields, so the
-    /// save carries its change tag. An asset whose file hasn't downloaded yet keeps the base's value.
-    public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID, base: CKRecord? = nil) throws -> CKRecord? {
-        guard let cloud = try cloudRecord(for: change) else { return nil }
-        let record = base ?? CKRecord(recordType: cloud.type, recordID: Self.recordID(for: change.id, in: zoneID))
-        cloud.fill(record)
+    /// When the change's metadata carries the server copy's archived system fields, the record is built on
+    /// them, so it carries the change tag and saves as an update. An asset whose file hasn't downloaded yet
+    /// is left out.
+    public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
+        guard let fields = change.fields else { return nil }
+        let store = try storage(for: change.zone).store
+        let record = try change.metadata.systemFields.map {
+            try CKRecordEncoder.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
+        } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
+        record.fill(fields) { store.assetURL(named: $0) }
         return record
     }
 
     /// The change a `CKRecord` from the server stands for, and the asset files it brought. Hand the files
     /// back from `downloadAsset(id:zone:into:)` when the container asks for them by ID.
     ///
-    /// The record's `modificationDate` is its `synced` date. In a public zone its creator is its owner.
+    /// The record's `modificationDate` is its `synced` date, and its archived system fields go in the
+    /// change's metadata, so the next upload of the record carries its change tag. In a public zone its
+    /// creator is its owner.
     public func change(from record: CKRecord, zone: Zone) throws -> (change: RecordChangeData, assets: [RecordAssetData]) {
         let store = try storage(for: zone).store
         guard let id = UUID(uuidString: record.recordID.recordName) else {
             throw RecordsError.incompatibleRecord(type: record.recordType, id: UUID())
         }
-        var fields: [String: CloudValue] = [:]
+        var fields: [String: RecordValue] = [:]
         var assets: [RecordAssetData] = []
         for key in record.allKeys() {
             guard let value = record[key] else { continue }
@@ -44,7 +49,7 @@ extension RecordContainer {
                 var name = digest.map { String(format: "%02x", $0) }.joined()
                 let fileExtension = store.assetExtension(type: record.recordType, field: key)
                 if !fileExtension.isEmpty { name += "." + fileExtension }
-                fields[key] = .asset(URL(fileURLWithPath: name))
+                fields[key] = .asset(name)
                 assets.append(RecordAssetData(id: name, zone: zone, file: file))
             } else if let number = value as? NSNumber {
                 fields[key] = CFNumberIsFloatType(number as CFNumber) ? .double(number.doubleValue) : .int(number.int64Value)
@@ -63,52 +68,61 @@ extension RecordContainer {
                     ? .doubles(numbers.map(\.doubleValue)) : .ints(numbers.map(\.int64Value))
             }
         }
-        let owner = publicZones.contains(zone) ? record.creatorUserRecordID?.recordName : nil
-        let change = try store.change(
-            from: CloudRecord(type: record.recordType, id: id, fields: fields), zone: zone, owner: owner, synced: record.modificationDate
+        let metadata = SyncMetadata(
+            synced: record.modificationDate,
+            owner: publicZones.contains(zone) ? record.creatorUserRecordID?.recordName : nil,
+            systemFields: Self.systemFields(of: record)
         )
-        return (change, assets)
+        return (RecordChangeData(id: id, zone: zone, type: record.recordType, fields: fields, metadata: metadata), assets)
     }
 
     /// The deletion a record the server reports deleted stands for, such as from
     /// `recordWithIDWasDeletedBlock`. Returns `nil` for a record name that isn't a record's ID.
     public func deletion(of recordID: CKRecord.ID, type: CKRecord.RecordType, zone: Zone, synced: Date? = nil) -> RecordChangeData? {
         guard let id = UUID(uuidString: recordID.recordName) else { return nil }
-        return .delete(id: id, zone: zone, type: type, owner: nil, synced: synced)
+        return RecordChangeData(id: id, zone: zone, type: type, fields: nil, metadata: SyncMetadata(synced: synced))
     }
 
     /// The record ID a record's `id` has in a CloudKit zone: its `uuidString` as the record name.
     public static func recordID(for id: UUID, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
         CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
     }
+
+    /// A record's system fields, archived as `encodeSystemFields(with:)` writes them.
+    static func systemFields(of record: CKRecord) -> Data {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: coder)
+        coder.finishEncoding()
+        return coder.encodedData
+    }
 }
 
-extension CloudRecord {
-    /// Writes these fields into `record` and clears the ones it no longer has. An asset whose file isn't
-    /// there, such as one still downloading, keeps the record's value.
-    func fill(_ record: CKRecord) {
-        for key in record.allKeys() where fields[key] == nil {
-            record.setObject(nil, forKey: key)
+extension CKRecord {
+    /// Writes these values and clears the fields it no longer has. `file` finds an asset's file by its ID,
+    /// and an asset whose file isn't there, such as one still downloading, keeps the record's value.
+    func fill(_ values: [String: RecordValue], file: (String) -> URL?) {
+        for key in allKeys() where values[key] == nil {
+            setObject(nil, forKey: key)
         }
-        for (key, value) in fields {
+        for (key, value) in values {
             switch value {
-            case .string(let value): record[key] = value
-            case .int(let value): record[key] = value
-            case .double(let value): record[key] = value
-            case .date(let value): record[key] = value
-            case .bytes(let value): record[key] = value
-            case .strings(let value): record[key] = value
-            case .ints(let value): record[key] = value
-            case .doubles(let value): record[key] = value
-            case .dates(let value): record[key] = value
+            case .string(let value): self[key] = value
+            case .int(let value): self[key] = value
+            case .double(let value): self[key] = value
+            case .date(let value): self[key] = value
+            case .bytes(let value): self[key] = value
+            case .strings(let value): self[key] = value
+            case .ints(let value): self[key] = value
+            case .doubles(let value): self[key] = value
+            case .dates(let value): self[key] = value
             case .reference(let id, let action):
-                record[key] = CKRecord.Reference(
-                    recordID: RecordContainer.recordID(for: id, in: record.recordID.zoneID),
+                self[key] = CKRecord.Reference(
+                    recordID: RecordContainer.recordID(for: id, in: recordID.zoneID),
                     action: action == .deleteSelf ? .deleteSelf : CKRecord.ReferenceAction.none
                 )
-            case .asset(let file):
-                if FileManager.default.fileExists(atPath: file.path) {
-                    record[key] = CKAsset(fileURL: file)
+            case .asset(let id):
+                if let url = file(id), FileManager.default.fileExists(atPath: url.path) {
+                    self[key] = CKAsset(fileURL: url)
                 }
             }
         }
@@ -143,20 +157,20 @@ public struct CKRecordEncoder {
     public func encode<R: Record>(_ record: R, zone: Zone = .default, systemFields: Data? = nil) throws -> CKRecord {
         guard zone.canSync else { throw RecordsError.unsyncedZone(zone) }
         let zoneID = zone == .default ? CKRecordZone.default().zoneID : CKRecordZone.ID(zoneName: zone.name, ownerName: CKCurrentUserDefaultName)
-        let cloud = try RecordStore.cloudRecord(of: record)
+        let (values, files) = try RecordStore.recordValues(of: record)
         let ckRecord: CKRecord
         if let systemFields {
-            ckRecord = try Self.record(fromSystemFields: systemFields, type: cloud.type, id: record.id, zoneID: zoneID)
+            ckRecord = try Self.record(fromSystemFields: systemFields, type: R.table, id: record.id, zoneID: zoneID)
         } else {
-            ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+            ckRecord = CKRecord(recordType: R.table, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
         }
-        cloud.fill(ckRecord)
+        ckRecord.fill(values) { files[$0] }
         return ckRecord
     }
 
     /// The server's last copy, rebuilt from its archived system fields, if they belong to this record. The
     /// zone's owner isn't compared, since a shared zone's records name their real owner.
-    private static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
+    static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
         let mismatch = RecordsError.mismatchedSystemFields(type: type, id: id)
         guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { throw mismatch }
         coder.requiresSecureCoding = true

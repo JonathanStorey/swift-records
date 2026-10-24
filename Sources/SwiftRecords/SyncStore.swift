@@ -12,6 +12,9 @@ struct SyncRecord: Sendable {
     /// For a copy from the server, the server's `synced` date. It settles a clash under `.latestWins` when
     /// the type has no `@Timestamp(.modified)`.
     var modified: Date?
+    /// The provider's own bookkeeping for the server copy this one is based on, such as a `CKRecord`'s
+    /// archived system fields.
+    var systemFields: Data?
 
     init(type: String, id: UUID, fields: SyncFields?, tag: Data? = nil, modified: Date? = nil) {
         self.type = type
@@ -44,8 +47,8 @@ enum SyncValue: Hashable, Codable, Sendable {
     case ids([UUID])
     /// A child's `@Reference(to:)`: its parent's ID and what happens to it when the parent goes.
     case reference(UUID, action: ReferenceAction)
-    /// A field this version of the app doesn't know, as the JSON it arrived in, sent back untouched.
-    case json(Data)
+    /// A field this version of the app doesn't know, as it arrived, sent back untouched.
+    case unknown(RecordValue)
 }
 
 extension SyncValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral {
@@ -108,7 +111,7 @@ extension SyncValue {
             case .url(let value): .text(value.absoluteString)
             case .ids(let value): .text(String(decoding: try CanonicalJSON.encode(value), as: UTF8.self))
             case .reference(let id, _): try ValueCoding.encode(id)
-            case .json(let value): .text(String(decoding: value, as: UTF8.self))
+            case .unknown(let value): .text(String(decoding: try value.json(), as: UTF8.self))
             }
         }
     }
@@ -320,6 +323,13 @@ extension RecordStore {
 
     /// Converts a field to its property's column, checking that it decodes as the property's type.
     static func column(_ value: SyncValue, as valueType: Any.Type) throws -> SQLiteValue {
+        // A field kept from a newer version, now that this version knows it.
+        if case .unknown(let raw) = value {
+            guard let typed = try syncValue(raw, as: valueType) else {
+                throw DecodingError.typeMismatch(valueType, .init(codingPath: [], debugDescription: "No value"))
+            }
+            return try column(typed, as: valueType)
+        }
         // The common primitives store as they arrive, without a round trip through their Swift type.
         switch value {
         case .string(let text) where valueType == String.self || valueType == String?.self: return .text(text)
@@ -335,9 +345,7 @@ extension RecordStore {
         }
         func convert<T: Codable>(_ type: T.Type) throws -> SQLiteValue {
             let typed: T
-            if case .json(let json) = value {
-                typed = try WireJSON.decoder.decode(T.self, from: json)
-            } else if case .data(let json) = value, T.self != Data.self, T.self != Data?.self {
+            if case .data(let json) = value, T.self != Data.self, T.self != Data?.self {
                 typed = try ValueCoding.jsonDecoder.decode(T.self, from: json)
             } else {
                 typed = try ValueCoding.decode(T.self, from: value.sqliteValue)
@@ -460,9 +468,11 @@ extension RecordStore {
         try db.run("DELETE FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
     }
 
-    /// Stores the tag of the server copy a record, or its deletion, is based on.
-    func storeTag(_ tag: Data?, table: String, id: SQLiteValue) throws {
-        try updateSyncRow(table, id: id, ["tag": tag.map { .blob($0) } ?? .null])
+    /// Stores the tag and system fields of the server copy a record, or its deletion, is based on.
+    func storeTag(of record: SyncRecord, id: SQLiteValue) throws {
+        try updateSyncRow(record.type, id: id, [
+            "tag": record.tag.map { .blob($0) } ?? .null, "system_fields": record.systemFields.map { .blob($0) } ?? .null,
+        ])
     }
 
     /// How many records have changes the server doesn't have.
@@ -500,9 +510,11 @@ extension RecordStore {
                 guard let stored = try syncFields(table: change.table, id: id) else { return nil }
                 fields = stored
             }
-            var tag: Data?
-            if case .blob(let data)? = try syncRow(change.table, id: id)?["tag"] { tag = data }
-            return (SyncRecord(type: change.table, id: change.id, fields: fields, tag: tag), fields)
+            let row = try syncRow(change.table, id: id)
+            var record = SyncRecord(type: change.table, id: change.id, fields: fields)
+            if case .blob(let data)? = row?["tag"] { record.tag = data }
+            if case .blob(let data)? = row?["system_fields"] { record.systemFields = data }
+            return (record, fields)
         }
     }
 
@@ -523,7 +535,7 @@ extension RecordStore {
 
     /// Records that the server accepted a change at `synced`. A later local edit stays pending, with what was
     /// sent as its ancestor.
-    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, synced: Date) throws {
+    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, synced: Date, systemFields: Data? = nil) throws {
         let tag = SyncedTag.data(synced)
         let id = try ValueCoding.encode(change.id)
         guard let entry = try logEntry(change.table, id: id) else { return }
@@ -539,7 +551,7 @@ extension RecordStore {
         // A record deleted since this was sent goes with the new tag too.
         try updateSyncRow(change.table, id: id, [
             "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": tag.map { .blob($0) } ?? .null,
-            "synced_at": .real(synced.timeIntervalSince1970),
+            "system_fields": systemFields.map { .blob($0) } ?? .null, "synced_at": .real(synced.timeIntervalSince1970),
         ])
         // Views showing a synced timestamp refresh.
         changedData = true
@@ -611,7 +623,7 @@ extension RecordStore {
             if pending, entry?.kind == .save, deletePolicy == .localWins {
                 try updateSyncRow(table, id: id, ["acked": .integer(0), "known": .integer(0), "snapshot": .null, "tag": .null])
                 // The edit goes back based on the deletion, so a server that keeps it as a tombstone accepts it.
-                try storeTag(record.tag, table: table, id: id)
+                try storeTag(of: record, id: id)
                 return
             }
             try applyingSyncedChanges { try deleteRow(table, id: id) }
@@ -626,7 +638,8 @@ extension RecordStore {
         if pending, let entry {
             if entry.kind == .delete, deletePolicy != .serverWins {
                 // A local delete beats a server edit. It goes with the server's latest tag.
-                try updateSyncRow(table, id: id, ["known": .integer(1), "tag": record.tag.map { .blob($0) } ?? .null])
+                try updateSyncRow(table, id: id, ["known": .integer(1)])
+                try storeTag(of: record, id: id)
                 return
             }
             if entry.kind == .save {
@@ -638,7 +651,7 @@ extension RecordStore {
                 // The server's copy is the ancestor of whatever is sent next.
                 try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
                 try applySyncFields(table: table, id: record.id, fields: merged)
-                try storeTag(record.tag, table: table, id: id)
+                try storeTag(of: record, id: id)
                 if merged == server {
                     let version = try logEntry(table, id: id)?.version ?? 0
                     try updateSyncRow(table, id: id, [
@@ -655,11 +668,15 @@ extension RecordStore {
         // The server's copy is now the record, so whatever version it was at counts as acknowledged.
         try db.run(
             """
-            INSERT INTO "_records_meta" (record_table, record_id, known, tag, synced_at) VALUES (?1, ?2, 1, ?3, ?4)
+            INSERT INTO "_records_meta" (record_table, record_id, known, tag, system_fields, synced_at) VALUES (?1, ?2, 1, ?3, ?4, ?5)
             ON CONFLICT (record_table, record_id) DO UPDATE
-            SET acked = version, known = 1, snapshot = NULL, tag = excluded.tag, synced_at = excluded.synced_at
+            SET acked = version, known = 1, snapshot = NULL, tag = excluded.tag, system_fields = excluded.system_fields,
+                synced_at = excluded.synced_at
             """,
-            [.text(table), id, record.tag.map { .blob($0) } ?? .null, .real(Date().timeIntervalSince1970)]
+            [
+                .text(table), id, record.tag.map { .blob($0) } ?? .null, record.systemFields.map { .blob($0) } ?? .null,
+                .real(Date().timeIntervalSince1970),
+            ]
         )
     }
 
@@ -702,7 +719,7 @@ extension RecordStore {
     /// local data or a server reset. Tags and snapshots from the old server are dropped.
     func markAllPending() throws {
         try transaction {
-            try db.run("UPDATE \"_records_meta\" SET acked = 0, known = 0, tag = NULL, snapshot = NULL")
+            try db.run("UPDATE \"_records_meta\" SET acked = 0, known = 0, tag = NULL, system_fields = NULL, snapshot = NULL")
             try db.run("UPDATE \"_records_assets\" SET uploaded = 0")
             try db.run("DELETE FROM \"_records_meta\" WHERE kind = 'delete' OR (kind IS NULL AND extra IS NULL AND parked IS NULL)")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)
