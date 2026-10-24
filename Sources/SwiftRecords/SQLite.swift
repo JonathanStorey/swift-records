@@ -133,17 +133,18 @@ final class SQLiteDatabase {
         let outermost = savepointDepth == 1
         let name = "records_\(savepointDepth)"
         defer { savepointDepth -= 1 }
-        try execute(outermost ? "BEGIN IMMEDIATE" : "SAVEPOINT \(name)")
+        // Savepoints run as cached statements, since applying a download opens one per record.
+        if outermost { try execute("BEGIN IMMEDIATE") } else { try run("SAVEPOINT \(name)") }
         do {
             let result = try body()
-            try execute(outermost ? "COMMIT" : "RELEASE \(name)")
+            if outermost { try execute("COMMIT") } else { try run("RELEASE \(name)") }
             return result
         } catch {
             if outermost {
                 try? execute("ROLLBACK")
             } else {
-                try? execute("ROLLBACK TO \(name)")
-                try? execute("RELEASE \(name)")
+                _ = try? run("ROLLBACK TO \(name)")
+                _ = try? run("RELEASE \(name)")
             }
             throw error
         }

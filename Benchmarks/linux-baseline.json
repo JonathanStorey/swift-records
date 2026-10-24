@@ -2,81 +2,91 @@
   {
     "name" : "Import recipes with steps, 500 per save",
     "records" : 60000,
-    "seconds" : 12.839026441
+    "seconds" : 11.09240763
   },
   {
     "name" : "Insert and save 1,000 on the main context",
     "records" : 6000,
-    "seconds" : 1.319314992
+    "seconds" : 1.312665715
   },
   {
     "name" : "Fetch every recipe with nested steps",
     "records" : 66000,
-    "seconds" : 2.9100423810000002
+    "seconds" : 2.814579278
   },
   {
     "name" : "Fetch 1,000 recipes by ID",
     "records" : 6000,
-    "seconds" : 0.330558851
+    "seconds" : 0.318294841
   },
   {
     "name" : "Fetch by an indexed property",
     "records" : 8250,
-    "seconds" : 0.385677435
+    "seconds" : 0.365439585
   },
   {
     "name" : "Fetch by an unindexed property",
     "records" : 6,
-    "seconds" : 0.005227376
+    "seconds" : 0.005062681
   },
   {
     "name" : "Count by a range on an unindexed property",
     "records" : 11000,
-    "seconds" : 0.001077309
+    "seconds" : 0.000965985
   },
   {
     "name" : "Read 100 pages of 50 from the middle",
     "records" : 30000,
-    "seconds" : 1.286329035
+    "seconds" : 1.300870368
+  },
+  {
+    "name" : "Read 100 pages of 50 sorted by a number",
+    "records" : 30000,
+    "seconds" : 1.916064885
+  },
+  {
+    "name" : "Fetch every recipe sorted by title",
+    "records" : 66000,
+    "seconds" : 3.41852369
   },
   {
     "name" : "Edit and save 1,000 recipes",
     "records" : 1000,
-    "seconds" : 0.715087604
+    "seconds" : 0.623514859
   },
   {
     "name" : "Reorder the steps of 1,000 recipes",
     "records" : 6000,
-    "seconds" : 0.794740441
+    "seconds" : 0.841545077
   },
   {
     "name" : "Delete 1,000 recipes and cascade to steps",
     "records" : 6000,
-    "seconds" : 0.800965569
+    "seconds" : 0.708483541
   },
   {
     "name" : "Upload the whole store",
     "records" : 60000,
-    "seconds" : 12.934827368
+    "seconds" : 8.085601826
   },
   {
     "name" : "Download the whole store to a new device",
     "records" : 60000,
-    "seconds" : 19.699158024
+    "seconds" : 15.560696932
   },
   {
     "name" : "Upload 100 edits from a large store",
     "records" : 100,
-    "seconds" : 0.038152027
+    "seconds" : 0.018757463
   },
   {
     "name" : "Download 100 edits into a large store",
     "records" : 100,
-    "seconds" : 0.057962918
+    "seconds" : 0.032208249
   },
   {
     "name" : "Resync the whole store with a new server",
     "records" : 60000,
-    "seconds" : 12.587720778
+    "seconds" : 8.344312541
   }
 ]

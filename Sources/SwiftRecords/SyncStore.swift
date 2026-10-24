@@ -426,10 +426,15 @@ extension RecordStore {
     }
 
     private func logEntry(_ table: String, id: SQLiteValue) throws -> (kind: RecordChange.Kind, version: Int)? {
-        guard let row = try db.run(
+        Self.logEntry(try db.run(
             "SELECT kind, version FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
-        ).first, case .text(let kind) = row["kind"], let kind = RecordChange.Kind(rawValue: kind) else { return nil }
-        return (kind, Int(row["version"]?.integerValue ?? 0))
+        ).first)
+    }
+
+    /// The log entry a bookkeeping row holds, if any.
+    private static func logEntry(_ row: [String: SQLiteValue]?) -> (kind: RecordChange.Kind, version: Int)? {
+        guard case .text(let kind)? = row?["kind"], let kind = RecordChange.Kind(rawValue: kind) else { return nil }
+        return (kind, Int(row?["version"]?.integerValue ?? 0))
     }
 
     /// Clears a record's log entry and keeps its sync state.
@@ -535,7 +540,7 @@ extension RecordStore {
     /// version of the app can't store, which are kept to try again after an update.
     func applyReceived(_ changes: [RecordChangeData], policy: MergePolicy) throws -> [RecordChangeData] {
         var incompatible: [RecordChangeData] = []
-        for change in changes {
+        for change in changes where try !isStored(change) {
             do {
                 let record = try syncRecord(from: change)
                 try transaction { try applyReceived(record, policy: policy) }
@@ -547,19 +552,26 @@ extension RecordStore {
         return incompatible
     }
 
+    /// Whether a save is the server copy this device already holds unchanged, such as its own upload coming
+    /// back in a download, so applying it would change nothing. It's checked before decoding.
+    private func isStored(_ change: RecordChangeData) throws -> Bool {
+        guard !change.isDeletion, let tag = SyncedTag.data(change.synced) else { return false }
+        let id = try ValueCoding.encode(change.id)
+        guard let row = try db.run(
+            "SELECT tag, kind, version, acked FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(change.type), id]
+        ).first, case .blob(let stored)? = row["tag"], stored == tag else { return false }
+        let pending = row["kind"] != .null && (row["version"]?.integerValue ?? 0) > (row["acked"]?.integerValue ?? 0)
+        return !pending
+    }
+
     private func applyReceived(_ record: SyncRecord, policy: MergePolicy) throws {
         let table = record.type
         let id = try ValueCoding.encode(record.id)
-        let entry = try logEntry(table, id: id)
         let sync = try syncRow(table, id: id)
+        let entry = Self.logEntry(sync)
         let pending = entry.map { $0.version > Int(sync?["acked"]?.integerValue ?? 0) } ?? false
         // A delete has no properties to merge, so it settles by the policy for clashes.
         let deletePolicy = policy.clashPolicy
-
-        // The copy this device last stored, such as its own upload coming back, has nothing new.
-        if !pending, record.fields != nil, let tag = record.tag, case .blob(let stored)? = sync?["tag"], stored == tag {
-            return
-        }
 
         guard let values = record.fields else {
             // A server delete beats a local edit, unless local changes always win.
@@ -607,12 +619,15 @@ extension RecordStore {
         }
 
         try applyingSyncedChanges { try applySyncFields(table: table, id: record.id, fields: server) }
-        let version = try logEntry(table, id: id)?.version ?? 0
-        try updateSyncRow(table, id: id, [
-            "acked": .integer(Int64(version)), "known": .integer(1), "snapshot": .null, "tag": .null,
-            "synced_at": .real(Date().timeIntervalSince1970),
-        ])
-        try storeTag(record.tag, table: table, id: id)
+        // The server's copy is now the record, so whatever version it was at counts as acknowledged.
+        try db.run("INSERT OR IGNORE INTO \"_records_meta\" (record_table, record_id) VALUES (?, ?)", [.text(table), id])
+        try db.run(
+            """
+            UPDATE "_records_meta" SET acked = version, known = 1, snapshot = NULL, tag = ?, synced_at = ?
+            WHERE record_table = ? AND record_id = ?
+            """,
+            [record.tag.map { .blob($0) } ?? .null, .real(Date().timeIntervalSince1970), .text(table), id]
+        )
     }
 
     /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestWins`. A

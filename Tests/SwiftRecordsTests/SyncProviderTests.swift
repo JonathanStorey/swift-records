@@ -169,6 +169,16 @@ struct Device {
         #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
     }
 
+    @Test func ownUploadsComingBackChangeNothing() async throws {
+        let phone = try Device(server)
+        phone.context.insert(SyncRecipe(title: "Pie", steps: [SyncStep(text: "Bake")]))
+        try await phone.context.save()
+        let store = phone.container.defaultStorage.store
+        let token = try store.changeToken
+        try await phone.context.refresh()
+        #expect(try store.changeToken == token)
+    }
+
     @Test func serverChangesAreNotSentBack() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
