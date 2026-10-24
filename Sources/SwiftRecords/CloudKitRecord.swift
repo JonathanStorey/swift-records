@@ -119,7 +119,8 @@ extension CloudRecord {
 /// row and no sync metadata, so the result is a new record with no change tag.
 ///
 /// ```swift
-/// let ckRecord = try CKRecordEncoder().encode(recipe)
+/// let ckRecord = try CKRecordEncoder().encode(recipe)                   // CloudKit's default zone
+/// let pantryRecord = try CKRecordEncoder().encode(item, zone: "pantry") // the CloudKit zone "pantry"
 /// ```
 ///
 /// Fields map as they do when the container syncs. Every stored property is a field of the same name. A
@@ -128,20 +129,41 @@ extension CloudRecord {
 /// with that action. Lists of strings, numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any
 /// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamp(.synced)` aren't stored.
 public struct CKRecordEncoder {
-    /// The zone new records go in. CloudKit's default zone unless set.
-    public var zoneID: CKRecordZone.ID
+    public init() {}
 
-    public init(zoneID: CKRecordZone.ID = CKRecordZone.default().zoneID) {
-        self.zoneID = zoneID
-    }
-
-    /// Throws `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)`
-    /// that throws.
-    public func encode<R: Record>(_ record: R) throws -> CKRecord {
+    /// `zone` is the zone the record goes in. `.default` is CloudKit's default zone, and any other zone is
+    /// the CloudKit zone of the same name.
+    ///
+    /// Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, so the record
+    /// carries its change tag and saves as an update. Without them it's a new record.
+    ///
+    /// Throws `RecordsError.unsyncedZone` when `zone` is `.inMemory` or `.localOnly`, which never sync,
+    /// `RecordsError.mismatchedSystemFields` when the system fields name another record, type or zone, and
+    /// `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)` that throws.
+    public func encode<R: Record>(_ record: R, zone: Zone = .default, systemFields: Data? = nil) throws -> CKRecord {
+        guard zone.canSync else { throw RecordsError.unsyncedZone(zone) }
+        let zoneID = zone == .default ? CKRecordZone.default().zoneID : CKRecordZone.ID(zoneName: zone.name, ownerName: CKCurrentUserDefaultName)
         let cloud = try RecordStore.cloudRecord(of: record)
-        let ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+        let ckRecord: CKRecord
+        if let systemFields {
+            ckRecord = try Self.record(fromSystemFields: systemFields, type: cloud.type, id: record.id, zoneID: zoneID)
+        } else {
+            ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+        }
         cloud.fill(ckRecord)
         return ckRecord
+    }
+
+    /// The server's last copy, rebuilt from its archived system fields, if they belong to this record. The
+    /// zone's owner isn't compared, since a shared zone's records name their real owner.
+    private static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
+        let mismatch = RecordsError.mismatchedSystemFields(type: type, id: id)
+        guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { throw mismatch }
+        coder.requiresSecureCoding = true
+        defer { coder.finishDecoding() }
+        guard let record = CKRecord(coder: coder), record.recordType == type, record.recordID.recordName == id.uuidString,
+              record.recordID.zoneID.zoneName == zoneID.zoneName else { throw mismatch }
+        return record
     }
 }
 #endif
