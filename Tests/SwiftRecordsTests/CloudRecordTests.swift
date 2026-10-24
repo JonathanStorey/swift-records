@@ -79,6 +79,64 @@ import Testing
         let back = try phone.container.change(from: cloud, zone: .default, owner: nil, synced: nil)
         #expect(try store.syncRecord(from: back).fields == store.syncRecord(from: change).fields)
     }
+
+    @Test func structsMapAsStoredRecordsDo() async throws {
+        let phone = try Device(server)
+        var recipe = SyncRecipe(
+            title: "Soup", servings: 4, tags: ["winter", "hot"], updated: Date(timeIntervalSince1970: 1_000.123),
+            steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cook: SyncCook(name: "Ana")
+        )
+        recipe.photo = Data([1, 2, 3])
+        let plain = try RecordStore.cloudRecord(of: recipe)
+
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        let saved = try #require(server.record("SyncRecipe", recipe.id))
+        let stored = try #require(try phone.container.cloudRecord(for: saved))
+        #expect(plain.type == stored.type)
+        #expect(plain.id == stored.id)
+        // The asset is a file in each case, just not the same file.
+        #expect(plain.fields.filter { $0.key != "photo" } == stored.fields.filter { $0.key != "photo" })
+        guard case .asset(let file)? = plain.fields["photo"] else {
+            Issue.record("The photo isn't an asset")
+            return
+        }
+        #expect(try Data(contentsOf: file) == Data([1, 2, 3]))
+
+        // A step holds its parent once saved through it, and then maps as the stored step does.
+        var step = recipe.steps[0]
+        step.recipe = recipe.id
+        let savedStep = try #require(server.record("SyncStep", step.id))
+        let storedStep = try phone.container.cloudRecord(for: savedStep)
+        #expect(try RecordStore.cloudRecord(of: step) == storedStep)
+    }
+
+    @Test func aStructNeverSavedMapsFromItsValuesAlone() throws {
+        let recipe = SyncRecipe(title: "Toast")
+        let cloud = try RecordStore.cloudRecord(of: recipe)
+        #expect(cloud == CloudRecord(type: "SyncRecipe", id: recipe.id, fields: [
+            "title": .string("Toast"), "servings": .int(1), "summary": .string(""), "tags": .strings([]),
+        ]))
+        // A child that isn't linked yet has no reference.
+        #expect(try RecordStore.cloudRecord(of: SyncStep(text: "Chop")).fields == ["text": .string("Chop")])
+    }
+
+    @Test func aPropertyThatWontEncodeThrows() {
+        #expect(throws: RecordsError.self) { try RecordStore.cloudRecord(of: Unencodable()) }
+    }
+}
+
+/// A value whose `encode(to:)` always fails.
+struct Refusing: Codable, Sendable {
+    func encode(to encoder: Encoder) throws {
+        throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Refused"))
+    }
+}
+
+@Record
+struct Unencodable {
+    var id = UUID()
+    var value = Refusing()
 }
 
 #if canImport(CloudKit)
@@ -119,6 +177,32 @@ import CloudKit
         #expect(reference.action == .deleteSelf)
         let (stepBack, _) = try phone.container.change(from: step, zone: .default)
         #expect(try store.syncRecord(from: stepBack).fields == store.syncRecord(from: savedStep).fields)
+    }
+
+    @Test func structsEncodeWithoutAContainer() throws {
+        var recipe = SyncRecipe(title: "Soup", servings: 4, tags: ["winter"], steps: [SyncStep(text: "Chop")])
+        recipe.photo = Data([1, 2, 3])
+        let custom = CKRecordZone.ID(zoneName: "Recipes", ownerName: CKCurrentUserDefaultName)
+
+        let record = try CKRecordEncoder(zoneID: custom).encode(recipe)
+        #expect(record.recordID == CKRecord.ID(recordName: recipe.id.uuidString, zoneID: custom))
+        #expect(record.recordType == "SyncRecipe")
+        #expect(record.recordChangeTag == nil)
+        #expect(record["title"] as? String == "Soup")
+        #expect(record["servings"] as? Int64 == 4)
+        #expect(record["tags"] as? [String] == ["winter"])
+        #expect(record["steps"] as? [String] == [recipe.steps[0].id.uuidString])
+        let asset = try #require(record["photo"] as? CKAsset)
+        let file = try #require(asset.fileURL)
+        #expect(try Data(contentsOf: file) == Data([1, 2, 3]))
+        #expect(record["cook"] == nil)
+
+        var step = recipe.steps[0]
+        step.recipe = recipe.id
+        let reference = try #require(try CKRecordEncoder().encode(step)["recipe"] as? CKRecord.Reference)
+        #expect(reference.recordID.recordName == recipe.id.uuidString)
+        #expect(reference.recordID.zoneID == CKRecordZone.default().zoneID)
+        #expect(reference.action == .deleteSelf)
     }
 }
 #endif

@@ -17,31 +17,7 @@ extension RecordContainer {
     public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID, base: CKRecord? = nil) throws -> CKRecord? {
         guard let cloud = try cloudRecord(for: change) else { return nil }
         let record = base ?? CKRecord(recordType: cloud.type, recordID: Self.recordID(for: change.id, in: zoneID))
-        for key in record.allKeys() where cloud.fields[key] == nil {
-            record.setObject(nil, forKey: key)
-        }
-        for (key, value) in cloud.fields {
-            switch value {
-            case .string(let value): record[key] = value
-            case .int(let value): record[key] = value
-            case .double(let value): record[key] = value
-            case .date(let value): record[key] = value
-            case .bytes(let value): record[key] = value
-            case .strings(let value): record[key] = value
-            case .ints(let value): record[key] = value
-            case .doubles(let value): record[key] = value
-            case .dates(let value): record[key] = value
-            case .reference(let id, let action):
-                record[key] = CKRecord.Reference(
-                    recordID: Self.recordID(for: id, in: record.recordID.zoneID),
-                    action: action == .deleteSelf ? .deleteSelf : CKRecord.ReferenceAction.none
-                )
-            case .asset(let file):
-                if FileManager.default.fileExists(atPath: file.path) {
-                    record[key] = CKAsset(fileURL: file)
-                }
-            }
-        }
+        cloud.fill(record)
         return record
     }
 
@@ -104,6 +80,68 @@ extension RecordContainer {
     /// The record ID a record's `id` has in a CloudKit zone: its `uuidString` as the record name.
     public static func recordID(for id: UUID, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
         CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+    }
+}
+
+extension CloudRecord {
+    /// Writes these fields into `record` and clears the ones it no longer has. An asset whose file isn't
+    /// there, such as one still downloading, keeps the record's value.
+    func fill(_ record: CKRecord) {
+        for key in record.allKeys() where fields[key] == nil {
+            record.setObject(nil, forKey: key)
+        }
+        for (key, value) in fields {
+            switch value {
+            case .string(let value): record[key] = value
+            case .int(let value): record[key] = value
+            case .double(let value): record[key] = value
+            case .date(let value): record[key] = value
+            case .bytes(let value): record[key] = value
+            case .strings(let value): record[key] = value
+            case .ints(let value): record[key] = value
+            case .doubles(let value): record[key] = value
+            case .dates(let value): record[key] = value
+            case .reference(let id, let action):
+                record[key] = CKRecord.Reference(
+                    recordID: RecordContainer.recordID(for: id, in: record.recordID.zoneID),
+                    action: action == .deleteSelf ? .deleteSelf : CKRecord.ReferenceAction.none
+                )
+            case .asset(let file):
+                if FileManager.default.fileExists(atPath: file.path) {
+                    record[key] = CKAsset(fileURL: file)
+                }
+            }
+        }
+    }
+}
+
+/// Turns a record into the `CKRecord` it is in CloudKit, from the struct alone: no container, no stored
+/// row and no sync metadata, so the result is a new record with no change tag.
+///
+/// ```swift
+/// let ckRecord = try CKRecordEncoder().encode(recipe)
+/// ```
+///
+/// Fields map as they do when the container syncs. Every stored property is a field of the same name. A
+/// relationship such as `var steps: [Step]` is a list of the steps' record names in order, and each step is
+/// its own `CKRecord`, so encode it separately. A child's `@Reference(to:action:)` is a `CKRecord.Reference`
+/// with that action. Lists of strings, numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any
+/// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamp(.synced)` aren't stored.
+public struct CKRecordEncoder {
+    /// The zone new records go in. CloudKit's default zone unless set.
+    public var zoneID: CKRecordZone.ID
+
+    public init(zoneID: CKRecordZone.ID = CKRecordZone.default().zoneID) {
+        self.zoneID = zoneID
+    }
+
+    /// Throws `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)`
+    /// that throws.
+    public func encode<R: Record>(_ record: R) throws -> CKRecord {
+        let cloud = try RecordStore.cloudRecord(of: record)
+        let ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+        cloud.fill(ckRecord)
+        return ckRecord
     }
 }
 #endif

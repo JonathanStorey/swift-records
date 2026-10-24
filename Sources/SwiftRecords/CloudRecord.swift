@@ -31,10 +31,10 @@ extension RecordStore {
         guard !change.isDeletion else { return nil }
         guard let type = registered[change.type], var fields = try syncRecord(from: change).fields else { return nil }
         fields[WireJSON.ownerKey] = nil
-        return CloudRecord(type: change.type, id: change.id, fields: try cloudFields(type, fields: fields))
+        return CloudRecord(type: change.type, id: change.id, fields: try Self.cloudFields(type, fields: fields))
     }
 
-    private func cloudFields<R: Record>(_ type: R.Type, fields: SyncFields) throws -> [String: CloudValue] {
+    private static func cloudFields<R: Record>(_ type: R.Type, fields: SyncFields) throws -> [String: CloudValue] {
         let schema = Dictionary(R.cachedSchema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         var cloud: [String: CloudValue] = [:]
         for (key, value) in fields {
@@ -56,6 +56,48 @@ extension RecordStore {
             }
         }
         return cloud
+    }
+
+    /// The record a struct becomes in CloudKit, from its values alone: no container, no stored row and no
+    /// sync history. It maps each field as `cloudRecord(for:)` maps a stored record's. A child's reference
+    /// is whatever the struct holds, since only saving it through its parent sets it, and an asset that
+    /// isn't a file yet is written to a temporary one.
+    static func cloudRecord<R: Record>(of record: R) throws -> CloudRecord {
+        let encoded = try RecordEncoder.encode(record)
+        let columns = Dictionary(encoded.columns, uniquingKeysWith: { _, last in last })
+        let relations = Dictionary(encoded.relations.map { ($0.name, $0.targets) }, uniquingKeysWith: { first, _ in first })
+        var fields: SyncFields = [:]
+        for field in R.cachedSchema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
+            if relationTarget(field) != nil {
+                fields[field.name] = .ids(relations[field.name]?.map { $0.id } ?? [])
+            } else if field.isAsset {
+                if let storage = encoded.assets[field.name]?.storage {
+                    fields[field.name] = .url(try file(of: storage))
+                }
+            } else if field.timestamp != nil {
+                // The encoder leaves timestamps to the container, so they're read from the struct.
+                if let date = record[keyPath: field.keyPath] as? Date {
+                    fields[field.name] = try SyncValue(property: date)
+                }
+            } else if let value = columns[field.name], value != .null {
+                fields[field.name] = field.parent != nil
+                    ? .reference(try ValueCoding.decode(UUID.self, from: value), action: field.action)
+                    : try syncValue(of: value, as: Swift.type(of: field.keyPath).valueType)
+            }
+        }
+        return CloudRecord(type: R.table, id: record.id, fields: try cloudFields(R.self, fields: fields))
+    }
+
+    /// An asset's file, written to the temporary folder if it's only in memory.
+    private static func file(of storage: Asset.Storage) throws -> URL {
+        switch storage.source {
+        case .file(let url), .stored(let url):
+            return url
+        case .data(let data):
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(storage.name)
+            try data.write(to: url, options: .atomic)
+            return url
+        }
     }
 
     private static func cloudValue(_ value: SyncValue) -> CloudValue {

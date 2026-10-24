@@ -310,7 +310,7 @@ extension RecordStore {
     }
 
     /// Decodes a column as its property's type, so a `Bool` or `Date` crosses as itself rather than a number.
-    private static func syncValue(of value: SQLiteValue, as valueType: Any.Type) throws -> SyncValue? {
+    static func syncValue(of value: SQLiteValue, as valueType: Any.Type) throws -> SyncValue? {
         guard let decodable = valueType as? any Decodable.Type else { return nil }
         func decode<T: Decodable>(_ type: T.Type) throws -> Any {
             try ValueCoding.decode(T.self, from: value)
