@@ -103,3 +103,15 @@ import Testing
         #expect(try context.fetch(Person.self).map(\.name) == ["Imported", "Also imported"])
     }
 }
+
+@Suite struct WireMemberTests {
+    @Test func membersSliceEachValue() throws {
+        let json = #" { "a" : 1 , "b":"x,}\"y" ,"c":[1,{"d":[2]}],"e":{"f":null}, "gA":true, "n": null, "z":-2.5e3 } "#
+        let members = try WireJSON.members(of: Data(json.utf8)).mapValues { String(decoding: $0, as: UTF8.self) }
+        #expect(members == ["a": "1", "b": #""x,}\"y""#, "c": #"[1,{"d":[2]}]"#, "e": #"{"f":null}"#, "gA": "true", "z": "-2.5e3"])
+        #expect(try WireJSON.members(of: Data("{}".utf8)).isEmpty)
+        for bad in ["", "[]", "{", #"{"a":}"#, #"{"a" 1}"#, #"{"a":1"#, #"{"a":1} x"#, #"{"a":"x}"#] {
+            #expect(throws: (any Error).self) { try WireJSON.members(of: Data(bad.utf8)) }
+        }
+    }
+}

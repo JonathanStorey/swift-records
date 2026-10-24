@@ -595,14 +595,14 @@ Some timings from that run, for 60,000 records:
 
 | Operation | Time |
 | --- | --- |
-| Import in saves of 500 | 12.8 s |
-| Fetch every recipe with its steps | 2.9 s |
-| Fetch 1,000 recipes by ID | 0.33 s |
-| Edit and save 1,000 recipes | 0.72 s |
-| Delete 1,000 recipes and their steps | 0.80 s |
-| Upload the whole store | 12.9 s |
-| Download the whole store to a new device | 19.7 s |
-| Sync 100 edits from a large store | 38 ms |
+| Import in saves of 500 | 11.1 s |
+| Fetch every recipe with its steps | 2.8 s |
+| Fetch 1,000 recipes by ID | 0.32 s |
+| Edit and save 1,000 recipes | 0.62 s |
+| Delete 1,000 recipes and their steps | 0.71 s |
+| Upload the whole store | 8.1 s |
+| Download the whole store to a new device | 15.6 s |
+| Sync 100 edits from a large store | 19 ms |
 
 ## Requirements
 

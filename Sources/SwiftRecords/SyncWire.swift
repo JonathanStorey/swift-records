@@ -33,15 +33,95 @@ enum WireJSON {
         return data
     }
 
-    /// Splits an object into its keys and each value's own JSON.
+    /// Splits an object into its keys and each value's own JSON, leaving out `null` values. Each value is
+    /// sliced from the object's bytes as it stands, rather than parsed and written out again, which made up
+    /// most of the cost of applying a download. Decoding a value checks it in full.
     static func members(of json: Data) throws -> [String: Data] {
-        guard let object = try JSONSerialization.jsonObject(with: json) as? [String: Any] else {
-            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Not a JSON object"))
+        let bytes = [UInt8](json)
+        var index = 0
+        func corrupted() -> DecodingError {
+            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Not a JSON object"))
         }
+        func skipWhitespace() {
+            while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
+        }
+        /// Moves past the string that starts at `index`, and returns whether it holds an escape.
+        func skipString() throws -> Bool {
+            guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else { throw corrupted() }
+            index += 1
+            var escaped = false
+            while index < bytes.count {
+                switch bytes[index] {
+                case UInt8(ascii: "\\"): escaped = true; index += 2
+                case UInt8(ascii: "\""): index += 1; return escaped
+                default: index += 1
+                }
+            }
+            throw corrupted()
+        }
+        /// Moves past the value that starts at `index`, stopping at the `,` or `}` after a number or literal.
+        func skipValue() throws {
+            var depth = 0
+            while index < bytes.count {
+                switch bytes[index] {
+                case UInt8(ascii: "\""):
+                    _ = try skipString()
+                    if depth == 0 { return }
+                    continue
+                case UInt8(ascii: "{"), UInt8(ascii: "["):
+                    depth += 1
+                case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                    if depth == 0 { return }
+                    depth -= 1
+                    index += 1
+                    if depth == 0 { return }
+                    continue
+                case UInt8(ascii: ","):
+                    if depth == 0 { return }
+                default:
+                    break
+                }
+                index += 1
+            }
+            throw corrupted()
+        }
+
+        skipWhitespace()
+        guard index < bytes.count, bytes[index] == UInt8(ascii: "{") else { throw corrupted() }
+        index += 1
         var members: [String: Data] = [:]
-        for (key, value) in object where !(value is NSNull) {
-            members[key] = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
+        skipWhitespace()
+        if index < bytes.count, bytes[index] == UInt8(ascii: "}") { index += 1 } else {
+            while true {
+                skipWhitespace()
+                let keyStart = index
+                let escaped = try skipString()
+                let key = escaped
+                    ? try decoder.decode(String.self, from: Data(bytes[keyStart..<index]))
+                    : String(decoding: bytes[(keyStart + 1)..<(index - 1)], as: UTF8.self)
+                skipWhitespace()
+                guard index < bytes.count, bytes[index] == UInt8(ascii: ":") else { throw corrupted() }
+                index += 1
+                skipWhitespace()
+                let valueStart = index
+                try skipValue()
+                var valueEnd = index
+                while valueEnd > valueStart, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[valueEnd - 1]) { valueEnd -= 1 }
+                guard valueEnd > valueStart else { throw corrupted() }
+                let value = bytes[valueStart..<valueEnd]
+                if !value.elementsEqual("null".utf8) {
+                    members[key] = Data(value)
+                }
+                skipWhitespace()
+                guard index < bytes.count else { throw corrupted() }
+                if bytes[index] == UInt8(ascii: ",") { index += 1; continue }
+                guard bytes[index] == UInt8(ascii: "}") else { throw corrupted() }
+                index += 1
+                break
+            }
         }
+        skipWhitespace()
+        guard index == bytes.count else { throw corrupted() }
         return members
     }
 
