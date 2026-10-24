@@ -268,12 +268,7 @@ final class RecordStore: @unchecked Sendable {
             }
         }
 
-        try ensureTable(R.table)
-        try prepare(R.self)
-        try ensureColumns(encoded.columns.map(\.name), in: R.table)
-        let references = try referenceValues(R.self, id: id)
-        try upsert(encoded.columns, id: id, into: R.table, preserving: preserving)
-        try reconcileReferences(R.self, id: id, before: references)
+        try writeRow(R.self, id: id, columns: encoded.columns, preserving: preserving)
 
         var linked: Set<String> = []
         for relation in encoded.relations {
@@ -289,6 +284,18 @@ final class RecordStore: @unchecked Sendable {
         for info in relations() where info.ownerTable == R.table && !linked.contains(info.field) {
             try link(info, ownerID: id, targets: [])
         }
+    }
+
+    /// Writes a record's row, then moves it between parents' join tables if its references changed.
+    func writeRow<R: Record>(
+        _ type: R.Type, id: SQLiteValue, columns: [(name: String, value: SQLiteValue)], preserving: Set<String> = []
+    ) throws {
+        try ensureTable(R.table)
+        try prepare(R.self)
+        try ensureColumns(columns.map(\.name), in: R.table)
+        let references = try referenceValues(R.self, id: id)
+        try upsert(columns, id: id, into: R.table, preserving: preserving)
+        try reconcileReferences(R.self, id: id, before: references)
     }
 
     // MARK: Assets
@@ -373,7 +380,7 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    func upsert(
+    private func upsert(
         _ values: [(name: String, value: SQLiteValue)], id: SQLiteValue, into table: String, preserving kept: Set<String> = []
     ) throws {
         var row: [String: SQLiteValue] = [:]
@@ -466,7 +473,7 @@ final class RecordStore: @unchecked Sendable {
     // MARK: Child references
 
     /// The current values of a record's `@Reference(to:)` columns, or `nil` if it isn't stored yet.
-    func referenceValues<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> [String: SQLiteValue]? {
+    private func referenceValues<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> [String: SQLiteValue]? {
         let names = R.cachedSchema.fields.filter { $0.parent != nil }.map { $0.name }
         guard !names.isEmpty else { return [:] }
         try ensureColumns(names, in: R.table)
@@ -477,10 +484,10 @@ final class RecordStore: @unchecked Sendable {
     /// Moves a record in its parents' join tables after its `@Reference(to:)` columns change: out of the
     /// old parent's array and onto the end of the new one's. A `.deleteSelf` child left without a parent is
     /// deleted when the transaction ends.
-    func reconcileReferences<R: Record>(_ type: R.Type, id: SQLiteValue, before: [String: SQLiteValue]?) throws {
+    private func reconcileReferences<R: Record>(_ type: R.Type, id: SQLiteValue, before: [String: SQLiteValue]?) throws {
         for field in R.cachedSchema.fields {
             guard let parent = field.parent, let parentType = Swift.type(of: parent).rootType as? any Record.Type,
-                  let parentField = Self.fieldName(of: parentType, for: parent) else { continue }
+                  let parentField = parentType.fieldName(for: parent) else { continue }
             let old = before?[field.name] ?? .null
             let new = try referenceValue(R.table, column: field.name, id: id) ?? .null
             guard old != new else { continue }
@@ -505,11 +512,6 @@ final class RecordStore: @unchecked Sendable {
                 orphans.append((R.table, id, field.name))
             }
         }
-    }
-
-    /// The stored name of the property at `keyPath` on `type`.
-    private static func fieldName<T: Record>(of type: T.Type, for keyPath: AnyKeyPath) -> String? {
-        T.fieldName(for: keyPath)
     }
 
     /// A child's reference column, `.null` when it has no parent, or `nil` when the child isn't stored.
@@ -857,7 +859,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     private var prefetched: Prefetch?
-    private static let batchSize = 500
+    static let batchSize = 500
 
     func placeholders(_ count: Int) -> String {
         Array(repeating: "?", count: count).joined(separator: ", ")
@@ -1090,14 +1092,10 @@ final class RecordStore: @unchecked Sendable {
     /// Finds the join table behind an inverse key path such as `\ToDo.notes`.
     private func inverseRelation(_ keyPath: AnyKeyPath) throws -> RelationInfo? {
         guard let ownerType = type(of: keyPath).rootType as? any Record.Type,
-              let field = fieldName(ownerType, keyPath) else {
+              let field = ownerType.fieldName(for: keyPath) else {
             throw RecordsError.unknownInverse("\(keyPath)")
         }
         return relations().first { $0.ownerTable == ownerType.table && $0.field == field }
-    }
-
-    private func fieldName<O: Record>(_ type: O.Type, _ keyPath: AnyKeyPath) -> String? {
-        O.cachedSchema.field(for: keyPath)?.name
     }
 }
 
@@ -1149,11 +1147,10 @@ extension RecordStore: RelationLoader {
     /// never synced.
     func syncedDate(table: String, id: SQLiteValue) throws -> Date? {
         let row = try db.run(
-            "SELECT synced_at, acked, version FROM \"_records_meta\" WHERE record_table = ? AND record_id = ? AND known = 1",
+            "SELECT synced_at, acked, version, kind FROM \"_records_meta\" WHERE record_table = ? AND record_id = ? AND known = 1",
             [.text(table), id]
         ).first
-        guard let row, case .real(let time) = row["synced_at"],
-              (row["version"]?.integerValue ?? 0) <= (row["acked"]?.integerValue ?? 0) else { return nil }
+        guard let row, case .real(let time) = row["synced_at"], !Self.isPending(row) else { return nil }
         return Date(timeIntervalSince1970: time)
     }
 }
