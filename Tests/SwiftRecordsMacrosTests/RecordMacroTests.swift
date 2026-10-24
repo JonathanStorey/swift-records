@@ -183,6 +183,40 @@ final class RecordMacroTests: XCTestCase {
         )
     }
 
+    func testRejectsLetsWithInitialValues() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Tag {
+                let id = UUID()
+                let name: String
+            }
+            """,
+            expandedSource: """
+            struct Tag {
+                let id = UUID()
+                let name: String
+            }
+
+            extension Tag: Record {
+                static var schema: RecordSchema<Tag> {
+                    RecordSchema(table: "Tag", fields: [
+                        .field("name", \\Tag.name)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "'id' is a 'let' with an initial value, which decoding skips, so every fetch would give it a new value. Declare it with 'var'",
+                    line: 3, column: 5,
+                    fixIts: [FixItSpec(message: "Change 'let' to 'var'")]
+                ),
+            ],
+            macros: macros
+        )
+    }
+
     func testGeneratesDefaultsNamesRenamesAndIndexes() {
         assertMacroExpansion(
             """

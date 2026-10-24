@@ -70,6 +70,23 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         var fields: [String] = []
         for member in structDecl.memberBlock.members {
             guard let variable = member.decl.as(VariableDeclSyntax.self), isStored(variable) else { continue }
+            if variable.bindingSpecifier.tokenKind == .keyword(.let), variable.bindings.contains(where: { $0.initializer != nil }) {
+                // Codable skips a `let` that has an initial value, so a fetched record would get a new one.
+                let name = variable.bindings.first?.pattern.trimmedDescription ?? "property"
+                context.diagnose(Diagnostic(
+                    node: variable.bindingSpecifier,
+                    message: MacroError.message(
+                        "'\(name)' is a 'let' with an initial value, which decoding skips, so every fetch would give it a new value. Declare it with 'var'"
+                    ),
+                    fixIt: FixIt(message: MacroFixIt("Change 'let' to 'var'"), changes: [
+                        .replace(
+                            oldNode: Syntax(variable.bindingSpecifier),
+                            newNode: Syntax(variable.bindingSpecifier.with(\.tokenKind, .keyword(.var)))
+                        ),
+                    ])
+                ))
+                continue
+            }
             let reference = referenceArguments(variable.attributes)
             let asset = assetArguments(variable.attributes)
             let modifiers = fieldModifiers(variable.attributes)
@@ -345,6 +362,12 @@ private func warnOutsideRecord(_ node: AttributeSyntax, in context: some MacroEx
     context.diagnose(Diagnostic(node: node, message: MacroWarning(
         "@\(name) has no effect outside a @Record struct"
     )))
+}
+
+struct MacroFixIt: FixItMessage {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var fixItID: MessageID { MessageID(domain: "SwiftRecordsMacros", id: "fixit") }
 }
 
 enum MacroError: Error, CustomStringConvertible, DiagnosticMessage {

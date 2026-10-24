@@ -580,12 +580,15 @@ extension RecordStore {
         let entry = try logEntry(table, id: id)
         let sync = try syncRow(table, id: id)
         let pending = entry.map { $0.version > Int(sync?["acked"]?.integerValue ?? 0) } ?? false
+        // A delete has no properties to merge, so it settles by the policy for clashes.
+        let deletePolicy = policy.clashPolicy
 
         guard let values = record.fields else {
             // A server delete beats a local edit, unless local changes always win.
-            if pending, entry?.kind == .save, policy == .localWins {
+            if pending, entry?.kind == .save, deletePolicy == .localWins {
                 try updateSyncRow(table, id: id, ["acked": .integer(0), "known": .integer(0), "snapshot": .null, "tag": .null])
-                try setTagColumn(nil, table: table, id: id)
+                // The edit goes back based on the deletion, so a server that keeps it as a tombstone accepts it.
+                try setTagColumn(record.tag, table: table, id: id)
                 return
             }
             try applyingSyncedChanges { try deleteRow(table, id: id) }
@@ -602,7 +605,7 @@ extension RecordStore {
         }
 
         if pending, let entry {
-            if entry.kind == .delete, policy != .serverWins {
+            if entry.kind == .delete, deletePolicy != .serverWins {
                 // A local delete beats a server edit. It goes with the server's latest tag.
                 try updateSyncRow(table, id: id, ["known": .integer(1), "tag": record.tag.map { .blob($0) } ?? .null])
                 return

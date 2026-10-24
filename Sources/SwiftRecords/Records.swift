@@ -239,8 +239,11 @@ extension Records.Query {
             refilter = { records in (try? records.filter { try predicate.evaluate($0) }) ?? records }
         }
         return Self(
-            // A new page fetches again. Predicates aren't hashable, so a new one needs a new view identity.
-            key: descriptor.page.map { AnyHashable([$0.limit, $0.offset]) },
+            // A new filter or page fetches again.
+            key: AnyHashable([
+                predicate.map(PredicateFingerprint.of), descriptor.fetchLimit.map(AnyHashable.init),
+                AnyHashable(descriptor.fetchOffset),
+            ]),
             empty: [],
             fetch: { try $0.fetch(descriptor) },
             refilter: refilter,

@@ -315,6 +315,34 @@ struct Device {
         #expect(try await phone.recipes().isEmpty)
     }
 
+    @Test func deletesFollowTheMergePolicysChoiceForClashes() async throws {
+        // Under `.mergeProperties(otherwise: .localWins)` a local edit outlives a server delete.
+        let phone = try Device(server)
+        let tablet = try Device(server, mergePolicy: .mergeProperties(otherwise: .localWins))
+        var recipe = SyncRecipe(title: "Pie")
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        phone.context.delete(recipe)
+        try await phone.context.save()
+        recipe.title = "Pear pie"
+        tablet.context.insert(recipe)
+        try await tablet.context.save()
+        #expect(try await tablet.recipes().map(\.title) == ["Pear pie"])
+        #expect(server.count == 1)
+
+        // Under `.mergeProperties(otherwise: .serverWins)` a server edit undoes a local delete.
+        let laptop = try Device(server, mergePolicy: .mergeProperties(otherwise: .serverWins))
+        try await laptop.context.refresh()
+        laptop.context.delete(recipe)
+        try laptop.commit()
+        recipe.title = "Pear and fig pie"
+        tablet.context.insert(recipe)
+        try await tablet.context.save()
+        await laptop.download()
+        #expect(try await laptop.recipes().map(\.title) == ["Pear and fig pie"])
+    }
+
     // MARK: Arrival order and newer versions
 
     @Test func linksArrivingBeforeTheirTargetsResolveLater() async throws {

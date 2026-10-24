@@ -67,7 +67,9 @@ blocking while a background import holds the file. Autosave always uses it. For 
 actor, use a background context.
 
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
-with `rollback()`. A failed autosave sets `lastSaveError` and rolls back, since nothing could retry it.
+with `rollback()`. A failed autosave sets `lastSaveError`. If the failure can pass, such as a full disk
+or a widget writing at the same moment, its changes stay pending and autosave tries again after a
+second, then two, up to a minute. Otherwise it rolls back, since retrying would fail the same way.
 Every error the library throws is a `RecordsError`, such as `.invalidValue(type:property:)` for a NaN.
 
 `context.status` says where changes stand: `saving`, `saved` or `failed(_:)` for a local container, plus
@@ -401,7 +403,8 @@ Inverses aren't sent. The container owns the rules:
   settle whole records instead.
 - **Order syncs.** Moving a record in a `@Records` list moves it on every device, and a move merges like
   a property.
-- **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`.
+- **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`. Under
+  `.mergeProperties(otherwise:)`, its `otherwise` policy decides.
 - **Order doesn't matter.** A record can arrive before the records it links to, and its links appear
   when they do.
 - **A child's reference decides where it belongs.** If a parent's list and a child's reference
