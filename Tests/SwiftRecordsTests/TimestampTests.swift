@@ -4,7 +4,7 @@ import Testing
 
 @Record
 struct Journal {
-    var id = UUID()
+    var id = UUID.ordered()
     var text: String
     @Timestamp(.created) var created: Date?
     @Timestamp(.modified) var modified: Date?

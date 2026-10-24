@@ -18,9 +18,9 @@ import Testing
         try context.storage(for: .default).fetch(Draft.self, where: nil)
     }
 
-    private func shown(_ predicate: Predicate<Draft>? = nil, source: ObjectIdentifier? = nil) throws -> [Draft] {
+    private func shown(_ predicate: Predicate<Draft>? = nil) throws -> [Draft] {
         let stored = try context.storage(for: .default).fetch(Draft.self, where: predicate)
-        return context.overlay(stored, in: .default, source: source) { (try? predicate?.evaluate($0)) ?? true }
+        return context.overlay(stored, in: .default) { (try? predicate?.evaluate($0)) ?? true }
     }
 
     @Test func appendsShowBeforeSaving() throws {
@@ -101,17 +101,16 @@ import Testing
         #expect(try shown().isEmpty)
     }
 
-    @Test func aViewsOwnOrderApplies() throws {
-        let soup = Draft(title: "Soup")
-        let stew = Draft(title: "Stew")
-        context.insert(soup)
-        context.insert(stew)
+    @Test func newRecordsTakeTheirPlaceByID() throws {
+        let drafts = (0..<10).map { Draft(title: "D\($0)") }
+        for draft in drafts.prefix(5) { context.insert(draft) }
         try context.save()
 
-        let view = ObjectIdentifier(container)
-        context.apply([stew, soup], replacing: [soup, stew], source: view)
-        #expect(try shown(source: view).map(\.title) == ["Stew", "Soup"])
-        #expect(try shown().map(\.title) == ["Soup", "Stew"])
+        for draft in drafts.suffix(5) { context.insert(draft) }
+        #expect(try shown().map(\.id) == drafts.map(\.id).sorted { $0.precedes($1) })
+        // A binding that moves records changes nothing, since the order isn't stored.
+        context.apply(try shown().reversed(), replacing: try shown())
+        #expect(context.unsavedChanges == 5)
     }
 
     @Test func changesFromOthersAreTracked() throws {

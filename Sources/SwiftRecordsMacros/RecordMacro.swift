@@ -102,7 +102,7 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                 let keyPath = "\\\(typeName).\(name)"
                 if reservedNames.contains(name) {
                     context.diagnose(Diagnostic(node: binding, message: MacroError.message(
-                        "'\(name)' is a name SwiftRecords uses for its own bookkeeping. Choose another name"
+                        "'\(name)' is SQLite's name for a table's row ID. Choose another name"
                     )))
                     continue
                 }
@@ -178,9 +178,8 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         return [decl.cast(ExtensionDeclSyntax.self)]
     }
 
-    /// Column names the container uses for a record's position, version, change time and sync tag, and
-    /// SQLite's own row ID.
-    private static let reservedNames: Set<String> = ["_position", "_version", "_modified", "_tag", "rowid", "oid", "_rowid_"]
+    /// SQLite's names for a table's own row ID.
+    private static let reservedNames: Set<String> = ["rowid", "oid", "_rowid_"]
 
     private static func isIdentifier(_ name: String) -> Bool {
         guard let first = name.first, !first.isNumber else { return false }

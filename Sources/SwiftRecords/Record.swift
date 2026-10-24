@@ -200,3 +200,11 @@ extension Record {
         get throws { try ValueCoding.encode(id) }
     }
 }
+
+extension UUID {
+    /// Whether this ID lists before `other`. Records are listed by ID, and comparing the strings matches
+    /// SQLite's order for the stored bytes.
+    func precedes(_ other: UUID) -> Bool {
+        uuidString < other.uuidString
+    }
+}

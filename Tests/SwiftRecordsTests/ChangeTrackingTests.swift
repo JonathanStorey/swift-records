@@ -25,20 +25,19 @@ import Testing
         #expect(try context.container.fetch(Note.self).map(\.text) == ["hello"])
     }
 
-    @Test func reorderingOrDeletingIsStructuralOnlyWhenLinksChange() throws {
+    @Test func editingIsStructuralOnlyWhenLinksChange() throws {
         context.autosaveEnabled = false
         let source = ObjectIdentifier(NSObject())
         var todos = [ToDo(title: "A"), ToDo(title: "B")]
         context.apply(todos, replacing: [], source: source)
         try context.save()
 
-        // Moving rows only rewrites positions, which the cache already shows.
+        // Editing a title only rewrites the row, which the cache already shows.
         var previous = todos
-        todos.swapAt(0, 1)
+        todos[0].title = "A2"
         context.apply(todos, replacing: previous, source: source)
         try context.save()
         #expect(context.lastSaveSource == source)
-        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["B", "A"])
 
         previous = todos
         todos.removeLast()

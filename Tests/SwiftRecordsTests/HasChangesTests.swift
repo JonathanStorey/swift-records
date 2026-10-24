@@ -4,7 +4,7 @@ import Testing
 
 @Record
 struct Draft {
-    var id = UUID()
+    var id = UUID.ordered()
     var title = ""
     var tags: Set<String> = []
     var steps: [DraftStep] = []
@@ -14,7 +14,7 @@ struct Draft {
 
 @Record
 struct DraftStep {
-    var id = UUID()
+    var id = UUID.ordered()
     var text = ""
     @Reference(from: \Draft.steps) var drafts: Set<Draft.ID>
 }

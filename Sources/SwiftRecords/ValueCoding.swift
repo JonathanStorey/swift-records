@@ -233,9 +233,6 @@ private struct PrimitiveSingleValueContainer: SingleValueDecodingContainer {
         case .text(let text):
             guard let value = UInt64(text) else { throw mismatch(type) }
             return value
-        case .integer(let int) where int < 0:
-            // Earlier versions stored values above `Int64.max` as their bit pattern.
-            return UInt64(bitPattern: int)
         default:
             guard let value = UInt64(exactly: try integer()) else { throw mismatch(type) }
             return value

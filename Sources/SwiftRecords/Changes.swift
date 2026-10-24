@@ -36,7 +36,7 @@ package struct RecordChange: Hashable, Sendable {
 
 /// Bookkeeping kept beside a record that the record itself never sees.
 public struct RecordMetadata: Hashable, Sendable {
-    /// Goes up by one each time a save changes the record's values, links or order.
+    /// Goes up by one each time a save changes the record's values or links.
     public let version: Int
     /// When the latest of those changes was saved.
     public let modified: Date?

@@ -5,7 +5,7 @@ import Testing
 /// A record whose own Codable groups properties into nested containers.
 @Record
 struct Place {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     var street: String
     var city: String

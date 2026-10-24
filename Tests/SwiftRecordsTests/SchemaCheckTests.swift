@@ -4,52 +4,52 @@ import Testing
 
 @Record("Clash")
 struct ClashA {
-    var id = UUID()
+    var id = UUID.ordered()
     var name = ""
 }
 
 @Record("Clash")
 struct ClashB {
-    var id = UUID()
+    var id = UUID.ordered()
     var title = ""
 }
 
 @Record
 struct ClashOwner {
-    var id = UUID()
+    var id = UUID.ordered()
     var a: [ClashA] = []
     var b: [ClashB] = []
 }
 
 @Record
 struct WrongInverse {
-    var id = UUID()
+    var id = UUID.ordered()
     @Reference(from: \ToDo.tags) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct InverseOfAnotherType {
-    var id = UUID()
+    var id = UUID.ordered()
     @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct RenamedOntoAProperty {
-    var id = UUID()
+    var id = UUID.ordered()
     var title = ""
     @Renamed(from: "title") var name = ""
 }
 
 @Record
 struct RenamedTwice {
-    var id = UUID()
+    var id = UUID.ordered()
     @Renamed(from: "label") var name = ""
     @Renamed(from: "label") var caption = ""
 }
 
 @Record
 struct UnsyncableField {
-    var id = UUID()
+    var id = UUID.ordered()
     var _hidden = ""
 }
 

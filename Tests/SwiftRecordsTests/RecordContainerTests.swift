@@ -4,14 +4,14 @@ import Testing
 
 @Record
 struct Person {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     @Reference(from: \ToDo.owner) var todoIDs: Set<ToDo.ID>
 }
 
 @Record
 struct ToDo {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     var done = false
     var priority = 0
@@ -24,14 +24,14 @@ struct ToDo {
 
 @Record
 struct Note {
-    var id = UUID()
+    var id = UUID.ordered()
     var text: String
     @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct Subtask {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     @Reference(to: \ToDo.subtasks, action: .deleteSelf) var todo: ToDo.ID?
     @Reference(to: \Folder.items, action: .deleteSelf) var folder: Folder.ID?
@@ -39,7 +39,7 @@ struct Subtask {
 
 @Record
 struct Folder {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     var items: [Subtask] = []
 }
@@ -94,8 +94,8 @@ struct Folder {
 
         let fetched = try #require(try store.fetch(Note.self, id: note.id))
         #expect(fetched.todos == [first.id, second.id])
-        // A set of IDs loads in stored order.
-        #expect(try store.fetch(ToDo.self, ids: fetched.todos).map(\.title) == ["Second", "First"])
+        // A set of IDs loads sorted by ID.
+        #expect(try store.fetch(ToDo.self, ids: fetched.todos).map(\.title) == ["First", "Second"])
 
         let firstID = first.id
         #expect(try store.fetch(Note.self, where: #Predicate { $0.todos.contains(firstID) }).map(\.text) == ["Shared"])
@@ -195,14 +195,12 @@ struct Folder {
         #expect(long.map(\.title) == ["A much longer title"])
     }
 
-    @Test func fetchesInStoredOrder() throws {
-        let todos = [ToDo(title: "B", priority: 2), ToDo(title: "C", priority: 1), ToDo(title: "A", priority: 3)]
+    @Test func fetchesSortedByID() throws {
+        let todos = (0..<20).map { ToDo(title: "T\($0)") }
         try store.save(todos)
-
-        #expect(try store.fetch(ToDo.self).map(\.title) == ["B", "C", "A"])
-
-        try store.setOrder([todos[2].id, todos[0].id, todos[1].id], for: ToDo.self)
-        #expect(try store.fetch(ToDo.self).map(\.title) == ["A", "B", "C"])
+        let sorted = todos.map(\.id).sorted { $0.uuidString < $1.uuidString }
+        #expect(try store.fetch(ToDo.self).map(\.id) == sorted)
+        #expect(try store.fetch(ToDo.self, ids: Set(sorted)).map(\.id) == sorted)
     }
 
     @Test func persistsToDisk() throws {

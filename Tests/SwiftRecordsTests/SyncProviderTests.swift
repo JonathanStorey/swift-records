@@ -4,7 +4,7 @@ import Testing
 
 @Record("SyncRecipe")
 struct SyncRecipe {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     var servings = 1
     @Renamed(from: "notes") var summary = ""
@@ -17,7 +17,7 @@ struct SyncRecipe {
 
 @Record
 struct SyncStep {
-    var id = UUID()
+    var id = UUID.ordered()
     var text: String
     @Reference(to: \SyncRecipe.steps, action: .deleteSelf) var recipe: SyncRecipe.ID?
     @Reference(from: \SyncRecipe.steps) var recipes: Set<SyncRecipe.ID>
@@ -25,7 +25,7 @@ struct SyncStep {
 
 @Record
 struct SyncCook {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     @Reference(from: \SyncRecipe.cook) var recipeIDs: Set<SyncRecipe.ID>
 }
@@ -671,21 +671,6 @@ struct Device {
 @MainActor
 @Suite struct SyncedOrderTests {
     let server = TestServer()
-
-    @Test func reorderingOnOneDeviceReordersTheOthers() async throws {
-        let phone = try Device(server)
-        let tablet = try Device(server)
-        let recipes = ["Soup", "Stew", "Salad"].map { SyncRecipe(title: $0) }
-        for recipe in recipes { phone.context.insert(recipe) }
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().map(\.title) == ["Soup", "Stew", "Salad"])
-
-        try phone.container.setOrder([recipes[2].id, recipes[0].id, recipes[1].id], for: SyncRecipe.self)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().map(\.title) == ["Salad", "Soup", "Stew"])
-    }
 
     @Test func datesCrossToTheMillisecond() async throws {
         let phone = try Device(server)
