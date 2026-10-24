@@ -32,6 +32,11 @@ let package = Package(
                 .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ]
         ),
+        // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
+        .executableTarget(
+            name: "Benchmarks",
+            dependencies: ["SwiftRecords"]
+        ),
         .testTarget(
             name: "SwiftRecordsTests",
             dependencies: ["SwiftRecords"]

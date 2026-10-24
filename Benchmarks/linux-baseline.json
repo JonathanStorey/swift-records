@@ -1,0 +1,82 @@
+[
+  {
+    "name" : "Import recipes with steps, 500 per save",
+    "records" : 60000,
+    "seconds" : 12.839026441
+  },
+  {
+    "name" : "Insert and save 1,000 on the main context",
+    "records" : 6000,
+    "seconds" : 1.319314992
+  },
+  {
+    "name" : "Fetch every recipe with nested steps",
+    "records" : 66000,
+    "seconds" : 2.9100423810000002
+  },
+  {
+    "name" : "Fetch 1,000 recipes by ID",
+    "records" : 6000,
+    "seconds" : 0.330558851
+  },
+  {
+    "name" : "Fetch by an indexed property",
+    "records" : 8250,
+    "seconds" : 0.385677435
+  },
+  {
+    "name" : "Fetch by an unindexed property",
+    "records" : 6,
+    "seconds" : 0.005227376
+  },
+  {
+    "name" : "Count by a range on an unindexed property",
+    "records" : 11000,
+    "seconds" : 0.001077309
+  },
+  {
+    "name" : "Read 100 pages of 50 from the middle",
+    "records" : 30000,
+    "seconds" : 1.286329035
+  },
+  {
+    "name" : "Edit and save 1,000 recipes",
+    "records" : 1000,
+    "seconds" : 0.715087604
+  },
+  {
+    "name" : "Reorder the steps of 1,000 recipes",
+    "records" : 6000,
+    "seconds" : 0.794740441
+  },
+  {
+    "name" : "Delete 1,000 recipes and cascade to steps",
+    "records" : 6000,
+    "seconds" : 0.800965569
+  },
+  {
+    "name" : "Upload the whole store",
+    "records" : 60000,
+    "seconds" : 12.934827368
+  },
+  {
+    "name" : "Download the whole store to a new device",
+    "records" : 60000,
+    "seconds" : 19.699158024
+  },
+  {
+    "name" : "Upload 100 edits from a large store",
+    "records" : 100,
+    "seconds" : 0.038152027
+  },
+  {
+    "name" : "Download 100 edits into a large store",
+    "records" : 100,
+    "seconds" : 0.057962918
+  },
+  {
+    "name" : "Resync the whole store with a new server",
+    "records" : 60000,
+    "seconds" : 12.587720778
+  }
+]

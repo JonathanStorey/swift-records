@@ -175,7 +175,7 @@ actor SyncCoordinator {
             if download {
                 try await downloadChanges()
                 // Merging with the server's copies leaves edits to send.
-                if upload, !signedOut, !((try? store.pendingChanges()) ?? []).isEmpty {
+                if upload, !signedOut, !((try? store.pendingChanges(limit: 1)) ?? []).isEmpty {
                     try await uploadPending()
                 }
             }
@@ -210,13 +210,19 @@ actor SyncCoordinator {
 
     private func uploadPending() async throws {
         var skipped: Set<Key> = []
-        for _ in 0..<Self.maxRounds {
+        // Only rounds that meet conflicts count, so a large upload goes in one pass.
+        var conflictRounds = 0
+        while conflictRounds < Self.maxRounds {
             var batch: [UUID: (change: PendingChange, record: SyncRecord, fields: SyncFields?)] = [:]
             var order: [UUID] = []
-            for change in try store.pendingChanges() {
+            for change in try store.pendingChanges(limit: Self.batchSize + skipped.count) {
                 guard batch.count < Self.batchSize else { break }
-                guard !skipped.contains(Key(table: change.table, id: change.id)), batch[change.id] == nil,
-                      let (record, fields) = try? store.syncRecord(for: change) else { continue }
+                let key = Key(table: change.table, id: change.id)
+                guard !skipped.contains(key), batch[change.id] == nil else { continue }
+                guard let (record, fields) = try? store.syncRecord(for: change) else {
+                    skipped.insert(key)
+                    continue
+                }
                 batch[change.id] = (change, record, fields)
                 order.append(change.id)
             }
@@ -251,6 +257,7 @@ actor SyncCoordinator {
             }
             // A conflict's merge stays pending and goes in the next round, based on the server's copy.
             if !conflicts.isEmpty {
+                conflictRounds += 1
                 try await receive(conflicts)
             }
         }

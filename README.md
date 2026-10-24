@@ -551,6 +551,38 @@ Typing into a bound field stays cheap: the context keeps only the latest pending
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.
 
+## Benchmarks
+
+The `Benchmarks` program times the heaviest operations on a store of recipes with five nested steps
+each, written to files on disk and synced through a server in memory, so sync timings measure the local
+database rather than a network:
+
+```
+swift run -c release Benchmarks                                       # 10,000 recipes, 60,000 records
+swift run -c release Benchmarks --recipes 50000                       # a larger store
+swift run -c release Benchmarks --save before.json                    # keep a run
+swift run -c release Benchmarks --compare before.json                 # each timing's change from it
+```
+
+It covers a background import, saving on the main context, fetching every record with its nested
+children, fetching by ID, indexed and unindexed predicates, counting, paging, editing, reordering
+children, cascading deletes, uploading and downloading a whole store, syncing 100 edits into a large
+store, and resyncing everything with a new server. Each step checks its result, so a run also fails
+when an operation goes wrong at scale. `Benchmarks/linux-baseline.json` is a run in the `swift:6.1-noble` image that CI uses, on a cloud VM.
+
+Some timings from that run, for 60,000 records:
+
+| Operation | Time |
+| --- | --- |
+| Import in saves of 500 | 12.8 s |
+| Fetch every recipe with its steps | 2.9 s |
+| Fetch 1,000 recipes by ID | 0.33 s |
+| Edit and save 1,000 recipes | 0.72 s |
+| Delete 1,000 recipes and their steps | 0.80 s |
+| Upload the whole store | 12.9 s |
+| Download the whole store to a new device | 19.7 s |
+| Sync 100 edits from a large store | 38 ms |
+
 ## Requirements
 
 iOS 17, macOS 14, Swift 6. The package also builds on Linux with `libsqlite3-dev`, which is how CI and
