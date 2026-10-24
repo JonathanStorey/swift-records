@@ -79,7 +79,7 @@ import Testing
                 _ = release.wait(timeout: .now() + 2)
             }
         }
-        held.wait()
+        block(until: held)
         todo.title = "New"
         context.insert(todo)
         let save = Task { try await context.save() }
@@ -89,4 +89,9 @@ import Testing
         release.signal()
         try await save.value
     }
+}
+
+/// Waits on a semaphore from a test, which can't call `wait()` in an async context directly.
+private func block(until semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }
