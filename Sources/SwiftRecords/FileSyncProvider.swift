@@ -465,7 +465,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         if let owner = change.owner {
             members["owner"] = try encoder.encode(owner)
         }
-        // Milliseconds since 1970, like `_modified` in the record.
+        // Milliseconds since 1970, as dates are in the record.
         if let synced = change.synced {
             members["synced"] = try encoder.encode(milliseconds(synced))
         }

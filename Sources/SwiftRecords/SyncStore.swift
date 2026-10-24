@@ -9,7 +9,8 @@ struct SyncRecord: Sendable {
     var fields: SyncFields?
     /// The server's `synced` date for the copy this one is based on, as stored in the record's tag.
     var tag: Data?
-    /// When the record was last edited, which settles a conflict under `.latestWins`.
+    /// For a copy from the server, when it was edited: the server's `synced` date, or the edit time an
+    /// older device sent. It settles a clash under `.latestWins` when the type has no `@Timestamp(.modified)`.
     var modified: Date?
     /// The record's place in its type's stored order.
     var position: Int64?
@@ -501,14 +502,12 @@ extension RecordStore {
                 return (SyncRecord(type: change.table, id: change.id, fields: nil, tag: tag), nil)
             }
             guard let fields = try syncFields(table: change.table, id: id) else { return nil }
-            let row = try db.run("SELECT \"_tag\", \"_modified\" FROM \(quoted(change.table)) WHERE id = ?", [id]).first
+            let row = try db.run("SELECT \"_tag\" FROM \(quoted(change.table)) WHERE id = ?", [id]).first
             var tag: Data?
             if case .blob(let data)? = row?["_tag"] { tag = data }
-            var modified: Date?
-            if case .real(let time)? = row?["_modified"] { modified = Date(timeIntervalSince1970: time) }
             var values = fields
             let position = values.removeValue(forKey: positionField)
-            var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag, modified: modified)
+            var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag)
             if case .int(let place)? = position { record.position = place }
             return (record, fields)
         }
@@ -612,11 +611,7 @@ extension RecordStore {
             }
             if entry.kind == .save {
                 let local = try syncFields(table: table, id: id) ?? [:]
-                let localModified = try db.run("SELECT \"_modified\" FROM \(quoted(table)) WHERE id = ?", [id]).first?["_modified"]
-                var localIsLater = false
-                if case .real(let time)? = localModified, let serverTime = record.modified {
-                    localIsLater = time > serverTime.timeIntervalSince1970
-                }
+                let localIsLater = try isLocalLater(type, id: id, local: local, server: server, serverDate: record.modified)
                 let merged = SyncMerge.merge(
                     local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), policy: policy, localIsLater: localIsLater
                 )
@@ -643,6 +638,22 @@ extension RecordStore {
             "synced_at": .real(Date().timeIntervalSince1970),
         ])
         try setTagColumn(record.tag, table: table, id: id)
+    }
+
+    /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestWins`. A
+    /// `@Timestamp(.modified)` property dates both copies when the type has one. Otherwise the local edit
+    /// time is compared with when the server accepted its copy.
+    private func isLocalLater<R: Record>(
+        _ type: R.Type, id: SQLiteValue, local: SyncFields, server: SyncFields, serverDate: Date?
+    ) throws -> Bool {
+        for field in R.schema.fields where field.timestamp == .modified {
+            if case .date(let localDate)? = local[field.name], case .date(let serverDate)? = server[field.name] {
+                return localDate > serverDate
+            }
+        }
+        let row = try db.run("SELECT \"_modified\" FROM \(quoted(R.table)) WHERE id = ?", [id]).first
+        guard case .real(let time)? = row?["_modified"], let serverDate else { return false }
+        return time > serverDate.timeIntervalSince1970
     }
 
     private func park(_ change: RecordChangeData) throws {
