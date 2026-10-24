@@ -49,16 +49,16 @@ import Testing
         print("PROBE tagged decodes: tag=\(back?.recordChangeTag ?? "nil") created=\(String(describing: back?.creationDate)) modified=\(String(describing: back?.modificationDate)) creator=\(String(describing: back?.creatorUserRecordID?.recordName))")
 
         // Edit the plist directly: swap the tag string and decode.
-        var plist = try PropertyListSerialization.propertyList(from: tagged, options: .mutableContainersAndLeaves, format: nil) as! NSMutableDictionary
+        let plist = try PropertyListSerialization.propertyList(from: tagged, options: .mutableContainersAndLeaves, format: nil) as! NSMutableDictionary
         let objects = plist["$objects"] as! NSMutableArray
-        if let index = objects.firstIndex(where: { ($0 as? String) == "tag-abc" }) {
-            objects[index] = "tag-xyz"
+        let index = objects.index(of: "tag-abc")
+        if index != NSNotFound {
+            objects.replaceObject(at: index, with: "tag-xyz")
             let edited = try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
             print("PROBE edited plist decodes: tag=\(Self.decode(edited)?.recordChangeTag ?? "nil")")
         } else {
             print("PROBE no tag string in objects")
         }
-        plist = [:]
     }
 }
 #endif
