@@ -213,8 +213,8 @@ struct MisplacedReference {
         phone.context.insert(recipe)
         try await phone.context.save()
 
-        #expect(server.value("SyncStep", recipe.steps[0].id, "recipe", as: UUID.self) == recipe.id)
-        #expect(server.value("SyncRecipe", recipe.id, "steps", as: [UUID].self) == [recipe.steps[0].id])
+        #expect(server.value("SyncStep", recipe.steps[0].id, "recipe") == .reference(recipe.id, action: .deleteSelf))
+        #expect(server.value("SyncRecipe", recipe.id, "steps") == .strings([recipe.steps[0].id.uuidString]))
 
         let tablet = try Device(server)
         try await tablet.context.refresh()
@@ -230,7 +230,7 @@ struct MisplacedReference {
         try await phone.context.save()
 
         // Another device moved the step to the stew, and its recipes' lists haven't arrived yet.
-        server.put("SyncStep", id: soup.steps[0].id, json: #"{"text":"Chop","recipe":"\#(stew.id)"}"#)
+        server.put("SyncStep", id: soup.steps[0].id, fields: ["text": .string("Chop"), "recipe": .reference(stew.id, action: .deleteSelf)])
         try await phone.context.refresh()
 
         let recipes = try await phone.recipes()

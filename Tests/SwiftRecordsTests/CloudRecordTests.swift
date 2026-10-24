@@ -2,10 +2,10 @@ import Foundation
 @testable import SwiftRecords
 import Testing
 
-/// Records as CloudKit holds them: plain fields, children as lists of record names, and one reference
+/// Records as they cross to a server: plain values, children as lists of record names, and one reference
 /// from each child to its parent.
 @MainActor
-@Suite struct CloudRecordTests {
+@Suite struct RecordValueTests {
     let server = TestServer()
 
     @Test func recordsMapFieldForField() async throws {
@@ -19,26 +19,25 @@ import Testing
         try await phone.context.save()
 
         let saved = try #require(server.record("SyncRecipe", recipe.id))
-        let cloud = try #require(try phone.container.cloudRecord(for: saved))
-        #expect(cloud.type == "SyncRecipe")
-        #expect(cloud.fields["title"] == .string("Soup"))
-        #expect(cloud.fields["servings"] == .int(4))
-        #expect(cloud.fields["tags"] == .strings(["winter"]))
-        #expect(cloud.fields["updated"] == .date(Date(timeIntervalSince1970: 1_000)))
+        let fields = try #require(saved.fields)
+        #expect(saved.type == "SyncRecipe")
+        #expect(fields["title"] == .string("Soup"))
+        #expect(fields["servings"] == .int(4))
+        #expect(fields["tags"] == .strings(["winter"]))
+        #expect(fields["updated"] == .date(Date(timeIntervalSince1970: 1_000)))
         // Children are plain record names in order, not references.
-        #expect(cloud.fields["steps"] == .strings(recipe.steps.map(\.id.uuidString)))
-        #expect(cloud.fields["cook"] == .strings([recipe.cook!.id.uuidString]))
-        guard case .asset(let file)? = cloud.fields["photo"] else {
+        #expect(fields["steps"] == .strings(recipe.steps.map(\.id.uuidString)))
+        #expect(fields["cook"] == .strings([recipe.cook!.id.uuidString]))
+        guard case .asset(let id)? = fields["photo"] else {
             Issue.record("The photo isn't an asset")
             return
         }
-        #expect(try Data(contentsOf: file) == Data([1, 2, 3]))
+        #expect(try Data(contentsOf: phone.container.defaultStorage.store.assetURL(named: id)) == Data([1, 2, 3]))
 
-        let savedStep = try #require(server.record("SyncStep", recipe.steps[0].id))
-        let step = try #require(try phone.container.cloudRecord(for: savedStep))
-        #expect(step.fields["recipe"] == .reference(recipe.id, action: .deleteSelf))
-        #expect(step.fields["recipes"] == nil)
-        #expect(step.fields["text"] == .string("Chop"))
+        let step = try #require(server.record("SyncStep", recipe.steps[0].id)?.fields)
+        #expect(step["recipe"] == .reference(recipe.id, action: .deleteSelf))
+        #expect(step["recipes"] == nil)
+        #expect(step["text"] == .string("Chop"))
     }
 
     @Test func recordsComeBackUnchanged() async throws {
@@ -53,31 +52,21 @@ import Testing
 
         for (type, id) in [("SyncRecipe", recipe.id), ("SyncStep", recipe.steps[0].id)] {
             let original = try #require(server.record(type, id))
-            let cloud = try #require(try phone.container.cloudRecord(for: original))
-            let back = try phone.container.change(from: cloud, zone: .default, owner: nil, synced: original.synced)
-            #expect(try store.syncRecord(from: back).fields == store.syncRecord(from: original).fields)
+            let back = try store.change(for: store.syncRecord(from: original), zone: .default, owner: nil)
+            #expect(back.fields == original.fields)
+            #expect(back.metadata == original.metadata)
         }
-        #expect(try phone.container.cloudRecord(for: .delete(id: recipe.id, zone: .default, type: "SyncRecipe", owner: nil, synced: nil)) == nil)
     }
 
     @Test func fieldsFromNewerVersionsKeepTheirShape() throws {
         let phone = try Device(server)
-        let id = UUID()
-        let json = #"{"title":"Soup","servings":2,"steps":[],"cook":[],"rating":4.5,"labels":["a","b"],"extra":{"x":1}}"#
-        let change = RecordChangeData.save(id: id, zone: .default, type: "SyncRecipe", json: Data(json.utf8), owner: nil, synced: nil)
-
-        let cloud = try #require(try phone.container.cloudRecord(for: change))
-        #expect(cloud.fields["rating"] == .double(4.5))
-        #expect(cloud.fields["labels"] == .strings(["a", "b"]))
-        guard case .bytes(let extra)? = cloud.fields["extra"] else {
-            Issue.record("An object field isn't JSON data")
-            return
-        }
-        #expect(try JSONSerialization.jsonObject(with: extra) as? [String: Int] == ["x": 1])
-
+        let change = RecordChangeData(id: UUID(), zone: .default, type: "SyncRecipe", fields: [
+            "title": .string("Soup"), "servings": .int(2), "rating": .double(4.5), "labels": .strings(["a", "b"]),
+            "extra": .bytes(Data(#"{"x":1}"#.utf8)), "link": .reference(UUID(), action: .none),
+        ])
         let store = phone.container.defaultStorage.store
-        let back = try phone.container.change(from: cloud, zone: .default, owner: nil, synced: nil)
-        #expect(try store.syncRecord(from: back).fields == store.syncRecord(from: change).fields)
+        let back = try store.change(for: store.syncRecord(from: change), zone: .default, owner: nil)
+        #expect(back.fields?.filter { !["steps", "cook"].contains($0.key) } == change.fields)
     }
 
     @Test func structsMapAsStoredRecordsDo() async throws {
@@ -87,17 +76,14 @@ import Testing
             steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cook: SyncCook(name: "Ana")
         )
         recipe.photo = Data([1, 2, 3])
-        let plain = try RecordStore.cloudRecord(of: recipe)
+        let plain = try RecordStore.recordValues(of: recipe)
 
         phone.context.insert(recipe)
         try await phone.context.save()
-        let saved = try #require(server.record("SyncRecipe", recipe.id))
-        let stored = try #require(try phone.container.cloudRecord(for: saved))
-        #expect(plain.type == stored.type)
-        #expect(plain.id == stored.id)
+        let stored = try #require(server.record("SyncRecipe", recipe.id)?.fields)
         // The asset is a file in each case, just not the same file.
-        #expect(plain.fields.filter { $0.key != "photo" } == stored.fields.filter { $0.key != "photo" })
-        guard case .asset(let file)? = plain.fields["photo"] else {
+        #expect(plain.values.filter { $0.key != "photo" } == stored.filter { $0.key != "photo" })
+        guard case .asset(let id)? = plain.values["photo"], let file = plain.files[id] else {
             Issue.record("The photo isn't an asset")
             return
         }
@@ -106,23 +92,30 @@ import Testing
         // A step holds its parent once saved through it, and then maps as the stored step does.
         var step = recipe.steps[0]
         step.recipe = recipe.id
-        let savedStep = try #require(server.record("SyncStep", step.id))
-        let storedStep = try phone.container.cloudRecord(for: savedStep)
-        #expect(try RecordStore.cloudRecord(of: step) == storedStep)
+        #expect(try RecordStore.recordValues(of: step).values == server.record("SyncStep", step.id)?.fields)
     }
 
     @Test func aStructNeverSavedMapsFromItsValuesAlone() throws {
         let recipe = SyncRecipe(title: "Toast")
-        let cloud = try RecordStore.cloudRecord(of: recipe)
-        #expect(cloud == CloudRecord(type: "SyncRecipe", id: recipe.id, fields: [
+        #expect(try RecordStore.recordValues(of: recipe).values == [
             "title": .string("Toast"), "servings": .int(1), "summary": .string(""), "tags": .strings([]),
-        ]))
+        ])
         // A child that isn't linked yet has no reference.
-        #expect(try RecordStore.cloudRecord(of: SyncStep(text: "Chop")).fields == ["text": .string("Chop")])
+        #expect(try RecordStore.recordValues(of: SyncStep(text: "Chop")).values == ["text": .string("Chop")])
     }
 
     @Test func aPropertyThatWontEncodeThrows() {
-        #expect(throws: RecordsError.self) { try RecordStore.cloudRecord(of: Unencodable()) }
+        #expect(throws: RecordsError.self) { try RecordStore.recordValues(of: Unencodable()) }
+    }
+
+    @Test func valuesEncodeAsSingleKeyObjects() throws {
+        let id = UUID()
+        let values: [String: RecordValue] = [
+            "a": .string("Soup"), "b": .int(4), "c": .reference(id, action: .deleteSelf), "d": .reference(id, action: .none),
+        ]
+        let json = String(decoding: try WireJSON.encoder.encode(values), as: UTF8.self)
+        #expect(json == #"{"a":{"string":"Soup"},"b":{"int":4},"c":{"action":"deleteSelf","reference":"\#(id)"},"d":{"reference":"\#(id)"}}"#)
+        #expect(try WireJSON.decoder.decode([String: RecordValue].self, from: Data(json.utf8)) == values)
     }
 }
 
@@ -157,6 +150,7 @@ import CloudKit
 
         let saved = try #require(server.record("SyncRecipe", recipe.id))
         let record = try #require(try phone.container.ckRecord(for: saved, in: zoneID))
+        #expect(record.recordChangeTag == nil)
         #expect(record.recordID.recordName == recipe.id.uuidString)
         #expect(record.recordType == "SyncRecipe")
         #expect(record["title"] as? String == "Soup")
@@ -167,6 +161,10 @@ import CloudKit
 
         let (back, assets) = try phone.container.change(from: record, zone: .default)
         #expect(assets.count == 1)
+        #expect(back.metadata.systemFields != nil)
+        // The archived system fields bring back the same record.
+        let again = try #require(try phone.container.ckRecord(for: back, in: zoneID))
+        #expect(again.recordID == record.recordID)
         #expect(try store.syncRecord(from: back).fields?["title"] == .string("Soup"))
         #expect(try store.syncRecord(from: back).fields?["steps"] == .ids([recipe.steps[0].id]))
 

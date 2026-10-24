@@ -30,7 +30,7 @@ import Testing
         try await phone.mainContext.save()
 
         let json = try String(contentsOf: recordFile(recipe.id), encoding: .utf8)
-        #expect(json.contains(#""title":"Soup""#))
+        #expect(json.contains(#""title":{"string":"Soup"}"#))
         #expect(json.contains(#""type":"SyncRecipe""#))
 
         try await tablet.mainContext.refresh()
@@ -124,7 +124,7 @@ import Testing
         try FileManager.default.createDirectory(at: zone.appendingPathComponent("_assets"), withIntermediateDirectories: true)
         try Data([4, 5, 6]).write(to: zone.appendingPathComponent("_assets/photo.jpg"))
         let json = """
-            {"id":"\(id.uuidString)","record":{"photo":"photo.jpg","servings":2,"title":"Bread"},\
+            {"id":"\(id.uuidString)","record":{"photo":{"asset":"photo.jpg"},"servings":{"int":2},"title":{"string":"Bread"}},\
             "synced":1700000000000,"type":"SyncRecipe","zone":"_default"}
             """
         try Data(json.utf8).write(to: recordFile(id))
@@ -144,7 +144,7 @@ import Testing
         phone.mainContext.insert(edited)
         try await phone.mainContext.save()
         let written = try String(contentsOf: recordFile(id), encoding: .utf8)
-        #expect(written.contains(#""servings":3"#))
+        #expect(written.contains(#""servings":{"int":3}"#))
         #expect(!written.contains("1700000000000"))
     }
 
@@ -175,12 +175,12 @@ import Testing
             }
         }
         defer { listener.cancel() }
-        let save = RecordChangeData.save(id: UUID(), zone: "notes", type: "Note", json: Data("{}".utf8), owner: nil, synced: nil)
+        let save = RecordChangeData(id: UUID(), zone: "notes", type: "Note", fields: [:])
         _ = try await provider.uploadRecordChanges([save])
         try await Task.sleep(for: .milliseconds(200))
         #expect(await heard.zones.isEmpty)
 
-        _ = try await other.uploadRecordChanges([.save(id: UUID(), zone: "notes", type: "Note", json: Data("{}".utf8), owner: nil, synced: nil)])
+        _ = try await other.uploadRecordChanges([RecordChangeData(id: UUID(), zone: "notes", type: "Note", fields: [:])])
         for _ in 0..<250 where await heard.zones.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -201,9 +201,9 @@ import Testing
 
     @Test func conflictingVersionsKeepTheLaterSync() {
         func copy(_ milliseconds: Double?) -> RecordChangeData {
-            .save(
-                id: UUID(), zone: .default, type: "Recipe", json: Data("{}".utf8), owner: nil,
-                synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) }
+            RecordChangeData(
+                id: UUID(), zone: .default, type: "Recipe", fields: [:],
+                metadata: SyncMetadata(synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) })
             )
         }
         #expect(FileSyncProvider.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)

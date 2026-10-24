@@ -387,14 +387,29 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 ```
 
-The unit of sync is a whole record, `RecordChangeData`: `.save(id:zone:type:json:owner:synced:)` or
-`.delete(id:zone:type:owner:synced:)`. The JSON reads like the record, with relationships as arrays of
-IDs and assets as their file IDs. Nothing else is added. The server
-stamps every accepted change with a strictly later `synced` date and returns it as `.synced(id:at:)`. An
-upload carries the date of the copy it was edited from, and a server whose copy is newer answers
-`.conflict` with that copy, which the container merges and sends again. A server can use the newest
-`synced` date as its download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a
-whole call fails.
+The unit of sync is a whole record, `RecordChangeData`, shaped like a `CKRecord`: its values and its
+sync metadata, kept apart.
+
+```swift
+public struct RecordChangeData {
+    var id: UUID, zone: Zone, type: String
+    var fields: [String: RecordValue]?     // nil for a deletion
+    var metadata: SyncMetadata             // synced date, public owner, provider's system fields
+}
+```
+
+Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.bytes`, the lists
+`.strings`, `.ints`, `.doubles` and `.dates`, `.reference(id, action:)` for a child's parent, and
+`.asset(id)` for an asset's file ID. Relationships are `.strings` of record names. Any other `Codable`
+value travels as its JSON in `.bytes`. Nothing else is added. The server stamps every accepted change
+with a strictly later `synced` date and returns it as `.synced(id:at:systemFields:)`. An upload carries
+the date of the copy it was edited from, and a server whose copy is newer answers `.conflict` with that
+copy, which the container merges and sends again. A server can use the newest `synced` date as its
+download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
+
+`metadata.systemFields` is the provider's own bookkeeping, such as a `CKRecord`'s archived system fields.
+The container stores it with the record, outside the struct, and hands it back untouched with the
+record's next upload. It comes from `.synced(id:at:systemFields:)` or from a downloaded change.
 
 A provider that hears about changes, such as from push notifications, returns a stream from
 `pushedChanges()`. The container downloads each zone the stream names, so views update without a
@@ -413,7 +428,7 @@ if let progress = context.assetProgress {
 }
 ```
 
-`publicZones` names zones everyone shares. Their records carry the user who created them as `owner`,
+`publicZones` names zones everyone shares. Their records carry the user who created them as `metadata.owner`,
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.
 
@@ -441,11 +456,11 @@ Inverses aren't sent. The container owns the rules:
 
 ### CloudKit records
 
-On Apple platforms a change converts to a `CKRecord` and back, field for field, so a CloudKit provider
+On Apple platforms a change converts to a `CKRecord` and back, value for value, so a CloudKit provider
 stores records exactly as CloudKit expects:
 
 ```swift
-let record = try container.ckRecord(for: change, in: zoneID, base: lastServerCopy)   // nil for a deletion
+let record = try container.ckRecord(for: change, in: zoneID)   // nil for a deletion
 let (change, assets) = try container.change(from: record, zone: zone)
 ```
 
@@ -460,10 +475,10 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | `@Asset` | a `CKAsset` |
 | inverses, `@Timestamp(.synced)` | nothing: they're rebuilt locally |
 
-Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Pass the
-server's last copy as `base`, such as one rebuilt from its encoded system fields, so a save carries its
-change tag. Coming back, `modificationDate` is the `synced` date, and in a public zone the creator is the
-owner. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
+Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. A change
+whose metadata holds system fields builds on them, so a save carries the server copy's change tag.
+Coming back, `change(from:zone:)` archives the record's system fields into the metadata,
+`modificationDate` is the `synced` date, and in a public zone the creator is the owner. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
 `downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
 `deletion(of:type:zone:)`.
 
@@ -502,7 +517,8 @@ let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in Fil
 | `.applicationSupport` | Application Support on this device, for tests and the simulator |
 | `.other(directory: url)` | Any folder |
 
-Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, and assets are plain files
+Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
+kind, such as `"title":{"string":"Soup"}`, and assets are plain files
 in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
 them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
 can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
@@ -613,14 +629,14 @@ Some timings from that run, for 60,000 records:
 
 | Operation | Time |
 | --- | --- |
-| Import in saves of 500 | 7.5 s |
-| Fetch every recipe with its steps | 2.4 s |
-| Fetch 1,000 recipes by ID | 0.33 s |
+| Import in saves of 500 | 7.1 s |
+| Fetch every recipe with its steps | 2.5 s |
+| Fetch 1,000 recipes by ID | 0.24 s |
 | Edit and save 1,000 recipes | 0.31 s |
-| Delete 1,000 recipes and their steps | 0.55 s |
-| Upload the whole store | 8.7 s |
-| Download the whole store to a new device | 11.8 s |
-| Sync 100 edits from a large store | 17 ms |
+| Delete 1,000 recipes and their steps | 0.53 s |
+| Upload the whole store | 6.9 s |
+| Download the whole store to a new device | 9.1 s |
+| Sync 100 edits from a large store | 14 ms |
 
 ## Requirements
 

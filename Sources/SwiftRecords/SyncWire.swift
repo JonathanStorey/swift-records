@@ -1,10 +1,9 @@
 import Foundation
 
-/// How a record's fields are written as the `json` of a `RecordChangeData`: one key per stored property,
-/// each value as its property's type encodes, so the JSON reads like the record itself.
+/// Plain JSON for values that decode as a property's type, with dates in milliseconds.
 enum WireJSON {
     /// The key a public record's owner is kept under in the container's own copy of its fields. It crosses
-    /// as `RecordChangeData`'s `owner`, never inside the JSON.
+    /// as `SyncMetadata`'s `owner`, never among the fields.
     static let ownerKey = "_owner"
 
     static let encoder: JSONEncoder = {
@@ -19,128 +18,6 @@ enum WireJSON {
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return decoder
     }()
-
-    /// Writes an object from already encoded values, its keys sorted.
-    static func object(_ values: [String: Data]) throws -> Data {
-        var data = Data("{".utf8)
-        for (index, key) in values.keys.sorted().enumerated() {
-            if index > 0 { data.append(contentsOf: Array(",".utf8)) }
-            data.append(try encoder.encode(key))
-            data.append(contentsOf: Array(":".utf8))
-            data.append(values[key]!)
-        }
-        data.append(contentsOf: Array("}".utf8))
-        return data
-    }
-
-    /// Splits an object into its keys and each value's own JSON, leaving out `null` values. Each value is
-    /// sliced from the object's bytes as it stands, rather than parsed and written out again, which made up
-    /// most of the cost of applying a download. Decoding a value checks it in full.
-    static func members(of json: Data) throws -> [String: Data] {
-        let bytes = [UInt8](json)
-        var index = 0
-        func corrupted() -> DecodingError {
-            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Not a JSON object"))
-        }
-        func skipWhitespace() {
-            while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
-        }
-        /// Moves past the string that starts at `index`, and returns whether it holds an escape.
-        func skipString() throws -> Bool {
-            guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else { throw corrupted() }
-            index += 1
-            var escaped = false
-            while index < bytes.count {
-                switch bytes[index] {
-                case UInt8(ascii: "\\"): escaped = true; index += 2
-                case UInt8(ascii: "\""): index += 1; return escaped
-                default: index += 1
-                }
-            }
-            throw corrupted()
-        }
-        /// Moves past the value that starts at `index`, stopping at the `,` or `}` after a number or literal.
-        func skipValue() throws {
-            var depth = 0
-            while index < bytes.count {
-                switch bytes[index] {
-                case UInt8(ascii: "\""):
-                    _ = try skipString()
-                    if depth == 0 { return }
-                    continue
-                case UInt8(ascii: "{"), UInt8(ascii: "["):
-                    depth += 1
-                case UInt8(ascii: "}"), UInt8(ascii: "]"):
-                    if depth == 0 { return }
-                    depth -= 1
-                    index += 1
-                    if depth == 0 { return }
-                    continue
-                case UInt8(ascii: ","):
-                    if depth == 0 { return }
-                default:
-                    break
-                }
-                index += 1
-            }
-            throw corrupted()
-        }
-
-        skipWhitespace()
-        guard index < bytes.count, bytes[index] == UInt8(ascii: "{") else { throw corrupted() }
-        index += 1
-        var members: [String: Data] = [:]
-        skipWhitespace()
-        if index < bytes.count, bytes[index] == UInt8(ascii: "}") { index += 1 } else {
-            while true {
-                skipWhitespace()
-                let keyStart = index
-                let escaped = try skipString()
-                let key = escaped
-                    ? try decoder.decode(String.self, from: Data(bytes[keyStart..<index]))
-                    : String(decoding: bytes[(keyStart + 1)..<(index - 1)], as: UTF8.self)
-                skipWhitespace()
-                guard index < bytes.count, bytes[index] == UInt8(ascii: ":") else { throw corrupted() }
-                index += 1
-                skipWhitespace()
-                let valueStart = index
-                try skipValue()
-                var valueEnd = index
-                while valueEnd > valueStart, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[valueEnd - 1]) { valueEnd -= 1 }
-                guard valueEnd > valueStart else { throw corrupted() }
-                let value = bytes[valueStart..<valueEnd]
-                if !value.elementsEqual("null".utf8) {
-                    members[key] = Data(value)
-                }
-                skipWhitespace()
-                guard index < bytes.count else { throw corrupted() }
-                if bytes[index] == UInt8(ascii: ",") { index += 1; continue }
-                guard bytes[index] == UInt8(ascii: "}") else { throw corrupted() }
-                index += 1
-                break
-            }
-        }
-        skipWhitespace()
-        guard index == bytes.count else { throw corrupted() }
-        return members
-    }
-
-    /// A field this version doesn't know, written as plain JSON.
-    static func untyped(_ value: SyncValue) throws -> Data {
-        switch value {
-        case .string(let value): try encoder.encode(value)
-        case .int(let value): try encoder.encode(value)
-        case .double(let value): try encoder.encode(value)
-        case .bool(let value): try encoder.encode(value)
-        case .date(let value): try encoder.encode(value)
-        case .data(let value): try encoder.encode(value)
-        case .uuid(let value): try encoder.encode(value)
-        case .url(let value): try encoder.encode(value)
-        case .ids(let value): try encoder.encode(value)
-        case .reference(let id, _): try encoder.encode(id)
-        case .json(let value): value
-        }
-    }
 }
 
 // MARK: - Records to and from the wire
@@ -148,122 +25,37 @@ enum WireJSON {
 extension RecordStore {
     /// The change to upload for a pending record. `owner` is used when the record has none of its own yet.
     func change(for record: SyncRecord, zone: Zone, owner: String?) throws -> RecordChangeData {
-        let synced = SyncedTag.date(record.tag)
+        var metadata = SyncMetadata(synced: SyncedTag.date(record.tag), owner: owner, systemFields: record.systemFields)
         guard var fields = record.fields else {
-            return .delete(id: record.id, zone: zone, type: record.type, owner: owner, synced: synced)
+            return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: nil, metadata: metadata)
         }
-        var recordOwner = owner
         if case .string(let stored)? = fields.removeValue(forKey: WireJSON.ownerKey) {
-            recordOwner = stored
+            metadata.owner = stored
         }
-        var members: [String: Data] = [:]
-        if let type = registered[record.type] {
-            members = try wireMembers(type, fields: fields)
-        } else {
-            for (key, value) in fields {
-                members[key] = try WireJSON.untyped(value)
-            }
-        }
-        return .save(id: record.id, zone: zone, type: record.type, json: try WireJSON.object(members), owner: recordOwner, synced: synced)
-    }
-
-    private func wireMembers<R: Record>(_ type: R.Type, fields: SyncFields) throws -> [String: Data] {
-        let schema = Dictionary(R.cachedSchema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        var members: [String: Data] = [:]
-        for (key, value) in fields {
-            guard let field = schema[key] else {
-                members[key] = try WireJSON.untyped(value)
-                continue
-            }
-            if field.isAsset, case .url(let url) = value {
-                members[key] = try WireJSON.encoder.encode(url.lastPathComponent)
-            } else if field.isAsset || Self.relationTarget(field) != nil || field.parent != nil {
-                members[key] = try WireJSON.untyped(value)
-            } else if case .json(let json) = value {
-                members[key] = json
-            } else {
-                members[key] = try Self.wireValue(value, as: Swift.type(of: field.keyPath).valueType)
-            }
-        }
-        return members
-    }
-
-    /// Encodes a value as its property's type, so a `Date` is a number of milliseconds and a struct is an object.
-    private static func wireValue(_ value: SyncValue, as valueType: Any.Type) throws -> Data {
-        guard let codable = valueType as? any Codable.Type else { return try WireJSON.untyped(value) }
-        func encode<T: Codable>(_ type: T.Type) throws -> Data {
-            let typed: T
-            if case .data(let json) = value, T.self != Data.self, T.self != Data?.self {
-                typed = try ValueCoding.jsonDecoder.decode(T.self, from: json)
-            } else {
-                typed = try ValueCoding.decode(T.self, from: value.sqliteValue)
-            }
-            return try WireJSON.encoder.encode(typed)
-        }
-        return try encode(codable)
+        let values = try registered[record.type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
+        return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, metadata: metadata)
     }
 
     /// The container's typed copy of a change from the server. Throws `incompatibleRecord` when its type
-    /// isn't registered or a value doesn't decode as its property's type.
+    /// isn't registered or a value doesn't fit its property.
     func syncRecord(from change: RecordChangeData) throws -> SyncRecord {
-        switch change {
-        case .delete(let id, _, let type, _, let synced):
-            return SyncRecord(type: type, id: id, fields: nil, tag: SyncedTag.data(synced))
-        case .save(let id, _, let typeName, let json, let owner, let synced):
-            guard let type = registered[typeName] else { throw RecordsError.incompatibleRecord(type: typeName, id: id) }
-            do {
-                var members = try WireJSON.members(of: json)
-                var record = SyncRecord(type: typeName, id: id, fields: nil, tag: SyncedTag.data(synced))
-                // The copy dates from when the server accepted it.
-                record.modified = synced
-                members[WireJSON.ownerKey] = nil
-                var fields = try syncFields(type, members: members)
-                if let owner {
-                    fields[WireJSON.ownerKey] = .string(owner)
-                }
-                record.fields = fields
-                return record
-            } catch {
-                throw RecordsError.incompatibleRecord(type: typeName, id: id)
+        var record = SyncRecord(type: change.type, id: change.id, fields: nil, tag: SyncedTag.data(change.synced))
+        record.systemFields = change.metadata.systemFields
+        guard var values = change.fields else { return record }
+        guard let type = registered[change.type] else { throw RecordsError.incompatibleRecord(type: change.type, id: change.id) }
+        do {
+            // The copy dates from when the server accepted it.
+            record.modified = change.synced
+            values[WireJSON.ownerKey] = nil
+            var fields = try syncFields(type, values: values)
+            if let owner = change.metadata.owner {
+                fields[WireJSON.ownerKey] = .string(owner)
             }
+            record.fields = fields
+            return record
+        } catch {
+            throw RecordsError.incompatibleRecord(type: change.type, id: change.id)
         }
-    }
-
-    private func syncFields<R: Record>(_ type: R.Type, members: [String: Data]) throws -> SyncFields {
-        var schema: [String: RecordSchema<R>.Field] = [:]
-        for field in R.cachedSchema.fields where field.name != "id" {
-            for name in [field.name] + field.previousNames where schema[name] == nil {
-                schema[name] = field
-            }
-        }
-        var fields: SyncFields = [:]
-        for (key, json) in members where key != "id" {
-            guard let field = schema[key] else {
-                fields[key] = .json(json)
-                continue
-            }
-            if field.inverse != nil || field.timestamp == .synced {
-                continue
-            } else if Self.relationTarget(field) != nil {
-                fields[key] = .ids(try WireJSON.decoder.decode([UUID].self, from: json))
-            } else if field.isAsset {
-                fields[key] = .url(assetURL(named: try WireJSON.decoder.decode(String.self, from: json)))
-            } else if field.parent != nil {
-                fields[key] = .reference(try WireJSON.decoder.decode(UUID.self, from: json), action: field.action)
-            } else {
-                fields[key] = try Self.syncValue(wire: json, as: Swift.type(of: field.keyPath).valueType)
-            }
-        }
-        return fields
-    }
-
-    /// Decodes a value as its property's type, then types it exactly as a stored value of that property is.
-    private static func syncValue(wire json: Data, as valueType: Any.Type) throws -> SyncValue? {
-        guard let decodable = valueType as? any Decodable.Type else { return .json(json) }
-        func decode<T: Decodable>(_ type: T.Type) throws -> Any {
-            try WireJSON.decoder.decode(T.self, from: json)
-        }
-        return try SyncValue(property: decode(decodable))
     }
 }
 
