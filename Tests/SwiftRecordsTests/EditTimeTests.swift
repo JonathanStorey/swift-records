@@ -34,17 +34,6 @@ struct SyncNote {
         try await phone.mainContext.save()
         #expect(server.has("SyncRecipe", recipe.id, "_position"))
         #expect(!server.has("SyncRecipe", recipe.id, "_modified"))
-
-        // An edit time from a 0.3.0 device is read, not kept as a field to send back.
-        let old = UUID()
-        server.put("SyncRecipe", id: old, json: #"{"title":"Stew","_modified":1700000000000}"#)
-        try await phone.mainContext.refresh()
-        var stew = try #require(try phone.mainContext.record(SyncRecipe.self, for: old))
-        stew.title = "Beef stew"
-        phone.mainContext.insert(stew)
-        try await phone.mainContext.save()
-        #expect(server.value("SyncRecipe", old, "title", as: String.self) == "Beef stew")
-        #expect(!server.has("SyncRecipe", old, "_modified"))
     }
 
     @Test func aModifiedTimestampDatesEachCopyInAClash() async throws {

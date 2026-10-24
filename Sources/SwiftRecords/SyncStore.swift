@@ -9,8 +9,8 @@ struct SyncRecord: Sendable {
     var fields: SyncFields?
     /// The server's `synced` date for the copy this one is based on, as stored in the record's tag.
     var tag: Data?
-    /// For a copy from the server, when it was edited: the server's `synced` date, or the edit time an
-    /// older device sent. It settles a clash under `.latestWins` when the type has no `@Timestamp(.modified)`.
+    /// For a copy from the server, the server's `synced` date. It settles a clash under `.latestWins` when
+    /// the type has no `@Timestamp(.modified)`.
     var modified: Date?
     /// The record's place in its type's stored order.
     var position: Int64?
