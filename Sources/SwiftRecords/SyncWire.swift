@@ -6,6 +6,7 @@ enum WireJSON {
     /// The key a record's place in its type's stored order goes under.
     static let positionKey = positionField
     /// The key a record's last edit time goes under, in milliseconds since 1970.
+    /// The edit time version 0.3.0 sent with each record. It's read from older devices but no longer sent.
     static let modifiedKey = "_modified"
     /// The key a public record's owner is kept under in the container's own copy of its fields. It crosses
     /// as `RecordChangeData`'s `owner`, never inside the JSON.
@@ -91,9 +92,6 @@ extension RecordStore {
         if let position = record.position {
             members[WireJSON.positionKey] = try WireJSON.encoder.encode(position)
         }
-        if let modified = record.modified {
-            members[WireJSON.modifiedKey] = try WireJSON.encoder.encode((modified.timeIntervalSince1970 * 1000).rounded())
-        }
         return .save(id: record.id, zone: zone, type: record.type, json: try WireJSON.object(members), owner: recordOwner, synced: synced)
     }
 
@@ -147,9 +145,12 @@ extension RecordStore {
                 if let position = members.removeValue(forKey: WireJSON.positionKey) {
                     record.position = try WireJSON.decoder.decode(Int64.self, from: position)
                 }
+                // Version 0.3.0 sent the edit time as `_modified`. Without it, the copy dates from when the
+                // server accepted it.
                 if let modified = members.removeValue(forKey: WireJSON.modifiedKey) {
                     record.modified = Date(timeIntervalSince1970: try WireJSON.decoder.decode(Double.self, from: modified) / 1000)
                 }
+                record.modified = record.modified ?? synced
                 members[WireJSON.ownerKey] = nil
                 var fields = try syncFields(type, members: members)
                 if let owner {

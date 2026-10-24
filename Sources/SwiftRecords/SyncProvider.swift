@@ -55,7 +55,7 @@ extension SyncProvider {
 /// One record as it crosses to or from a server: a whole record saved, or a deletion.
 ///
 /// `json` holds every stored property by name, relationships as arrays of IDs, assets as their IDs, and the
-/// record's place in its list as `_position` and its last edit time in milliseconds as `_modified`. Treat it
+/// record's place in its list as `_position`. Treat it
 /// as opaque: store it and hand it back. Fields from newer app versions are kept and sent back untouched.
 public enum RecordChangeData: Sendable, Hashable, Codable {
     /// A record's latest values. `type` is the stored type name, such as `"Recipe"`. `owner` is the user who

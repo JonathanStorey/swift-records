@@ -370,7 +370,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 
 The unit of sync is a whole record, `RecordChangeData`: `.save(id:zone:type:json:owner:synced:)` or
 `.delete(id:zone:type:owner:synced:)`. The JSON reads like the record, with relationships as arrays of
-IDs, assets as their file IDs, and `_position` and `_modified` for list order and edit time. The server
+IDs, assets as their file IDs, and `_position` for list order. Nothing else is added. The server
 stamps every accepted change with a strictly later `synced` date and returns it as `.synced(id:at:)`. An
 upload carries the date of the copy it was edited from, and a server whose copy is newer answers
 `.conflict` with that copy, which the container merges and sends again. A server can use the newest
@@ -403,7 +403,9 @@ Inverses aren't sent. The container owns the rules:
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
   item by item, so steps added on two devices both survive. Only a property both sides changed falls
-  to `mergePolicy`, which defaults to the latest edit. `.serverWins`, `.localWins` and `.latestWins`
+  to `mergePolicy`, which defaults to the latest edit. A `@Timestamp(.modified)` property dates each copy
+  when the type has one. Otherwise the server's copy dates from when the server accepted it, so an edit
+  made offline counts from when it uploaded. `.serverWins`, `.localWins` and `.latestWins`
   settle whole records instead.
 - **Order syncs.** Moving a record in a `@Records` list moves it on every device, and a move merges like
   a property.
