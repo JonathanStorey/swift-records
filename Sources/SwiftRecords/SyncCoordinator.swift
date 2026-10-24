@@ -41,8 +41,8 @@ actor SyncCoordinator {
 
     private let provider: any SyncProvider
     private let zone: Zone
-    /// Whether everyone shares the zone. Its records carry their owner, signing out doesn't touch them, and
-    /// it downloads without an account.
+    /// Whether everyone shares the zone. The server decides who owns its records, signing out doesn't touch
+    /// them, and it downloads without an account.
     private let isPublic: Bool
     private let store: RecordStore
     private let policies: Policies
@@ -229,8 +229,7 @@ actor SyncCoordinator {
             guard !order.isEmpty else { return }
             markSyncing()
             let records = order.map { batch[$0]!.record }
-            let owner = isPublic ? account : nil
-            let changes = try records.map { try store.change(for: $0, zone: zone, owner: owner) }
+            let changes = try records.map { try store.change(for: $0, zone: zone) }
             let results = try await provider.uploadRecordChanges(changes)
 
             var answered: Set<UUID> = []
@@ -238,9 +237,9 @@ actor SyncCoordinator {
             try store.transaction {
                 for result in results {
                     switch result {
-                    case .saved(let id, let metadata):
+                    case .saved(let id, let tag, let synced):
                         guard let entry = batch[id], answered.insert(id).inserted else { continue }
-                        try store.acknowledge(entry.change, sent: entry.fields, metadata: metadata)
+                        try store.acknowledge(entry.change, sent: entry.fields, tag: tag, synced: synced)
                     case .conflict(let server):
                         guard batch[server.id] != nil, answered.insert(server.id).inserted else { continue }
                         conflicts.append(server)

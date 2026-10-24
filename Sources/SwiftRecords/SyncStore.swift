@@ -7,15 +7,17 @@ struct SyncRecord: Sendable {
     let id: UUID
     /// The record's values keyed by stored property name, or `nil` for a deletion. A missing key means `nil`.
     var fields: SyncFields?
-    /// The server's metadata for the copy this one is based on. For a copy from the server, its `modified`
-    /// date settles a clash under `.latestWins` when the type has no `@Timestamp(.modified)`.
-    var metadata = SyncMetadata()
+    /// The provider's tag for the server copy this one is based on.
+    var tag: Data?
+    /// For a copy from the server, when the server saved it, if it said.
+    var synced: Date?
 
-    init(type: String, id: UUID, fields: SyncFields?, metadata: SyncMetadata = SyncMetadata()) {
+    init(type: String, id: UUID, fields: SyncFields?, tag: Data? = nil, synced: Date? = nil) {
         self.type = type
         self.id = id
         self.fields = fields
-        self.metadata = metadata
+        self.tag = tag
+        self.synced = synced
     }
 
     var isDeletion: Bool { fields == nil }
@@ -50,32 +52,6 @@ extension SyncValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, Ex
     init(integerLiteral value: Int64) { self = .int(value) }
     init(floatLiteral value: Double) { self = .double(value) }
     init(booleanLiteral value: Bool) { self = .bool(value) }
-}
-
-extension SyncMetadata {
-    /// The columns a record's bookkeeping row keeps the server copy's metadata in. The change tag goes in
-    /// `tag`, where an arriving copy is compared cheaply.
-    func storedColumns() -> [String: SQLiteValue] {
-        [
-            "tag": changeTag.map { .blob(Data($0.utf8)) } ?? .null,
-            "server_created": created.map { .real($0.timeIntervalSince1970) } ?? .null,
-            "server_modified": modified.map { .real($0.timeIntervalSince1970) } ?? .null,
-            "creator": creator.map { .text($0) } ?? .null,
-            "last_modifier": lastModifier.map { .text($0) } ?? .null,
-            "system_fields": systemFields.map { .blob($0) } ?? .null,
-        ]
-    }
-
-    /// The metadata a bookkeeping row stores.
-    init(row: [String: SQLiteValue]?) {
-        self.init()
-        if case .blob(let tag)? = row?["tag"] { changeTag = String(decoding: tag, as: UTF8.self) }
-        if case .real(let time)? = row?["server_created"] { created = Date(timeIntervalSince1970: time) }
-        if case .real(let time)? = row?["server_modified"] { modified = Date(timeIntervalSince1970: time) }
-        if case .text(let name)? = row?["creator"] { creator = name }
-        if case .text(let name)? = row?["last_modifier"] { lastModifier = name }
-        if case .blob(let data)? = row?["system_fields"] { systemFields = data }
-    }
 }
 
 extension SyncValue {
@@ -421,9 +397,8 @@ extension RecordStore {
 extension RecordStore {
     /// The bookkeeping for one record: its log entry, what the server acknowledged, its last tag, the
     /// snapshot, any fields from newer app versions and a server copy this version couldn't store.
-    /// The server copy's metadata is left out unless `columns` asks for it, since only uploads need it.
-    func syncRow(_ table: String, id: SQLiteValue, columns: String = bookkeepingColumns) throws -> [String: SQLiteValue]? {
-        try db.run("SELECT \(columns) FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]).first
+    func syncRow(_ table: String, id: SQLiteValue) throws -> [String: SQLiteValue]? {
+        try db.run("SELECT \(Self.bookkeepingColumns) FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]).first
     }
 
     static let bookkeepingColumns = "record_id, kind, version, time, acked, known, tag, snapshot, extra"
@@ -480,9 +455,9 @@ extension RecordStore {
         try db.run("DELETE FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
     }
 
-    /// Stores the metadata of the server copy a record, or its deletion, is based on.
+    /// Stores the tag of the server copy a record, or its deletion, is based on.
     func storeTag(of record: SyncRecord, id: SQLiteValue) throws {
-        try updateSyncRow(record.type, id: id, record.metadata.storedColumns())
+        try updateSyncRow(record.type, id: id, ["tag": record.tag.map { .blob($0) } ?? .null])
     }
 
     /// How many records have changes the server doesn't have.
@@ -520,8 +495,9 @@ extension RecordStore {
                 guard let stored = try syncFields(table: change.table, id: id) else { return nil }
                 fields = stored
             }
-            let metadata = SyncMetadata(row: try syncRow(change.table, id: id, columns: "*"))
-            return (SyncRecord(type: change.table, id: change.id, fields: fields, metadata: metadata), fields)
+            var record = SyncRecord(type: change.table, id: change.id, fields: fields)
+            if case .blob(let tag)? = try syncRow(change.table, id: id)?["tag"] { record.tag = tag }
+            return (record, fields)
         }
     }
 
@@ -540,9 +516,9 @@ extension RecordStore {
         return fields
     }
 
-    /// Records that the server accepted a change, with its metadata for the saved copy. A later local edit
-    /// stays pending, with what was sent as its ancestor.
-    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, metadata: SyncMetadata) throws {
+    /// Records that the server accepted a change, with its tag for the saved copy and its save time if it
+    /// gave one. A later local edit stays pending, with what was sent as its ancestor.
+    func acknowledge(_ change: PendingChange, sent fields: SyncFields?, tag: Data?, synced: Date?) throws {
         let id = try ValueCoding.encode(change.id)
         guard let entry = try logEntry(change.table, id: id) else { return }
         if change.kind == .delete {
@@ -555,10 +531,10 @@ extension RecordStore {
         let acked = max(change.version, Int(try syncRow(change.table, id: id)?["acked"]?.integerValue ?? 0))
         let snapshot: SQLiteValue = entry.version > change.version ? (try fields.map { .blob(try $0.encoded()) } ?? .null) : .null
         // A record deleted since this was sent goes with the new tag too.
-        try updateSyncRow(change.table, id: id, metadata.storedColumns().merging([
-            "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot,
-            "synced_at": .real((metadata.modified ?? Date()).timeIntervalSince1970),
-        ]) { $1 })
+        try updateSyncRow(change.table, id: id, [
+            "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": tag.map { .blob($0) } ?? .null,
+            "synced_at": .real((synced ?? Date()).timeIntervalSince1970),
+        ])
         // Views showing a synced timestamp refresh.
         changedData = true
     }
@@ -611,8 +587,7 @@ extension RecordStore {
     /// Whether a save is the server copy this device already holds unchanged, such as its own upload coming
     /// back in a download, so applying it would change nothing. It's checked before decoding.
     private static func isStored(_ change: RecordChangeData, sync: [String: SQLiteValue]?) -> Bool {
-        guard !change.isDeletion, let tag = change.metadata.changeTag, let sync,
-              case .blob(let stored)? = sync["tag"], stored.elementsEqual(tag.utf8) else { return false }
+        guard !change.isDeletion, let tag = change.tag, let sync, sync["tag"] == .blob(tag) else { return false }
         return !isPending(sync)
     }
 
@@ -650,7 +625,7 @@ extension RecordStore {
             }
             if entry.kind == .save {
                 let local = try syncFields(table: table, id: id) ?? [:]
-                let localIsLater = try isLocalLater(type, id: id, local: local, server: server, serverDate: record.metadata.modified)
+                let localIsLater = Self.isLocalLater(type, local: local, server: server)
                 let merged = SyncMerge.merge(
                     local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), policy: policy, localIsLater: localIsLater
                 )
@@ -661,7 +636,8 @@ extension RecordStore {
                 if merged == server {
                     let version = try logEntry(table, id: id)?.version ?? 0
                     try updateSyncRow(table, id: id, [
-                        "acked": .integer(Int64(version)), "snapshot": .null, "synced_at": .real(Date().timeIntervalSince1970),
+                        "acked": .integer(Int64(version)), "snapshot": .null,
+                        "synced_at": .real((record.synced ?? Date()).timeIntervalSince1970),
                     ])
                 }
                 return
@@ -674,38 +650,24 @@ extension RecordStore {
         // The server's copy is now the record, so whatever version it was at counts as acknowledged.
         try db.run(
             """
-            INSERT INTO "_records_meta" (
-                record_table, record_id, known, tag, server_created, server_modified, creator, last_modifier, system_fields, synced_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            INSERT INTO "_records_meta" (record_table, record_id, known, tag, synced_at) VALUES (?1, ?2, 1, ?3, ?4)
             ON CONFLICT (record_table, record_id) DO UPDATE
-            SET acked = version, known = 1, snapshot = NULL, tag = excluded.tag, server_created = excluded.server_created,
-                server_modified = excluded.server_modified, creator = excluded.creator, last_modifier = excluded.last_modifier,
-                system_fields = excluded.system_fields, synced_at = excluded.synced_at
+            SET acked = version, known = 1, snapshot = NULL, tag = excluded.tag, synced_at = excluded.synced_at
             """,
-            {
-                let stored = record.metadata.storedColumns()
-                return [.text(table), id] + ["tag", "server_created", "server_modified", "creator", "last_modifier", "system_fields"]
-                    .map { stored[$0]! } + [.real(Date().timeIntervalSince1970)]
-            }()
+            [.text(table), id, record.tag.map { .blob($0) } ?? .null, .real((record.synced ?? Date()).timeIntervalSince1970)]
         )
     }
 
-    /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestWins`. A
-    /// `@Timestamp(.modified)` property dates both copies when the type has one. Otherwise the local edit
-    /// time is compared with when the server accepted its copy.
-    private func isLocalLater<R: Record>(
-        _ type: R.Type, id: SQLiteValue, local: SyncFields, server: SyncFields, serverDate: Date?
-    ) throws -> Bool {
+    /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestEdit`, by the
+    /// type's `@Timestamp(.modified)` property. Without one, or without a date on both sides, the server's
+    /// copy is kept.
+    private static func isLocalLater<R: Record>(_ type: R.Type, local: SyncFields, server: SyncFields) -> Bool {
         for field in R.cachedSchema.fields where field.timestamp == .modified {
             if case .date(let localDate)? = local[field.name], case .date(let serverDate)? = server[field.name] {
                 return localDate > serverDate
             }
         }
-        let row = try db.run(
-            "SELECT time FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(R.table), id]
-        ).first
-        guard case .real(let time)? = row?["time"], let serverDate else { return false }
-        return time > serverDate.timeIntervalSince1970
+        return false
     }
 
     private func park(_ change: RecordChangeData) throws {
@@ -729,7 +691,7 @@ extension RecordStore {
     /// local data or a server reset. Tags and snapshots from the old server are dropped.
     func markAllPending() throws {
         try transaction {
-            try db.run("UPDATE \"_records_meta\" SET acked = 0, known = 0, tag = NULL, server_created = NULL, server_modified = NULL, creator = NULL, last_modifier = NULL, system_fields = NULL, snapshot = NULL")
+            try db.run("UPDATE \"_records_meta\" SET acked = 0, known = 0, tag = NULL, snapshot = NULL")
             try db.run("UPDATE \"_records_assets\" SET uploaded = 0")
             try db.run("DELETE FROM \"_records_meta\" WHERE kind = 'delete' OR (kind IS NULL AND extra IS NULL AND parked IS NULL)")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)

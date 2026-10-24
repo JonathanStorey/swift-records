@@ -9,6 +9,8 @@ final class TestServer: @unchecked Sendable {
     private let lock = NSLock()
     /// Each record's latest change, deletions included, with the sequence number it was stored at.
     private var latest: [String: (change: RecordChangeData, sequence: Int)] = [:]
+    /// Who created each record, kept by the server rather than sent by devices.
+    private var creators: [String: String] = [:]
     private var assets: [String: Data] = [:]
     private var sequence = 0
     /// Goes up with each `reset()`, so providers can tell the zone was deleted.
@@ -19,6 +21,10 @@ final class TestServer: @unchecked Sendable {
     var isOnline = true
     var isFull = false
     var rejectedTypes: Set<String> = []
+    /// Whether the server versions records with tags. Without them, every save simply overwrites.
+    var tagsRecords = true
+    /// Whether the server says when it saved each copy.
+    var datesRecords = true
     /// Zones every account shares. Only a record's creator can change it.
     var publicZones: Set<Zone> = []
 
@@ -47,25 +53,21 @@ final class TestServer: @unchecked Sendable {
         withLock {
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
-            if !change.isDeletion, let current, current.metadata.changeTag != change.metadata.changeTag {
+            if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
                 return .conflict(current)
             }
             // The server, not the device, decides who created a record, and in a public zone only they can change it.
-            let creator = current?.metadata.creator ?? user
+            let creator = creators[storageKey] ?? user
             if publicZones.contains(change.zone), creator != user {
                 return .rejected(id: change.id)
             }
+            creators[storageKey] = creator
             sequence += 1
-            let date = Self.date(sequence)
             var stored = change
-            stored.metadata = SyncMetadata(
-                changeTag: "tag \(sequence)", created: current?.metadata.created ?? date, modified: date, creator: creator,
-                lastModifier: user,
-                // Bookkeeping of the server's own, which the container hands back untouched.
-                systemFields: Data("copy \(sequence)".utf8)
-            )
+            stored.tag = tagsRecords ? Data("tag \(sequence)".utf8) : nil
+            stored.synced = datesRecords ? Self.date(sequence) : nil
             latest[storageKey] = (stored, sequence)
-            return .saved(id: change.id, metadata: stored.metadata)
+            return .saved(id: change.id, tag: stored.tag, synced: stored.synced)
         }
     }
 
@@ -73,11 +75,17 @@ final class TestServer: @unchecked Sendable {
     func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, fields: [String: RecordValue]) {
         withLock {
             sequence += 1
-            let date = Self.date(sequence)
-            let metadata = SyncMetadata(changeTag: "tag \(sequence)", created: date, modified: date, creator: account, lastModifier: account)
-            let change = RecordChangeData(id: id, zone: zone, type: type, fields: fields, metadata: metadata)
+            let change = RecordChangeData(
+                id: id, zone: zone, type: type, fields: fields, tag: tagsRecords ? Data("tag \(sequence)".utf8) : nil,
+                synced: datesRecords ? Self.date(sequence) : nil
+            )
             latest[key(zone, type, id, account: account)] = (change, sequence)
         }
+    }
+
+    /// Who created a record the current account can see.
+    func creator(_ type: String, _ id: UUID, zone: Zone = .default) -> String? {
+        withLock { creators[key(zone, type, id, account: account)] }
     }
 
     /// The zone's latest changes for `user` after `cursor`, oldest first, at most `limit`, and the new cursor.
@@ -126,6 +134,7 @@ final class TestServer: @unchecked Sendable {
     func reset() {
         withLock {
             latest = [:]
+            creators = [:]
             assets = [:]
             epoch += 1
         }

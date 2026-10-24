@@ -125,7 +125,7 @@ import Testing
         try Data([4, 5, 6]).write(to: zone.appendingPathComponent("_assets/photo.jpg"))
         let json = """
             {"id":"\(id.uuidString)","record":{"photo":{"asset":"photo.jpg"},"servings":{"int":2},"title":{"string":"Bread"}},\
-            "modified":1700000000000,"type":"SyncRecipe","zone":"_default"}
+            "synced":1700000000000,"type":"SyncRecipe","zone":"_default"}
             """
         try Data(json.utf8).write(to: recordFile(id))
 
@@ -203,7 +203,7 @@ import Testing
         func copy(_ milliseconds: Double?) -> RecordChangeData {
             RecordChangeData(
                 id: UUID(), zone: .default, type: "Recipe", fields: [:],
-                metadata: SyncMetadata(modified: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) })
+                synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) }
             )
         }
         #expect(FileSyncProvider.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)

@@ -52,9 +52,9 @@ import Testing
 
         for (type, id) in [("SyncRecipe", recipe.id), ("SyncStep", recipe.steps[0].id)] {
             let original = try #require(server.record(type, id))
-            let back = try store.change(for: store.syncRecord(from: original), zone: .default, owner: nil)
+            let back = try store.change(for: store.syncRecord(from: original), zone: .default)
             #expect(back.fields == original.fields)
-            #expect(back.metadata == original.metadata)
+            #expect(back.tag == original.tag)
         }
     }
 
@@ -65,7 +65,7 @@ import Testing
             "extra": .bytes(Data(#"{"x":1}"#.utf8)), "link": .reference(UUID(), action: .none),
         ])
         let store = phone.container.defaultStorage.store
-        let back = try store.change(for: store.syncRecord(from: change), zone: .default, owner: nil)
+        let back = try store.change(for: store.syncRecord(from: change), zone: .default)
         #expect(back.fields?.filter { !["steps", "cook"].contains($0.key) } == change.fields)
     }
 
@@ -148,16 +148,11 @@ import CloudKit
         try await phone.context.save()
         let store = phone.container.defaultStorage.store
 
-        // The test server's stand-in system fields aren't CloudKit's, so the record's system fields are
-        // written from its readable metadata.
+        // The test server's tags aren't CloudKit's system fields, so these copies go as new records.
         var saved = try #require(server.record("SyncRecipe", recipe.id))
-        saved.metadata.systemFields = nil
+        saved.tag = nil
         let record = try #require(try phone.container.ckRecord(for: saved, in: zoneID))
-        #expect(record.recordChangeTag == saved.metadata.changeTag)
-        #expect(record.creationDate == saved.metadata.created)
-        #expect(record.modificationDate == saved.metadata.modified)
-        #expect(record.creatorUserRecordID?.recordName == "alice")
-        #expect(record.lastModifiedUserRecordID?.recordName == "alice")
+        #expect(record.recordChangeTag == nil)
         #expect(record.recordID.recordName == recipe.id.uuidString)
         #expect(record.recordType == "SyncRecipe")
         #expect(record["title"] as? String == "Soup")
@@ -168,10 +163,7 @@ import CloudKit
 
         let (back, assets) = try phone.container.change(from: record, zone: .default)
         #expect(assets.count == 1)
-        #expect(back.metadata.systemFields != nil)
-        var readable = back.metadata
-        readable.systemFields = nil
-        #expect(readable == saved.metadata)
+        #expect(back.tag != nil)
         // The archived system fields bring back the same record.
         let again = try #require(try phone.container.ckRecord(for: back, in: zoneID))
         #expect(again.recordID == record.recordID)
@@ -179,7 +171,7 @@ import CloudKit
         #expect(try store.syncRecord(from: back).fields?["steps"] == .ids([recipe.steps[0].id]))
 
         var savedStep = try #require(server.record("SyncStep", recipe.steps[0].id))
-        savedStep.metadata.systemFields = nil
+        savedStep.tag = nil
         let step = try #require(try phone.container.ckRecord(for: savedStep, in: zoneID))
         let reference = try #require(step["recipe"] as? CKRecord.Reference)
         #expect(reference.recordID.recordName == recipe.id.uuidString)
@@ -188,12 +180,10 @@ import CloudKit
         #expect(try store.syncRecord(from: stepBack).fields == store.syncRecord(from: savedStep).fields)
     }
 
-    @Test func aChangeWithNoTagIsANewRecord() throws {
+    @Test func aTagFromAnotherServerThrows() throws {
         let phone = try Device(server)
-        let change = RecordChangeData(id: UUID(), zone: .default, type: "SyncRecipe", fields: ["title": .string("Soup")])
-        let record = try #require(try phone.container.ckRecord(for: change, in: zoneID))
-        #expect(record.recordChangeTag == nil)
-        #expect(record.creationDate == nil)
+        let change = RecordChangeData(id: UUID(), zone: .default, type: "SyncRecipe", fields: [:], tag: Data("1700000000000".utf8))
+        #expect(throws: RecordsError.self) { try phone.container.ckRecord(for: change, in: zoneID) }
     }
 
     @Test func structsEncodeWithoutAContainer() throws {

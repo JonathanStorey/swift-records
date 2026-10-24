@@ -394,7 +394,8 @@ sync metadata, kept apart.
 public struct RecordChangeData {
     var id: UUID, zone: Zone, type: String
     var fields: [String: RecordValue]?     // nil for a deletion
-    var metadata: SyncMetadata             // the server's bookkeeping, named as CloudKit's system fields
+    var tag: Data?                         // the server's own data for this copy, read only by the provider
+    var synced: Date?                      // when the server saved it, if it says
 }
 ```
 
@@ -403,24 +404,25 @@ Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.by
 `.asset(id)` for an asset's file ID. Relationships are `.strings` of record names. Any other `Codable`
 value travels as its JSON in `.bytes`. Nothing else is added.
 
-`SyncMetadata` follows a `CKRecord`'s system fields, so any server can keep the same bookkeeping
-CloudKit does:
+The container stays local first. It keeps its own creation and modification times, and it treats
+`tag` as opaque: it stores it with the record, outside the struct, and hands it back with the record's
+next upload. Only the provider reads it, so each server keeps whatever lets it version a record, the way
+an HTTP ETag works:
 
-| `SyncMetadata` | CKRecord |
+| Provider | Its tag |
 | --- | --- |
-| `changeTag` | `recordChangeTag` |
-| `created`, `modified` | `creationDate`, `modificationDate` |
-| `creator`, `lastModifier` | `creatorUserRecordID`, `lastModifiedUserRecordID` record names |
-| `systemFields` | anything else, such as the archived system fields of a shared or encrypted record |
+| CloudKit | the record's archived system fields, which carry its `recordChangeTag` |
+| MongoDB | a version number kept in the document |
+| Firestore | the document's `updateTime` |
+| `FileSyncProvider` | the time of the save in milliseconds |
 
-Only `changeTag` decides anything. As CloudKit does, the server gives each copy it accepts a new tag,
-any string such as a counter or a hash, and returns its metadata for the saved copy as
-`.saved(id:metadata:)`. An upload carries the tag of the copy it was edited from, a record the server
-has never accepted has none, and a server whose copy has a different tag answers `.conflict` with that
-copy, which the container merges and sends again. `modified` dates the server's copy when a merge falls
-to the latest edit. The container stores the metadata with the record, outside the struct, and hands it
-back with the record's next upload. A server can use its newest `modified` date as its download cursor.
-Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
+A server that versions records accepts a save only when its tag matches the server's copy, and
+otherwise answers `.conflict` with that copy, which the container merges and sends again. A save that
+works returns `.saved(id:tag:synced:)`. A server without tags returns none and every save overwrites.
+`synced` is optional: when a server gives one, `@Timestamp(.synced)` shows it, and otherwise it shows
+when this device heard the save went through. A provider's tags never reach another provider, because
+changing a zone's provider `identifier` clears them and uploads everything again. Throw
+`SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
 
 A provider that hears about changes, such as from push notifications, returns a stream from
 `pushedChanges()`. The container downloads each zone the stream names, so views update without a
@@ -439,7 +441,7 @@ if let progress = context.assetProgress {
 }
 ```
 
-`publicZones` names zones everyone shares. The user who created a record, its `metadata.creator`, owns it:
+`publicZones` names zones everyone shares. The server records who created each record, and that user owns it:
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.
 
@@ -448,10 +450,10 @@ Inverses aren't sent. The container owns the rules:
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
   item by item, so steps added on two devices both survive. Only a property both sides changed falls
-  to `mergePolicy`, which defaults to the latest edit. A `@Timestamp(.modified)` property dates each copy
-  when the type has one. Otherwise the server's copy dates from when the server accepted it, so an edit
-  made offline counts from when it uploaded. `.serverWins`, `.localWins` and `.latestWins`
-  settle whole records instead.
+  to `mergePolicy`, which defaults to the latest edit. `.latestEdit` compares the copies'
+  `@Timestamp(.modified)` dates, which each device stamps as it saves. A type without one has no edit
+  dates to compare, so the server's copy wins. `.serverWins`, `.localWins` and `.latestEdit` settle whole
+  records instead.
 - **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`. Under
   `.mergeProperties(otherwise:)`, its `otherwise` policy decides.
 - **Arrival order doesn't matter.** A record can arrive before the records it links to, and its links
@@ -487,11 +489,9 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | inverses, `@Timestamp(.synced)` | nothing: they're rebuilt locally |
 
 Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Coming
-back, `change(from:zone:)` reads the record's system fields into the metadata and keeps their archive in
-`systemFields`, so the next save builds on exactly the server's copy. A change with a `changeTag` but no
-archive, such as one that came from another server, gets system fields written from its metadata under
-the keys CloudKit's own archive uses, so it still saves as an update. A change with no tag is a new
-record. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
+back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
+`modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
+change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
 `downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
 `deletion(of:type:zone:)`.
 
@@ -505,7 +505,7 @@ let update = try CKRecordEncoder().encode(recipe, systemFields: archived) // on 
 ```
 
 Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, and the result
-carries its change tag so it saves as an update. System fields that name another record, type or zone
+carries its change tag so it saves as an update. A synced change's `tag` is exactly these. System fields that name another record, type or zone
 throw `RecordsError.mismatchedSystemFields`.
 
 A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
@@ -531,7 +531,7 @@ let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in Fil
 | `.other(directory: url)` | Any folder |
 
 Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
-kind, such as `"title":{"string":"Soup"}`, beside the record's metadata, and assets are plain files
+kind, such as `"title":{"string":"Soup"}`, beside its save time, and assets are plain files
 in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
 them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
 can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
@@ -643,12 +643,12 @@ Some timings from that run, for 60,000 records:
 | Operation | Time |
 | --- | --- |
 | Import in saves of 500 | 7.1 s |
-| Fetch every recipe with its steps | 2.5 s |
-| Fetch 1,000 recipes by ID | 0.24 s |
+| Fetch every recipe with its steps | 2.4 s |
+| Fetch 1,000 recipes by ID | 0.22 s |
 | Edit and save 1,000 recipes | 0.31 s |
-| Delete 1,000 recipes and their steps | 0.53 s |
-| Upload the whole store | 6.9 s |
-| Download the whole store to a new device | 9.1 s |
+| Delete 1,000 recipes and their steps | 0.52 s |
+| Upload the whole store | 6.1 s |
+| Download the whole store to a new device | 8.9 s |
 | Sync 100 edits from a large store | 14 ms |
 
 ## Requirements

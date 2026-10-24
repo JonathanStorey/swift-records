@@ -11,17 +11,15 @@ extension RecordContainer {
     /// is its own `CKRecord`. A child's `@Reference(to:action:)` is a `CKRecord.Reference` with that action,
     /// and an asset is a `CKAsset` of its file here.
     ///
-    /// A change with a `changeTag` saves as an update of the server's copy. The record is built on the
-    /// copy's archived system fields when the metadata has them, as it does for a change that came from
-    /// CloudKit, and otherwise on system fields written from the metadata itself. An asset whose file
-    /// hasn't downloaded yet is left out.
+    /// The change's `tag` is the server copy's archived system fields, as `change(from:zone:)` sets it, and
+    /// the record is built on them, so it carries the change tag and saves as an update. A change with no
+    /// tag is a new record. An asset whose file hasn't downloaded yet is left out.
     public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
         guard let fields = change.fields else { return nil }
         let store = try storage(for: change.zone).store
-        let record = try change.metadata.systemFields.map {
+        let record = try change.tag.map {
             try CKRecordEncoder.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
-        } ?? CKRecordEncoder.record(from: change.metadata, type: change.type, id: change.id, zoneID: zoneID)
-            ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
+        } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
         record.fill(fields) { store.assetURL(named: $0) }
         return record
     }
@@ -29,9 +27,8 @@ extension RecordContainer {
     /// The change a `CKRecord` from the server stands for, and the asset files it brought. Hand the files
     /// back from `downloadAsset(id:zone:into:)` when the container asks for them by ID.
     ///
-    /// Its system fields become the change's metadata: `recordChangeTag`, `creationDate`, `modificationDate`
-    /// and the creator's and last modifier's record names, with the archived system fields kept beside them
-    /// so the next upload builds on exactly the server's copy. In a public zone the creator is the owner.
+    /// The record's archived system fields become the change's `tag`, so the next upload builds on exactly
+    /// the server's copy, and its `modificationDate` is the `synced` date.
     public func change(from record: CKRecord, zone: Zone) throws -> (change: RecordChangeData, assets: [RecordAssetData]) {
         let store = try storage(for: zone).store
         guard let id = UUID(uuidString: record.recordID.recordName) else {
@@ -70,12 +67,10 @@ extension RecordContainer {
                     ? .doubles(numbers.map(\.doubleValue)) : .ints(numbers.map(\.int64Value))
             }
         }
-        let metadata = SyncMetadata(
-            changeTag: record.recordChangeTag, created: record.creationDate, modified: record.modificationDate,
-            creator: record.creatorUserRecordID?.recordName, lastModifier: record.lastModifiedUserRecordID?.recordName,
-            systemFields: Self.systemFields(of: record)
+        let change = RecordChangeData(
+            id: id, zone: zone, type: record.recordType, fields: fields, tag: Self.systemFields(of: record), synced: record.modificationDate
         )
-        return (RecordChangeData(id: id, zone: zone, type: record.recordType, fields: fields, metadata: metadata), assets)
+        return (change, assets)
     }
 
     /// The deletion a record the server reports deleted stands for, such as from
@@ -179,30 +174,6 @@ public struct CKRecordEncoder {
         defer { coder.finishDecoding() }
         guard let record = CKRecord(coder: coder), record.recordType == type, record.recordID.recordName == id.uuidString,
               record.recordID.zoneID.zoneName == zoneID.zoneName else { throw mismatch }
-        return record
-    }
-
-    /// A server copy rebuilt from readable metadata, by writing its system fields under the keys CloudKit's
-    /// own archive uses. `nil` when the metadata has no change tag, since the record is then new, or when
-    /// the archive doesn't read back with the tag, as it wouldn't if CloudKit changed its format.
-    static func record(from metadata: SyncMetadata, type: String, id: UUID, zoneID: CKRecordZone.ID) -> CKRecord? {
-        guard let changeTag = metadata.changeTag else { return nil }
-        let coder = NSKeyedArchiver(requiringSecureCoding: true)
-        coder.encode(type, forKey: "RecordType")
-        coder.encode(RecordContainer.recordID(for: id, in: zoneID), forKey: "RecordID")
-        coder.encode(changeTag, forKey: "ETag")
-        coder.encode(true, forKey: "KnownToServer")
-        if let created = metadata.created { coder.encode(created as NSDate, forKey: "RecordCtime") }
-        if let modified = metadata.modified { coder.encode(modified as NSDate, forKey: "RecordMtime") }
-        if let creator = metadata.creator { coder.encode(CKRecord.ID(recordName: creator), forKey: "CreatorUserRecordID") }
-        if let modifier = metadata.lastModifier {
-            coder.encode(CKRecord.ID(recordName: modifier), forKey: "LastModifiedUserRecordID")
-        }
-        coder.finishEncoding()
-        guard let decoder = try? NSKeyedUnarchiver(forReadingFrom: coder.encodedData) else { return nil }
-        decoder.requiresSecureCoding = true
-        defer { decoder.finishDecoding() }
-        guard let record = CKRecord(coder: decoder), record.recordChangeTag == changeTag else { return nil }
         return record
     }
 }

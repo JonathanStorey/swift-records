@@ -19,22 +19,18 @@ enum WireJSON {
 // MARK: - Records to and from the wire
 
 extension RecordStore {
-    /// The change to upload for a pending record. In a public zone, `owner` is its creator when the server
-    /// hasn't named one yet.
-    func change(for record: SyncRecord, zone: Zone, owner: String?) throws -> RecordChangeData {
-        var metadata = record.metadata
-        if metadata.creator == nil { metadata.creator = owner }
-        guard let fields = record.fields else {
-            return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: nil, metadata: metadata)
+    /// The change to upload for a pending record.
+    func change(for record: SyncRecord, zone: Zone) throws -> RecordChangeData {
+        let values = try record.fields.map { fields in
+            try registered[record.type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
         }
-        let values = try registered[record.type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
-        return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, metadata: metadata)
+        return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, tag: record.tag)
     }
 
     /// The container's typed copy of a change from the server. Throws `incompatibleRecord` when its type
     /// isn't registered or a value doesn't fit its property.
     func syncRecord(from change: RecordChangeData) throws -> SyncRecord {
-        var record = SyncRecord(type: change.type, id: change.id, fields: nil, metadata: change.metadata)
+        var record = SyncRecord(type: change.type, id: change.id, fields: nil, tag: change.tag, synced: change.synced)
         guard let values = change.fields else { return record }
         guard let type = registered[change.type] else { throw RecordsError.incompatibleRecord(type: change.type, id: change.id) }
         do {

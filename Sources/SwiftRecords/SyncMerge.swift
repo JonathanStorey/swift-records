@@ -15,7 +15,7 @@ enum SyncMerge {
         switch policy {
         case .serverWins: return server
         case .localWins: return local
-        case .latestWins: return localIsLater ? local : server
+        case .latestEdit: return localIsLater ? local : server
         case .mergeProperties(let otherwise):
             let preferLocal = prefersLocal(otherwise, localIsLater: localIsLater)
             var merged: SyncFields = [:]
@@ -31,7 +31,7 @@ enum SyncMerge {
         switch policy {
         case .serverWins: false
         case .localWins: true
-        case .latestWins: localIsLater
+        case .latestEdit: localIsLater
         case .mergeProperties(let otherwise): prefersLocal(otherwise, localIsLater: localIsLater)
         }
     }
