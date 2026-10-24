@@ -91,6 +91,63 @@ import Testing
     }
 }
 
+@MainActor
+@Suite struct PartialFailureTests {
+    let container = try! RecordContainer(inMemory: true)
+
+    @Test func aRecordThatDoesNotDecodeIsSkippedAndReported() async throws {
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let bad = ToDo(title: "Bad")
+        try container.save([ToDo(title: "A"), bad, ToDo(title: "B")])
+        // As if a property changed type: the stored value no longer decodes.
+        try container.defaultStorage.store.db.run(
+            "UPDATE \"ToDo\" SET priority = 'high' WHERE id = ?", [try ValueCoding.encode(bad.id)]
+        )
+
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["A", "B"])
+        for _ in 0..<20 { await Task.yield() }
+        #expect(context.status == .failed(.incompatibleRecord(type: "ToDo", id: bad.id)))
+
+        context.delete(bad)
+        try await context.save()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(context.status == .saved)
+    }
+
+    @Test func translatableTermsRunInSQLAndTheRestInMemory() throws {
+        try container.save((0..<6).map { ToDo(title: String(repeating: "x", count: $0 + 1), priority: $0) })
+        let mixed = #Predicate<ToDo> { $0.priority >= 2 && $0.title.count != 4 }
+        let clause = try #require(PredicateTranslator.translateTerms(mixed))
+        #expect(clause.sql.contains("priority"))
+        #expect(!clause.sql.contains("title"))
+
+        let records: [ToDo] = try container.fetch(ToDo.self, where: mixed)
+        #expect(records.map(\.priority) == [2, 4, 5])
+        let page = try container.defaultStorage.fetch(RecordDescriptor(predicate: mixed, fetchLimit: 2, fetchOffset: 1))
+        #expect(page.map(\.priority) == [4, 5])
+        #expect(try container.defaultStorage.fetchCount(RecordDescriptor(predicate: mixed)) == 3)
+    }
+
+    @Test func aBindingWriteSavesOnlyWhatChanged() throws {
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let todos = (0..<5).map { ToDo(title: "T\($0)") }
+        try container.save(todos)
+        var edited = todos
+        edited[2].title = "Changed"
+        context.apply(edited, replacing: todos)
+        #expect(context.unsavedChanges == 1)
+
+        context.rollback()
+        context.apply(Array(todos.reversed()), replacing: todos)
+        #expect(context.unsavedChanges == 1)   // only the order
+        context.rollback()
+        context.apply(todos, replacing: todos)
+        #expect(!context.hasChanges)
+    }
+}
+
 /// Waits on a semaphore from a test, which can't call `wait()` in an async context directly.
 private func block(until semaphore: DispatchSemaphore) {
     semaphore.wait()

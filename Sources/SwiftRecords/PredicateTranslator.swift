@@ -24,6 +24,31 @@ enum PredicateTranslator {
         let sql = try builder.expression(predicate.expression)
         return Clause(sql: sql, bindings: builder.bindings, columns: builder.columns, relations: builder.relations)
     }
+
+    /// The predicate's top-level `&&` terms that translate, joined, or nil when none do. Rows it matches
+    /// still need the whole predicate checked in memory, since the terms left out narrow them further.
+    static func translateTerms<R: Record>(_ predicate: Predicate<R>) -> Clause? {
+        var builder = SQLBuilder()
+        builder.scopes[predicate.variable.key] = SQLBuilder.Scope(R.self, alias: R.table)
+        var terms: [String] = []
+        for term in conjuncts(of: predicate.expression) {
+            // Each term builds on a copy, so one that fails leaves no bindings or columns behind.
+            var attempt = builder
+            guard let sql = try? attempt.expression(term) else { continue }
+            builder = attempt
+            terms.append(sql)
+        }
+        guard !terms.isEmpty else { return nil }
+        return Clause(
+            sql: terms.joined(separator: " AND "), bindings: builder.bindings, columns: builder.columns, relations: builder.relations
+        )
+    }
+
+    /// The terms of nested `&&`s, left to right, or the expression itself.
+    private static func conjuncts(of expression: Any) -> [Any] {
+        guard let conjunction = expression as? any ConjunctionTerms else { return [expression] }
+        return conjunction.terms.flatMap(conjuncts)
+    }
 }
 
 struct SQLBuilder {
@@ -183,6 +208,15 @@ extension PredicateExpressions.Conjunction: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
         "(\(try builder.expression(lhs)) AND \(try builder.expression(rhs)))"
     }
+}
+
+/// The two sides of an `&&`, so a predicate can be split into terms.
+protocol ConjunctionTerms {
+    var terms: [Any] { get }
+}
+
+extension PredicateExpressions.Conjunction: ConjunctionTerms {
+    var terms: [Any] { [lhs, rhs] }
 }
 
 extension PredicateExpressions.Disjunction: SQLExpressible {
