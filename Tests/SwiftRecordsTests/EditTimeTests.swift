@@ -4,7 +4,7 @@ import Testing
 
 @Record
 struct SyncNote {
-    var id = UUID()
+    var id = UUID.ordered()
     var text = ""
     @Timestamp(.modified) var edited: Date?
 }
@@ -27,12 +27,12 @@ struct SyncNote {
         try container.mainContext.save()
     }
 
-    @Test func recordsCarryNoHiddenEditTime() async throws {
+    @Test func recordsCarryOnlyTheirProperties() async throws {
         let phone = try device([SyncRecipe.self])
         let recipe = SyncRecipe(title: "Soup")
         phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
-        #expect(server.has("SyncRecipe", recipe.id, "_position"))
+        #expect(!server.has("SyncRecipe", recipe.id, "_position"))
         #expect(!server.has("SyncRecipe", recipe.id, "_modified"))
     }
 

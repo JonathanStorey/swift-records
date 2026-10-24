@@ -52,15 +52,16 @@ context.delete(record: ToDo.self, where: #Predicate { $0.done })
 try context.save()                                   // or let autosave commit once edits pause
 ```
 
-The names follow `ModelContext`. `insert(_:)` adds a record at the end of its type's stored order, or
-replaces the one with the same ID in place, as SwiftData does for a unique ID. `record(for:)` returns a
+The names follow `ModelContext`. `insert(_:)` adds a record, or replaces the one with the same ID, as
+SwiftData does for a unique ID. `record(for:)` returns a
 record with any unsaved change and never saves, so a view can call it while it updates.
 
 Changes live in memory until `save()` commits them to disk, which autosave does once edits pause for
 `autosaveDelay`. Until then `rollback()` discards them, and `unsavedChanges` counts them. Every fetch
-saves first, so results include your own edits. Records come back in their stored order. To show them
-in another order, sort a copy. `transaction { }` runs a block and saves its changes in one commit, or
-rolls back just that block's changes if it throws.
+saves first, so results include your own edits. Records come back sorted by ID, which is stable but
+carries no meaning, so sort a copy to show them another way. A `@Timestamp(.created)` property gives
+you creation order, and a property of your own can hold a manual order. `transaction { }` runs a block
+and saves its changes in one commit, or rolls back just that block's changes if it throws.
 
 `save()` also comes in an `async` version, which commits off the main actor and suspends instead of
 blocking while a background import holds the file. Autosave always uses it. For fetches off the main
@@ -190,8 +191,8 @@ terms translate, those run as SQL to narrow the rows and only the rest is checke
 - `@Reference`, `@Renamed`, `@Indexed` and `@Timestamp` are read by `@Record`, so they only mean
   something on a `@Record` struct's properties. Elsewhere the compiler warns that they have no effect.
 - Generic structs can't be records, since each specialization would need its own fixed name.
-- `_position`, `_version`, `_modified`, `_tag` and `rowid` are reserved for bookkeeping, and the macro
-  rejects them as property names.
+- `rowid`, `oid` and `_rowid_` are SQLite's names for a row's ID, and the macro rejects them as
+  property names.
 
 Values are stored exactly: a `UInt64` above `Int64.max` round-trips, strings keep embedded NUL
 characters, and sets and dictionaries are written in a stable order so re-saving one never counts as
@@ -309,19 +310,19 @@ a view can call it while it updates, and each call costs one read by ID.
 
 ## Change tracking
 
-Every save keeps a record's bookkeeping in tables of its own, so a record's table holds only its ID,
-its place in the order and its properties:
+Every save keeps a record's bookkeeping in tables of its own, so a record's table holds only its ID and
+its properties:
 
 ```swift
 let meta = try context.metadata(ToDo.self, id: todo.id)
-meta?.version     // goes up once per save that changes the record's values, links or order
+meta?.version     // goes up once per save that changes the record's values or links
 meta?.modified    // when that save happened
 meta?.tag         // sync bookkeeping: the server's synced date for this copy, if any
 ```
 
 Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
-and fetches never load tags. Files from version 0.3.0 kept this in hidden columns on each record's table,
-which the container moves out and removes the first time it opens the file.
+and fetches never load tags. Files from version 0.3.0, which kept this in hidden columns beside each
+record, aren't supported, so start 0.4.0 with a new file.
 
 Behind this sits a change log with one entry per record, which is how sync knows what the server
 doesn't have yet. A deleted record's entry stays until the server acknowledges the deletion.
@@ -372,7 +373,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 
 The unit of sync is a whole record, `RecordChangeData`: `.save(id:zone:type:json:owner:synced:)` or
 `.delete(id:zone:type:owner:synced:)`. The JSON reads like the record, with relationships as arrays of
-IDs, assets as their file IDs, and `_position` for list order. Nothing else is added. The server
+IDs and assets as their file IDs. Nothing else is added. The server
 stamps every accepted change with a strictly later `synced` date and returns it as `.synced(id:at:)`. An
 upload carries the date of the copy it was edited from, and a server whose copy is newer answers
 `.conflict` with that copy, which the container merges and sends again. A server can use the newest
@@ -409,12 +410,10 @@ Inverses aren't sent. The container owns the rules:
   when the type has one. Otherwise the server's copy dates from when the server accepted it, so an edit
   made offline counts from when it uploaded. `.serverWins`, `.localWins` and `.latestWins`
   settle whole records instead.
-- **Order syncs.** Moving a record in a `@Records` list moves it on every device, and a move merges like
-  a property.
 - **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`. Under
   `.mergeProperties(otherwise:)`, its `otherwise` policy decides.
-- **Order doesn't matter.** A record can arrive before the records it links to, and its links appear
-  when they do.
+- **Arrival order doesn't matter.** A record can arrive before the records it links to, and its links
+  appear when they do.
 - **A child's reference decides where it belongs.** If a parent's list and a child's reference
   disagree, such as when the child moved on another device, the child goes to the parent it names, and
   the parent's list only sets the order. A child the list doesn't have yet goes at the end.
@@ -491,7 +490,7 @@ As with SwiftData, `.recordContainer(_:)` puts the container in the environment,
 `@Records` also loads records by ID, and keeps them current the same way:
 
 ```swift
-@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // an inverse's owners, in stored order
+@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // an inverse's owners, sorted by ID
 @Records(id: recipeID) var recipe: Recipe?                   // nil once the recipe is deleted
 ```
 
@@ -507,20 +506,19 @@ switches every list at once. `@Records("pantry")` pins a property to one zone in
 
 Like `@Query`, `@Records` also takes a descriptor, which can limit how many records a view holds:
 `@Records(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20)) var firstOpen: [ToDo]`.
-Unsaved new records still join the end, so the view never shows more than the limit. Pass a zone first,
+Unsaved new records still count toward it, so the view never shows more than the limit. Pass a zone first,
 `@Records("pantry", descriptor)`, to pin it.
 
 `$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes
-made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new record joins the end
-of a list, a filtered list drops records its filter rejects, and a rollback takes them back out. Deletes by
-predicate hide their matches at once too. The array's order is stored, so moves persist, and records always come back in that order.
-A filtered list reorders only its own records within the slots they already hold, leaving the rest in
-place. Sort a copy to display them another way.
+made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new record takes its
+place by ID, a filtered list drops records its filter rejects, and a rollback takes them back out. Deletes
+by predicate hide their matches at once too. The array's order isn't stored, so a list stays sorted by ID
+and a move through the binding changes nothing. Sort a copy to display records another way.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
-record, the container writes only rows, links and positions that actually changed, and a `@Records`
+record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.
 
 ## Requirements

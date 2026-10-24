@@ -32,12 +32,12 @@ import Testing
         try context.save()
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Edited", "Second"])
 
-        // Once deleted, the record goes back in at the end.
+        // Once deleted, the record goes back in by its ID.
         context.delete(first)
         try context.save()
         context.insert(first)
         try context.save()
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["Second", "Edited"])
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Edited", "Second"])
     }
 
     @Test func recordShowsUnsavedChangesWithoutSaving() throws {
@@ -102,7 +102,7 @@ import Testing
         #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Auto"])
     }
 
-    @Test func applyInsertsUpdatesDeletesAndOrders() throws {
+    @Test func applyInsertsUpdatesAndDeletes() throws {
         context.autosaveEnabled = false
         var todos = [ToDo(title: "A"), ToDo(title: "B"), ToDo(title: "C")]
         context.apply(todos, replacing: [])
@@ -116,7 +116,7 @@ import Testing
         context.apply(todos, replacing: previous)
         try context.save()
 
-        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["C", "A2", "D"])
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["A2", "C", "D"])
     }
 
     @Test func failedSaveRollsBackEverything() throws {

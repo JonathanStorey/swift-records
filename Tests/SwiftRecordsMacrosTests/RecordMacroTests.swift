@@ -449,14 +449,14 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Draft {
                 var id = UUID()
-                var _version = 1
+                var oid = 1
                 var rowid = 0
             }
             """,
             expandedSource: """
             struct Draft {
                 var id = UUID()
-                var _version = 1
+                var oid = 1
                 var rowid = 0
             }
 
@@ -469,8 +469,8 @@ final class RecordMacroTests: XCTestCase {
             }
             """,
             diagnostics: [
-                DiagnosticSpec(message: "'_version' is a name SwiftRecords uses for its own bookkeeping. Choose another name", line: 4, column: 9),
-                DiagnosticSpec(message: "'rowid' is a name SwiftRecords uses for its own bookkeeping. Choose another name", line: 5, column: 9),
+                DiagnosticSpec(message: "'oid' is SQLite's name for a table's row ID. Choose another name", line: 4, column: 9),
+                DiagnosticSpec(message: "'rowid' is SQLite's name for a table's row ID. Choose another name", line: 5, column: 9),
             ],
             macros: macros
         )

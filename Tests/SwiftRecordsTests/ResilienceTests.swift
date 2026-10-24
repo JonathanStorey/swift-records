@@ -53,15 +53,6 @@ import Testing
         #expect(try container.fetch(Person.self).map(\.name) == ["Cy"])
     }
 
-    @Test func storedOrderIsIndexed() throws {
-        let container = try RecordContainer(inMemory: true)
-        try container.save(Person(name: "Ana"))
-        let indexes = try container.defaultStorage.store.db.run(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'Person'"
-        )
-        #expect(indexes.contains { $0["name"] == .text("Person._position") })
-    }
-
     @Test func recordShowsAChangeWhileItsSaveCommits() async throws {
         let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false
@@ -140,10 +131,8 @@ import Testing
         #expect(context.unsavedChanges == 1)
 
         context.rollback()
-        context.apply(Array(todos.reversed()), replacing: todos)
-        #expect(context.unsavedChanges == 1)   // only the order
-        context.rollback()
-        context.apply(todos, replacing: todos)
+        // The order isn't stored, so a move saves nothing and the view shows the records by ID again.
+        #expect(context.apply(Array(todos.reversed()), replacing: todos).map(\.id) == todos.map(\.id))
         #expect(!context.hasChanges)
     }
 }

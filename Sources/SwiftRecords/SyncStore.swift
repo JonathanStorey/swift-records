@@ -12,8 +12,6 @@ struct SyncRecord: Sendable {
     /// For a copy from the server, the server's `synced` date. It settles a clash under `.latestWins` when
     /// the type has no `@Timestamp(.modified)`.
     var modified: Date?
-    /// The record's place in its type's stored order.
-    var position: Int64?
 
     init(type: String, id: UUID, fields: SyncFields?, tag: Data? = nil, modified: Date? = nil) {
         self.type = type
@@ -117,10 +115,6 @@ extension SyncValue {
 }
 
 typealias SyncFields = [String: SyncValue]
-
-/// The key a record's place in its type's stored order goes under in the container's own copies of its
-/// fields, so it merges like a property. It crosses to a provider as `SyncRecord.position` instead.
-let positionField = "_position"
 
 extension SyncFields {
     func encoded() throws -> Data { try JSONEncoder().encode(self) }
@@ -291,9 +285,6 @@ extension RecordStore {
             return nil
         }
         var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
-        if case .integer(let position)? = row["_position"] {
-            fields[positionField] = .int(position)
-        }
         for field in R.schema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
             fields[field.name] = nil
             if Self.relationTarget(field) != nil {
@@ -357,7 +348,7 @@ extension RecordStore {
 
     private func applySyncFields<R: Record>(_ type: R.Type, id: UUID, fields: SyncFields) throws {
         let sqlID = try ValueCoding.encode(id)
-        var known: Set<String> = ["id", positionField]
+        var known: Set<String> = ["id"]
         var columns: [(name: String, value: SQLiteValue)] = []
         var links: [(field: RecordSchema<R>.Field, target: any Record.Type, ids: [SQLiteValue])] = []
         var assets: [String: Asset] = [:]
@@ -391,9 +382,6 @@ extension RecordStore {
         let references = try referenceValues(R.self, id: sqlID)
         try upsert(columns, id: sqlID, into: R.table)
         try reconcileReferences(R.self, id: sqlID, before: references)
-        if case .int(let position)? = fields[positionField] {
-            try setPosition(.integer(position), table: R.table, id: sqlID)
-        }
         for (field, target, ids) in links {
             try link(try ensureRelation(R.self, field: field, target: target), ownerID: sqlID, targets: ids)
         }
@@ -496,11 +484,7 @@ extension RecordStore {
             guard let fields = try syncFields(table: change.table, id: id) else { return nil }
             var tag: Data?
             if case .blob(let data)? = try syncRow(change.table, id: id)?["tag"] { tag = data }
-            var values = fields
-            let position = values.removeValue(forKey: positionField)
-            var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag)
-            if case .int(let place)? = position { record.position = place }
-            return (record, fields)
+            return (SyncRecord(type: change.table, id: change.id, fields: fields, tag: tag), fields)
         }
     }
 
@@ -585,10 +569,7 @@ extension RecordStore {
         guard let type = registered[table] else {
             throw RecordsError.incompatibleRecord(type: table, id: record.id)
         }
-        var server = Self.normalizingReferences(of: type, in: values)
-        if let position = record.position {
-            server[positionField] = .int(position)
-        }
+        let server = Self.normalizingReferences(of: type, in: values)
 
         if pending, let entry {
             if entry.kind == .delete, deletePolicy != .serverWins {
@@ -678,7 +659,7 @@ extension RecordStore {
                 try db.run(
                     """
                     INSERT OR IGNORE INTO "_records_changes" (record_table, record_id, kind, version, time)
-                    SELECT ?, id, 'save', 1, ? FROM \(quoted(table)) ORDER BY "_position", rowid
+                    SELECT ?, id, 'save', 1, ? FROM \(quoted(table)) ORDER BY id
                     """,
                     [.text(table), now]
                 )

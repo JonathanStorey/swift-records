@@ -22,8 +22,7 @@ public struct BackgroundContext {
 
     // MARK: Changes
 
-    /// Adds the record, or replaces the one with the same ID. A new record joins the end of its type's
-    /// stored order.
+    /// Adds the record, or replaces the one with the same ID.
     public func insert<R: Record>(_ record: R) throws {
         try storage.save(record)
     }
@@ -45,12 +44,12 @@ public struct BackgroundContext {
 
     // MARK: Fetching
 
-    /// Fetches the records the descriptor matches in their stored order.
+    /// Fetches the records the descriptor matches, sorted by ID.
     public func fetch<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [R] {
         try storage.fetch(descriptor)
     }
 
-    /// Fetches every record of the type in its stored order.
+    /// Fetches every record of the type, sorted by ID.
     public func fetch<R: Record>(_ type: R.Type) throws -> [R] {
         try storage.fetch(RecordDescriptor<R>())
     }

@@ -6,7 +6,7 @@ import Testing
 
 @Record("Dish")
 struct DishV1 {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     var minutes: Int
     var shelf: [Ingredient] = []
@@ -14,7 +14,7 @@ struct DishV1 {
 
 @Record("Dish")
 struct DishV2 {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     @Renamed(from: "minutes") var duration: Int = 0
     @Renamed(from: "shelf") var ingredients: [Ingredient] = []
@@ -26,7 +26,7 @@ struct DishV2 {
 
 @Record
 struct Ingredient {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     @Reference(from: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
 }

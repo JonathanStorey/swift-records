@@ -13,7 +13,7 @@ enum SQLiteValue: Hashable, Sendable {
     case text(String)
     case blob(Data)
 
-    /// The value as an integer, for ordering positions. Anything else counts as zero.
+    /// The value as an integer, such as a count or version. Anything else counts as zero.
     var integerValue: Int64 {
         if case .integer(let value) = self { return value }
         return 0

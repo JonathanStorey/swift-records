@@ -217,10 +217,6 @@ extension RecordContainer {
         try defaultStorage.save(records)
     }
 
-    package func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
-        try defaultStorage.setOrder(ids, for: type)
-    }
-
     package func delete<R: Record>(_ record: R) throws {
         try defaultStorage.delete(record)
     }

@@ -96,10 +96,6 @@ extension ZoneStorage {
         try store.save(records)
     }
 
-    package func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
-        try store.setOrder(ids, for: type)
-    }
-
     package func delete<R: Record>(_ record: R) throws {
         try store.delete(record)
     }

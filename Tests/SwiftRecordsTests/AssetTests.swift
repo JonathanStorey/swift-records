@@ -4,7 +4,7 @@ import Testing
 
 @Record
 struct Photo {
-    var id = UUID()
+    var id = UUID.ordered()
     var caption = ""
     @Asset(fileExtension: "jpg") var image: Data? = nil
     @Reference(to: \Album.photos, action: .deleteSelf) var album: Album.ID?
@@ -12,7 +12,7 @@ struct Photo {
 
 @Record
 struct Album {
-    var id = UUID()
+    var id = UUID.ordered()
     var photos: [Photo] = []
 }
 

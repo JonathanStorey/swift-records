@@ -1,7 +1,7 @@
 import Foundation
 
-/// Which records to fetch and how many, like SwiftData's `FetchDescriptor`. Records come back in their
-/// stored order. For another order, sort a copy.
+/// Which records to fetch and how many, like SwiftData's `FetchDescriptor`. Records come back sorted
+/// by ID. For another order, sort a copy.
 ///
 /// ```swift
 /// let page = try context.fetch(RecordDescriptor<Recipe>(predicate: #Predicate { $0.servings > 2 }, fetchLimit: 20))

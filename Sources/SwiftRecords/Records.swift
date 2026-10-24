@@ -14,8 +14,8 @@ import SwiftUI
 /// ```
 ///
 /// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through the
-/// container's `mainContext`. The array's order is saved too, so moves persist. To show records in
-/// another order, sort a copy for display.
+/// container's `mainContext`. Records are listed by ID and the array's order isn't stored, so to show
+/// them in another order, sort a copy for display.
 ///
 /// It can also load records by ID, such as an inverse's owners or one record a view was handed:
 ///
@@ -49,9 +49,11 @@ public struct Records<Value: Sendable>: DynamicProperty {
         let fetch: @MainActor (ZoneStorage) throws -> Value
         /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor (Value) -> Value)?
-        let write: @MainActor (RecordContext, _ zone: Zone, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Void
+        /// Writes a binding's new value to the context and returns what the view shows, which for a list is
+        /// the records sorted by ID, since the order isn't stored.
+        let write: @MainActor (RecordContext, _ zone: Zone, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Value
         /// Lays the context's unsaved changes over fetched values, so views show them before they commit.
-        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: Value, _ source: ObjectIdentifier) -> Value
+        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: Value) -> Value
     }
 
     /// Whether the wrapper follows the context's zone or stays in one.
@@ -74,7 +76,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
         self.animation = animation
     }
 
-    /// Records from the context's current zone, in their stored order. With an animation, the view animates as records arrive, change and leave.
+    /// Records from the context's current zone, sorted by ID. With an animation, the view animates as records arrive, change and leave.
     public init<R: Record>(filter predicate: Predicate<R>? = nil, animation: Animation? = nil) where Value == [R] {
         self.init(zone: .following, query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
     }
@@ -101,7 +103,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
         self.init(zone: .fixed(zone), query: .list(RecordDescriptor(predicate: predicate)), animation: animation)
     }
 
-    /// The records with these IDs in their stored order, such as an inverse's owners:
+    /// The records with these IDs, sorted by ID, such as an inverse's owners:
     /// `@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]`.
     public init<R: Record>(ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
         self.init(zone: .following, query: .list(ids: ids), animation: animation)
@@ -155,10 +157,9 @@ public struct Records<Value: Sendable>: DynamicProperty {
                 MainActor.assumeIsolated {
                     guard let context else { return }
                     let previous = Self.value(context: context, cache: cache, query: query, zone: choice)
-                    // Show the edit immediately; the context saves it once edits pause.
-                    cache.value = newValue
+                    // Show the edit immediately. The context saves it once edits pause.
+                    cache.value = query.write(context, choice.zone(in: context), newValue, previous, ObjectIdentifier(cache))
                     cache.version += 1
-                    query.write(context, choice.zone(in: context), newValue, previous, ObjectIdentifier(cache))
                 }
             }
         )
@@ -196,7 +197,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
             let previous = cache.key == key ? cache.stored : nil
             let stored = (try? query.fetch(context.storage(for: zone))) ?? previous ?? query.empty
             cache.stored = stored
-            cache.value = query.overlay(context, zone, stored, source)
+            cache.value = query.overlay(context, zone, stored)
             cache.changeCount = changeCount
             cache.key = key
         } else if context.sequence != cache.sequence,
@@ -204,7 +205,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
                   let stored = cache.stored {
             // Another view or code changed records without saving yet. This view's own edits are
             // already in the cache, so they need no work.
-            cache.value = query.overlay(context, zone, stored, source)
+            cache.value = query.overlay(context, zone, stored)
         }
         cache.sequence = context.sequence
         return cache.value ?? query.empty
@@ -251,9 +252,9 @@ extension Records.Query {
             fetch: { try $0.fetch(descriptor) },
             refilter: refilter,
             write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
-            overlay: { context, zone, stored, source in
-                let records = context.overlay(stored, in: zone, source: source) { (try? predicate?.evaluate($0)) ?? true }
-                // Unsaved records join the end, so a page still holds at most its limit.
+            overlay: { context, zone, stored in
+                let records = context.overlay(stored, in: zone) { (try? predicate?.evaluate($0)) ?? true }
+                // A page still holds at most its limit with unsaved records added.
                 return limit.map { Array(records.prefix($0)) } ?? records
             }
         )
@@ -266,8 +267,8 @@ extension Records.Query {
             fetch: { try $0.fetch(R.self, ids: ids) },
             refilter: { records in records.filter { ids.contains($0.id) } },
             write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
-            overlay: { context, zone, stored, source in
-                context.overlay(stored, in: zone, source: source) { ids.contains($0.id) }
+            overlay: { context, zone, stored in
+                context.overlay(stored, in: zone) { ids.contains($0.id) }
             }
         )
     }
@@ -283,14 +284,15 @@ extension Records.Query {
                     // The wrapper is bound to one ID, so a record with another one can only be a mistake.
                     guard new.id == id else {
                         assertionFailure("@Records(id:) is bound to \(id), so its record's id can't change to \(new.id)")
-                        return
+                        return previous
                     }
                     context.insert(new, in: zone)
                 } else if let previous {
                     context.delete(previous, in: zone)
                 }
+                return new
             },
-            overlay: { context, zone, stored, _ in context.overlay(stored, id: id, in: zone) }
+            overlay: { context, zone, stored in context.overlay(stored, id: id, in: zone) }
         )
     }
 }
@@ -316,11 +318,11 @@ extension RecordArray {
         if let filter = query.refilter {
             refilter = { filter($0 as! [R]) as! Self }
         }
-        let write: @MainActor (RecordContext, Zone, Self, Self, ObjectIdentifier) -> Void = { context, zone, new, previous, source in
-            query.write(context, zone, new as! [R], previous as! [R], source)
+        let write: @MainActor (RecordContext, Zone, Self, Self, ObjectIdentifier) -> Self = { context, zone, new, previous, source in
+            query.write(context, zone, new as! [R], previous as! [R], source) as! Self
         }
-        let overlay: @MainActor (RecordContext, Zone, Self, ObjectIdentifier) -> Self = { context, zone, stored, source in
-            query.overlay(context, zone, stored as! [R], source) as! Self
+        let overlay: @MainActor (RecordContext, Zone, Self) -> Self = { context, zone, stored in
+            query.overlay(context, zone, stored as! [R]) as! Self
         }
         return Records<Self>.Query(
             key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write, overlay: overlay

@@ -4,7 +4,7 @@ import Testing
 
 @Record
 struct Board {
-    var id = UUID()
+    var id = UUID.ordered()
     var title = ""
     var cards: [Card] = []
     var stickers: [Sticker] = []
@@ -12,41 +12,41 @@ struct Board {
 
 @Record
 struct Card {
-    var id = UUID()
+    var id = UUID.ordered()
     var text = ""
     @Reference(to: \Board.cards, action: .deleteSelf) var board: Board.ID?
 }
 
 @Record
 struct Sticker {
-    var id = UUID()
+    var id = UUID.ordered()
     var name = ""
     @Reference(from: \Board.stickers) var boardIDs: Set<Board.ID>
 }
 
 @Record
 struct Shelf {
-    var id = UUID()
+    var id = UUID.ordered()
     var books: [Book] = []
 }
 
 @Record
 struct Book {
-    var id = UUID()
+    var id = UUID.ordered()
     var title = ""
     @Reference(to: \Shelf.books) var shelf: Shelf.ID?
 }
 
 @Record
 struct Member {
-    var id = UUID()
+    var id = UUID.ordered()
     var name = ""
     var memberships: [Membership] = []
 }
 
 @Record
 struct Team {
-    var id = UUID()
+    var id = UUID.ordered()
     var name = ""
     var memberships: [Membership] = []
 }
@@ -54,7 +54,7 @@ struct Team {
 /// A link with properties of its own, which belongs to both ends.
 @Record
 struct Membership {
-    var id = UUID()
+    var id = UUID.ordered()
     var role = ""
     @Reference(to: \Member.memberships, action: .deleteSelf) var member: Member.ID?
     @Reference(to: \Team.memberships, action: .deleteSelf) var team: Team.ID?
@@ -63,14 +63,14 @@ struct Membership {
 /// A relationship whose target doesn't say how it belongs.
 @Record
 struct LooseBoard {
-    var id = UUID()
+    var id = UUID.ordered()
     var cards: [Card] = []
 }
 
 /// A reference to a property that isn't a relationship to this type.
 @Record
 struct MisplacedReference {
-    var id = UUID()
+    var id = UUID.ordered()
     @Reference(to: \Board.cards) var board: Board.ID?
 }
 

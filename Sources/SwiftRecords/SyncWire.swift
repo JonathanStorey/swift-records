@@ -3,9 +3,6 @@ import Foundation
 /// How a record's fields are written as the `json` of a `RecordChangeData`: one key per stored property,
 /// each value as its property's type encodes, so the JSON reads like the record itself.
 enum WireJSON {
-    /// The key a record's place in its type's stored order goes under.
-    static let positionKey = positionField
-    /// The key a record's last edit time goes under, in milliseconds since 1970.
     /// The key a public record's owner is kept under in the container's own copy of its fields. It crosses
     /// as `RecordChangeData`'s `owner`, never inside the JSON.
     static let ownerKey = "_owner"
@@ -87,9 +84,6 @@ extension RecordStore {
                 members[key] = try WireJSON.untyped(value)
             }
         }
-        if let position = record.position {
-            members[WireJSON.positionKey] = try WireJSON.encoder.encode(position)
-        }
         return .save(id: record.id, zone: zone, type: record.type, json: try WireJSON.object(members), owner: recordOwner, synced: synced)
     }
 
@@ -140,9 +134,6 @@ extension RecordStore {
             do {
                 var members = try WireJSON.members(of: json)
                 var record = SyncRecord(type: typeName, id: id, fields: nil, tag: SyncedTag.data(synced))
-                if let position = members.removeValue(forKey: WireJSON.positionKey) {
-                    record.position = try WireJSON.decoder.decode(Int64.self, from: position)
-                }
                 // The copy dates from when the server accepted it.
                 record.modified = synced
                 members[WireJSON.ownerKey] = nil

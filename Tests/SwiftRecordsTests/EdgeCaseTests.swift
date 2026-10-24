@@ -4,14 +4,14 @@ import Testing
 
 @Record
 struct Bag: Equatable {
-    var id = UUID()
+    var id = UUID.ordered()
     var members: Set<String> = []
     var labels: [Int: String] = [:]
 }
 
 @Record
 struct Measurement {
-    var id = UUID()
+    var id = UUID.ordered()
     var count: UInt64 = 0
     var value: Double = 0
     var text = ""
@@ -20,7 +20,7 @@ struct Measurement {
 
 @Record
 struct TreeFolder: Equatable {
-    var id = UUID()
+    var id = UUID.ordered()
     var name: String
     var subfolders: [TreeFolder] = []
     @Reference(to: \TreeFolder.subfolders, action: .deleteSelf) var parent: TreeFolder.ID?
@@ -28,7 +28,7 @@ struct TreeFolder: Equatable {
 
 @Record("Dish")
 struct DishV3 {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     @Renamed(from: "minutes", "duration") var time: Int = 0
 }
@@ -109,7 +109,7 @@ struct DishV3 {
         // Point the child back at its parent through the link table, which no value type can express.
         try container.defaultStorage.store.transaction {
             try container.defaultStorage.store.db.run(
-                "INSERT INTO \"TreeFolder.subfolders\" (owner, target, position, inverse_position) VALUES (?, ?, 0, 0)",
+                "INSERT INTO \"TreeFolder.subfolders\" (owner, target, position) VALUES (?, ?, 0)",
                 [try ValueCoding.encode(child.id), try ValueCoding.encode(parent.id)]
             )
         }
@@ -195,31 +195,6 @@ struct DishV3 {
 
     init() {
         context.autosaveEnabled = false
-    }
-
-    @Test func filteredApplyKeepsOthersInPlace() throws {
-        let todos = (0..<6).map { ToDo(title: "T\($0)", done: $0 % 2 == 0) }
-        context.apply(todos, replacing: [])
-        try context.save()
-
-        // A view showing only the done items reverses them.
-        let done = todos.filter(\.done)
-        context.apply(done.reversed(), replacing: done)
-        try context.save()
-
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["T4", "T1", "T2", "T3", "T0", "T5"])
-    }
-
-    @Test func insertedRecordsTakeTheirPlaceInTheSameSave() throws {
-        let first = [ToDo(title: "A"), ToDo(title: "B")]
-        context.apply(first, replacing: [])
-        try context.save()
-
-        let second = [first[0], ToDo(title: "New"), first[1]]
-        context.apply(second, replacing: first)
-        context.insert(ToDo(title: "Elsewhere"))
-        try context.save()
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["A", "New", "B", "Elsewhere"])
     }
 
     @Test func rollbackRefreshes() throws {

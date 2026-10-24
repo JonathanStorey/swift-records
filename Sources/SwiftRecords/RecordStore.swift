@@ -115,7 +115,7 @@ final class RecordStore: @unchecked Sendable {
         try db.execute("""
             CREATE TABLE IF NOT EXISTS "_records_relations" (
                 owner_table TEXT NOT NULL, field TEXT NOT NULL, target_table TEXT NOT NULL, delete_rule TEXT NOT NULL,
-                PRIMARY KEY (owner_table, field));
+                child_field TEXT, PRIMARY KEY (owner_table, field));
             CREATE TABLE IF NOT EXISTS "_records_assets" (
                 name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS "_records_assets.owner" ON "_records_assets" (owner_table, owner_id);
@@ -133,48 +133,6 @@ final class RecordStore: @unchecked Sendable {
                 PRIMARY KEY (record_table, record_id));
             CREATE TABLE IF NOT EXISTS "_records_uploaded_assets" (name TEXT PRIMARY KEY);
             """)
-        // Files from before child references.
-        if try !db.run("PRAGMA table_info(\"_records_relations\")").contains(where: { $0["name"] == .text("child_field") }) {
-            try db.execute("ALTER TABLE \"_records_relations\" ADD COLUMN child_field TEXT")
-        }
-        // Files from before synced timestamps.
-        if try !db.run("PRAGMA table_info(\"_records_sync\")").contains(where: { $0["name"] == .text("synced_at") }) {
-            try db.execute("ALTER TABLE \"_records_sync\" ADD COLUMN synced_at REAL")
-        }
-        try removeTrackingColumns()
-    }
-
-    /// Moves version 0.3.0's per-record tags into the sync table and drops the bookkeeping columns, so a
-    /// record's table holds only its ID, its place in the order and its properties. Versions and edit
-    /// times are already in the change log. Runs once per file.
-    private func removeTrackingColumns() throws {
-        guard case .integer(let schema)? = try db.run("PRAGMA user_version").first?["user_version"], schema < 1 else { return }
-        try db.transaction {
-            let tables = try db.run(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_records_%'"
-            ).compactMap { row -> String? in
-                if case .text(let name)? = row["name"] { return name }
-                return nil
-            }
-            for table in tables {
-                let existing = try db.run("PRAGMA table_info(\(quoted(table)))").compactMap { row -> String? in
-                    if case .text(let name)? = row["name"] { return name }
-                    return nil
-                }
-                if existing.contains("_tag") {
-                    try db.run("""
-                        INSERT INTO "_records_sync" (record_table, record_id, tag)
-                        SELECT ?, id, "_tag" FROM \(quoted(table)) WHERE "_tag" IS NOT NULL
-                        ON CONFLICT (record_table, record_id) DO UPDATE SET tag = excluded.tag
-                        """, [.text(table)])
-                }
-                // SQLite before 3.35 can't drop columns. Records ignore the ones left behind.
-                for column in Self.trackingColumns.sorted() where existing.contains(column) {
-                    try? db.execute("ALTER TABLE \(quoted(table)) DROP COLUMN \(quoted(column))")
-                }
-            }
-            try db.execute("PRAGMA user_version = 1")
-        }
     }
 
     deinit {
@@ -433,14 +391,13 @@ final class RecordStore: @unchecked Sendable {
         if existing != nil {
             try snapshotBeforeChange(table, id: id)
         }
-        let insertColumns = (["id"] + names + ["_position"]).map(quoted).joined(separator: ", ")
+        let insertColumns = (["id"] + names).map(quoted).joined(separator: ", ")
         let placeholders = (["?"] + names.map { _ in "?" }).joined(separator: ", ")
-        let nextPosition = "(SELECT COALESCE(MAX(\"_position\"), 0) + 1 FROM \(quoted(table)))"
         let conflict = names.isEmpty
             ? "DO NOTHING"
             : "DO UPDATE SET " + names.map { "\(quoted($0)) = excluded.\(quoted($0))" }.joined(separator: ", ")
         try db.run(
-            "INSERT INTO \(quoted(table)) (\(insertColumns)) VALUES (\(placeholders), \(nextPosition)) ON CONFLICT(\"id\") \(conflict)",
+            "INSERT INTO \(quoted(table)) (\(insertColumns)) VALUES (\(placeholders)) ON CONFLICT(\"id\") \(conflict)",
             [id] + names.map { row[$0]! }
         )
         try logChange(table, id: id)
@@ -476,10 +433,9 @@ final class RecordStore: @unchecked Sendable {
         try logChange(info.ownerTable, id: ownerID)
         try db.run("DELETE FROM \(table) WHERE owner = ?", [ownerID])
 
-        // Inverses are unordered, so `inverse_position` is always 0. The column stays for older files.
         for (position, target) in targets.enumerated() {
             try db.run(
-                "INSERT INTO \(table) (owner, target, position, inverse_position) VALUES (?, ?, ?, 0)",
+                "INSERT INTO \(table) (owner, target, position) VALUES (?, ?, ?)",
                 [ownerID, target, .integer(Int64(position))]
             )
         }
@@ -537,8 +493,8 @@ final class RecordStore: @unchecked Sendable {
                 try noteLinkChange(info, ownerID: new)
                 try db.run(
                     """
-                    INSERT INTO \(quoted(info.table)) (owner, target, position, inverse_position)
-                    VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM \(quoted(info.table)) WHERE owner = ?1), 0)
+                    INSERT INTO \(quoted(info.table)) (owner, target, position)
+                    VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM \(quoted(info.table)) WHERE owner = ?1))
                     """,
                     [new, id]
                 )
@@ -563,13 +519,13 @@ final class RecordStore: @unchecked Sendable {
         return try db.run("SELECT \(quoted(column)) FROM \(quoted(table)) WHERE id = ?", [id]).first.map { $0[column] ?? .null }
     }
 
-    /// The records whose reference points at `ownerID` through this relationship, in stored order.
+    /// The records whose reference points at `ownerID` through this relationship, by ID.
     private func children(of ownerID: SQLiteValue, in info: RelationInfo) throws -> [SQLiteValue] {
         guard let child = info.childField, tableExists(info.targetTable), columns[info.targetTable, default: []].contains(child) else {
             return []
         }
         return try db.run(
-            "SELECT id FROM \(quoted(info.targetTable)) WHERE \(quoted(child)) = ? ORDER BY \"_position\", id", [ownerID]
+            "SELECT id FROM \(quoted(info.targetTable)) WHERE \(quoted(child)) = ? ORDER BY id", [ownerID]
         ).map { $0["id"]! }
     }
 
@@ -605,42 +561,6 @@ final class RecordStore: @unchecked Sendable {
                 try deleteRow(orphan.table, id: orphan.id)
             }
         }
-    }
-
-    /// Stores the order of some or all records of one type. The records take the places they already
-    /// hold among themselves, so ordering a filtered subset leaves every other record where it was.
-    func setOrder<R: Record>(_ ids: [R.ID], for type: R.Type) throws {
-        try transaction {
-            guard tableExists(R.table) else { return }
-            var rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", id")
-            // Ties or gaps from older versions would make shared places ambiguous, so number the table first.
-            let positions = rows.map { $0["_position"] ?? .null }
-            if Set(positions).count != positions.count || positions.contains(.null) {
-                for (position, row) in rows.enumerated() {
-                    try db.run("UPDATE \(quoted(R.table)) SET \"_position\" = ? WHERE id = ?", [.integer(Int64(position)), row["id"]!])
-                }
-                rows = try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) ORDER BY \"_position\", id")
-            }
-            var current: [SQLiteValue: SQLiteValue] = [:]
-            for row in rows {
-                current[row["id"]!] = row["_position"]!
-            }
-            var seen: Set<SQLiteValue> = []
-            let ordered = try ids.map { try ValueCoding.encode($0) }.filter { current[$0] != nil && seen.insert($0).inserted }
-            let slots = ordered.map { current[$0]! }.sorted { $0.integerValue < $1.integerValue }
-            for (id, position) in zip(ordered, slots) where current[id] != position {
-                try setPosition(position, table: R.table, id: id)
-            }
-        }
-    }
-
-    /// Moves a record to a place in its type's stored order, which is a change to the record.
-    func setPosition(_ position: SQLiteValue, table: String, id: SQLiteValue) throws {
-        guard try db.run("SELECT \"_position\" FROM \(quoted(table)) WHERE id = ?", [id]).first?["_position"] != position else { return }
-        // Not structural: a view that moved the record already shows it there.
-        try snapshotBeforeChange(table, id: id)
-        try db.run("UPDATE \(quoted(table)) SET \"_position\" = ? WHERE id = ?", [position, id])
-        try logChange(table, id: id)
     }
 
     // MARK: Deleting
@@ -752,43 +672,34 @@ final class RecordStore: @unchecked Sendable {
 
     /// Fetches records by ID in the order given, skipping any that no longer exist.
     func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
-        try fetch(type, ids: ids, storedOrder: false)
+        try fetch(type, ids: ids, sorted: false)
     }
 
-    /// Fetches records by ID in their stored order, skipping any that no longer exist. Use it to load an
+    /// Fetches records by ID, sorted by ID, skipping any that no longer exist. Use it to load an
     /// inverse relationship: `container.fetch(Cookbook.self, ids: recipe.cookbookIDs)`.
     func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
-        try fetch(type, ids: Array(ids), storedOrder: true)
+        try fetch(type, ids: Array(ids), sorted: true)
     }
 
-    private func fetch<R: Record>(_ type: R.Type, ids: [R.ID], storedOrder: Bool) throws -> [R] {
+    private func fetch<R: Record>(_ type: R.Type, ids: [R.ID], sorted: Bool) throws -> [R] {
         try locked {
             guard tableExists(R.table) else { return [] }
             try prepare(R.self)
-            let ids = try ids.map { try ValueCoding.encode($0) }
+            let ids = try (sorted ? ids.sorted { $0.precedes($1) } : ids).map { try ValueCoding.encode($0) }
             var rows: [SQLiteValue: [String: SQLiteValue]] = [:]
             for chunk in ids.chunked(into: Self.batchSize) {
                 for row in try db.run("SELECT \(recordColumns(R.table)) FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
                     rows[row["id"]!] = row
                 }
             }
-            var found = ids.compactMap { rows[$0] }
-            if storedOrder {
-                var places: [SQLiteValue: Int64] = [:]
-                for chunk in ids.chunked(into: Self.batchSize) {
-                    for row in try db.run("SELECT id, \"_position\" FROM \(quoted(R.table)) WHERE id IN (\(placeholders(chunk.count)))", Array(chunk)) {
-                        if case .integer(let place)? = row["_position"] { places[row["id"]!] = place }
-                    }
-                }
-                found.sort { places[$0["id"]!, default: .max] < places[$1["id"]!, default: .max] }
-            }
+            let found = ids.compactMap { rows[$0] }
             return try prefetching(R.table, rows: found) {
                 try decodeRows(R.self, found)
             }
         }
     }
 
-    /// Fetches records matching a predicate in their stored order.
+    /// Fetches records matching a predicate, sorted by ID.
     ///
     /// Simple predicates on a record's own properties run as SQL. Anything else is evaluated in memory.
     func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
@@ -824,7 +735,7 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
-    /// The IDs of the records that match, in their stored order, without decoding the records when the
+    /// The IDs of the records that match, sorted, without decoding the records when the
     /// predicate translates to SQL.
     func ids<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [UUID] {
         try locked {
@@ -833,7 +744,7 @@ final class RecordStore: @unchecked Sendable {
             guard let (clause, bindings) = try whereClause(predicate) else {
                 return try fetchRecords(R.self, where: predicate, page: page).map(\.id)
             }
-            var sql = "SELECT id FROM \(quoted(R.table))\(clause) ORDER BY \"_position\", id"
+            var sql = "SELECT id FROM \(quoted(R.table))\(clause) ORDER BY id"
             var values = bindings
             if let page {
                 sql += " LIMIT ? OFFSET ?"
@@ -865,7 +776,7 @@ final class RecordStore: @unchecked Sendable {
         return (" WHERE " + clause.sql, clause.bindings)
     }
 
-    /// Loads matching records in stored order, optionally one page of them.
+    /// Loads matching records sorted by ID, optionally one page of them.
     ///
     /// When only some of a predicate's `&&` terms translate, SQL narrows the rows by those and the whole
     /// predicate checks the rest in memory, so a fetch never reads more of the table than it must.
@@ -877,7 +788,7 @@ final class RecordStore: @unchecked Sendable {
         if !exact, let predicate, let clause = PredicateTranslator.translateTerms(predicate) {
             translated = try whereClause(clause, for: R.self)
         }
-        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", id"
+        var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY id"
         var bindings = translated?.1 ?? []
         if let page, exact {
             sql += " LIMIT ? OFFSET ?"
@@ -1035,8 +946,8 @@ final class RecordStore: @unchecked Sendable {
 
     func ensureTable(_ table: String) throws {
         if !tableExists(table) {
-            try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY, \"_position\" INTEGER)")
-            columns[table] = ["id", "_position"]
+            try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY)")
+            columns[table] = ["id"]
         }
     }
 
@@ -1044,10 +955,6 @@ final class RecordStore: @unchecked Sendable {
     /// columns, join tables and asset entries take the new name, and indexed columns get an index.
     func prepare<R: Record>(_ type: R.Type) throws {
         guard !prepared.contains(ObjectIdentifier(R.self)), tableExists(R.table) else { return }
-        // Every list sorts by stored order and every insert reads the highest position, so both use an index.
-        try db.execute(
-            "CREATE INDEX IF NOT EXISTS \(quoted(R.table + "._position")) ON \(quoted(R.table)) (\"_position\", \"id\")"
-        )
         for field in R.schema.fields {
             for old in field.previousNames {
                 try rename(field: old, to: field.name, in: R.table)
@@ -1085,16 +992,11 @@ final class RecordStore: @unchecked Sendable {
         try db.run("UPDATE \"_records_assets\" SET field = ? WHERE owner_table = ? AND field = ?", [.text(new), .text(table), .text(old)])
     }
 
-    /// Bookkeeping columns that files from version 0.3.0 kept beside each record. The change log and sync
-    /// table hold that now, and opening a file removes them, but a file whose SQLite can't drop columns
-    /// keeps them, so records never read or write them.
-    static let trackingColumns: Set<String> = ["_version", "_modified", "_tag"]
-    private static let internalColumns: Set<String> = Set(["id", "_position"]).union(trackingColumns)
+    private static let internalColumns: Set<String> = ["id"]
 
-    /// The columns a record decodes from, which leaves out the tracking columns so a fetch never loads tags.
+    /// The columns a record decodes from.
     private func recordColumns(_ table: String) -> String {
-        columns[table, default: []].subtracting(Self.trackingColumns).sorted()
-            .map { quoted(table) + "." + quoted($0) }.joined(separator: ", ")
+        columns[table, default: []].sorted().map { quoted(table) + "." + quoted($0) }.joined(separator: ", ")
     }
 
     /// Adds any missing columns. Columns have no declared type, so SQLite stores each value as given.
@@ -1150,7 +1052,7 @@ final class RecordStore: @unchecked Sendable {
         let table = quoted(info.table)
         try db.execute("""
             CREATE TABLE IF NOT EXISTS \(table) (
-                owner NOT NULL, target NOT NULL, position INTEGER NOT NULL, inverse_position INTEGER NOT NULL,
+                owner NOT NULL, target NOT NULL, position INTEGER NOT NULL,
                 PRIMARY KEY (owner, position));
             CREATE INDEX IF NOT EXISTS \(quoted(info.table + ".target")) ON \(table) (target);
             """)
