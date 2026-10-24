@@ -385,13 +385,8 @@ extension RecordStore {
             throw RecordsError.incompatibleRecord(type: R.table, id: id)
         }
 
-        try ensureTable(R.table)
-        try prepare(R.self)
         columns += try storeAssets(of: R.self, id: sqlID, assets: assets)
-        try ensureColumns(columns.map(\.name), in: R.table)
-        let references = try referenceValues(R.self, id: sqlID)
-        try upsert(columns, id: sqlID, into: R.table)
-        try reconcileReferences(R.self, id: sqlID, before: references)
+        try writeRow(R.self, id: sqlID, columns: columns)
         for (field, target, ids) in links {
             try link(try ensureRelation(R.self, field: field, target: target), ownerID: sqlID, targets: ids)
         }
@@ -447,6 +442,11 @@ extension RecordStore {
         return (kind, Int(row?["version"]?.integerValue ?? 0))
     }
 
+    /// Whether a bookkeeping row holds a change the server hasn't acknowledged.
+    static func isPending(_ row: [String: SQLiteValue]?) -> Bool {
+        logEntry(row).map { $0.version > Int(row?["acked"]?.integerValue ?? 0) } ?? false
+    }
+
     /// Clears a record's log entry and keeps its sync state.
     func dropLogEntry(_ table: String, id: SQLiteValue) throws {
         try db.run(
@@ -495,12 +495,11 @@ extension RecordStore {
     func syncRecord(for change: PendingChange) throws -> (record: SyncRecord, fields: SyncFields?)? {
         try locked {
             let id = try ValueCoding.encode(change.id)
-            if change.kind == .delete {
-                var tag: Data?
-                if case .blob(let data)? = try syncRow(change.table, id: id)?["tag"] { tag = data }
-                return (SyncRecord(type: change.table, id: change.id, fields: nil, tag: tag), nil)
+            var fields: SyncFields?
+            if change.kind == .save {
+                guard let stored = try syncFields(table: change.table, id: id) else { return nil }
+                fields = stored
             }
-            guard let fields = try syncFields(table: change.table, id: id) else { return nil }
             var tag: Data?
             if case .blob(let data)? = try syncRow(change.table, id: id)?["tag"] { tag = data }
             return (SyncRecord(type: change.table, id: change.id, fields: fields, tag: tag), fields)
@@ -577,8 +576,8 @@ extension RecordStore {
     private func bookkeepingRows(for changes: [RecordChangeData]) throws -> [RowKey: [String: SQLiteValue]] {
         var rows: [RowKey: [String: SQLiteValue]] = [:]
         for (table, group) in Dictionary(grouping: changes, by: \.type) {
-            for start in stride(from: 0, to: group.count, by: 500) {
-                let ids = try group[start..<min(start + 500, group.count)].map { try ValueCoding.encode($0.id) }
+            for chunk in group.chunked(into: Self.batchSize) {
+                let ids = try chunk.map { try ValueCoding.encode($0.id) }
                 let found = try db.run(
                     "SELECT * FROM \"_records_meta\" WHERE record_table = ? AND record_id IN (\(placeholders(ids.count)))",
                     [.text(table)] + ids
@@ -596,15 +595,14 @@ extension RecordStore {
     private static func isStored(_ change: RecordChangeData, sync: [String: SQLiteValue]?) -> Bool {
         guard !change.isDeletion, let tag = SyncedTag.data(change.synced), let sync,
               case .blob(let stored)? = sync["tag"], stored == tag else { return false }
-        let pending = sync["kind"] != .null && (sync["version"]?.integerValue ?? 0) > (sync["acked"]?.integerValue ?? 0)
-        return !pending
+        return !isPending(sync)
     }
 
     private func applyReceived(_ record: SyncRecord, sync: [String: SQLiteValue]?, policy: MergePolicy) throws {
         let table = record.type
         let id = try ValueCoding.encode(record.id)
         let entry = Self.logEntry(sync)
-        let pending = entry.map { $0.version > Int(sync?["acked"]?.integerValue ?? 0) } ?? false
+        let pending = Self.isPending(sync)
         // A delete has no properties to merge, so it settles by the policy for clashes.
         let deletePolicy = policy.clashPolicy
 
