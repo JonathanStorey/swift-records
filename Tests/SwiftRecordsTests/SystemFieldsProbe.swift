@@ -36,13 +36,11 @@ import Testing
                      "setCreatorUserRecordID:", "setLastModifiedUserRecordID:", "setKnownToServer:"] {
             print("PROBE responds \(name): \(record.responds(to: Selector(name)))")
         }
-        if record.responds(to: Selector(("setEtag:"))) { record.setValue("tag-abc", forKey: "etag") }
-        if record.responds(to: Selector(("setCreationDate:"))) { record.setValue(Date(timeIntervalSince1970: 1_000), forKey: "creationDate") }
-        if record.responds(to: Selector(("setModificationDate:"))) { record.setValue(Date(timeIntervalSince1970: 2_000), forKey: "modificationDate") }
-        if record.responds(to: Selector(("setCreatorUserRecordID:"))) {
-            record.setValue(CKRecord.ID(recordName: "_alice"), forKey: "creatorUserRecordID")
-        }
-        if record.responds(to: Selector(("setKnownToServer:"))) { record.setValue(true, forKey: "knownToServer") }
+        // CKRecord's setValue(_:forKey:) writes record fields, so call the private setters directly.
+        _ = record.perform(Selector(("setEtag:")), with: "tag-abc")
+        _ = record.perform(Selector(("setCreationDate:")), with: Date(timeIntervalSince1970: 1_000))
+        _ = record.perform(Selector(("setModificationDate:")), with: Date(timeIntervalSince1970: 2_000))
+        _ = record.perform(Selector(("setCreatorUserRecordID:")), with: CKRecord.ID(recordName: "_alice"))
         let tagged = Self.archive(record)
         print("PROBE tagged archive:\n" + Self.xml(tagged))
         let back = Self.decode(tagged)
@@ -58,6 +56,27 @@ import Testing
             print("PROBE edited plist decodes: tag=\(Self.decode(edited)?.recordChangeTag ?? "nil")")
         } else {
             print("PROBE no tag string in objects")
+        }
+    }
+
+    /// Writes an archive from nothing but our own values, with the keys CloudKit uses, and decodes it.
+    @Test func authored() {
+        let zone = CKRecordZone.ID(zoneName: "recipes", ownerName: CKCurrentUserDefaultName)
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        coder.encode("Recipe", forKey: "RecordType")
+        coder.encode(CKRecord.ID(recordName: "R2", zoneID: zone), forKey: "RecordID")
+        coder.encode("tag-own", forKey: "ETag")
+        coder.encode(Date(timeIntervalSince1970: 3_000) as NSDate, forKey: "RecordCtime")
+        coder.encode(Date(timeIntervalSince1970: 4_000) as NSDate, forKey: "RecordMtime")
+        coder.encode(CKRecord.ID(recordName: "_bob"), forKey: "CreatorUserRecordID")
+        coder.encode(true, forKey: "KnownToServer")
+        coder.finishEncoding()
+        let record = Self.decode(coder.encodedData)
+        print("PROBE authored decodes: \(record != nil) type=\(record?.recordType ?? "nil") name=\(record?.recordID.recordName ?? "nil") zone=\(record?.recordID.zoneID.zoneName ?? "nil") tag=\(record?.recordChangeTag ?? "nil") created=\(String(describing: record?.creationDate)) modified=\(String(describing: record?.modificationDate)) creator=\(record?.creatorUserRecordID?.recordName ?? "nil")")
+        if let record {
+            record["title"] = "Soup"
+            print("PROBE authored record takes values: \(record["title"] as? String ?? "nil"), keys=\(record.allKeys())")
+            print("PROBE authored re-archived:\n" + Self.xml(Self.archive(record)).components(separatedBy: "\n").filter { $0.contains("<string>") }.joined(separator: "\n"))
         }
     }
 }
