@@ -117,21 +117,16 @@ final class RecordStore: @unchecked Sendable {
                 owner_table TEXT NOT NULL, field TEXT NOT NULL, target_table TEXT NOT NULL, delete_rule TEXT NOT NULL,
                 child_field TEXT, PRIMARY KEY (owner_table, field));
             CREATE TABLE IF NOT EXISTS "_records_assets" (
-                name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL);
+                name TEXT PRIMARY KEY, owner_table TEXT NOT NULL, owner_id NOT NULL, field TEXT NOT NULL,
+                uploaded INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS "_records_assets.owner" ON "_records_assets" (owner_table, owner_id);
             CREATE TABLE IF NOT EXISTS "_records_sync_state" (key TEXT PRIMARY KEY, value BLOB NOT NULL);
-            CREATE TABLE IF NOT EXISTS "_records_changes" (
+            CREATE TABLE IF NOT EXISTS "_records_meta" (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, record_table TEXT NOT NULL, record_id NOT NULL,
-                kind TEXT NOT NULL, version INTEGER NOT NULL, time REAL NOT NULL,
+                kind TEXT, version INTEGER NOT NULL DEFAULT 0, time REAL,
+                acked INTEGER NOT NULL DEFAULT 0, known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB,
+                synced_at REAL, parked BLOB,
                 UNIQUE (record_table, record_id));
-            CREATE TABLE IF NOT EXISTS "_records_sync" (
-                record_table TEXT NOT NULL, record_id NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
-                known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB, synced_at REAL,
-                PRIMARY KEY (record_table, record_id));
-            CREATE TABLE IF NOT EXISTS "_records_parked" (
-                record_table TEXT NOT NULL, record_id NOT NULL, record BLOB NOT NULL,
-                PRIMARY KEY (record_table, record_id));
-            CREATE TABLE IF NOT EXISTS "_records_uploaded_assets" (name TEXT PRIMARY KEY);
             """)
     }
 
@@ -962,7 +957,8 @@ final class RecordStore: @unchecked Sendable {
             if field.timestamp == .created || field.timestamp == .modified {
                 try ensureColumns([field.name], in: R.table)
             }
-            if field.isIndexed {
+            // A child's reference is indexed too, since loading and cascading look children up by it.
+            if field.isIndexed || field.parent != nil {
                 try ensureColumns([field.name], in: R.table)
                 try db.execute(
                     "CREATE INDEX IF NOT EXISTS \(quoted(R.table + "." + field.name + ".index")) ON \(quoted(R.table)) (\(quoted(field.name)))"
@@ -1121,11 +1117,10 @@ extension RecordStore: RelationLoader {
     /// When the server acknowledged the record as it is now, or `nil` while it has unsent changes or has
     /// never synced.
     func syncedDate(table: String, id: SQLiteValue) throws -> Date? {
-        let row = try db.run("""
-            SELECT s.synced_at, s.acked, c.version FROM "_records_sync" s
-            LEFT JOIN "_records_changes" c ON c.record_table = s.record_table AND c.record_id = s.record_id
-            WHERE s.record_table = ? AND s.record_id = ? AND s.known = 1
-            """, [.text(table), id]).first
+        let row = try db.run(
+            "SELECT synced_at, acked, version FROM \"_records_meta\" WHERE record_table = ? AND record_id = ? AND known = 1",
+            [.text(table), id]
+        ).first
         guard let row, case .real(let time) = row["synced_at"],
               (row["version"]?.integerValue ?? 0) <= (row["acked"]?.integerValue ?? 0) else { return nil }
         return Date(timeIntervalSince1970: time)
@@ -1171,7 +1166,7 @@ extension RecordStore {
         if applyingSynced > 0 {
             // The server already has this change. A record it deleted has nothing left to send.
             if kind == .delete {
-                try db.run("DELETE FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
+                try dropLogEntry(table, id: id)
             }
             return
         }
@@ -1180,7 +1175,7 @@ extension RecordStore {
         logged[logged.count - 1][key] = kind
 
         let previous = try db.run(
-            "SELECT version FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
+            "SELECT version FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
         ).first?["version"]
         guard case .integer(let last) = previous ?? .integer(0) else { return }
         let version = SQLiteValue.integer(last + 1)
@@ -1193,9 +1188,14 @@ extension RecordStore {
                 }
             }
         }
-        // Replacing the entry gives it a new sequence number at the end of the log.
+        // Replacing the row gives it a new sequence number at the end of the log, and carries its sync state over.
         try db.run(
-            "INSERT OR REPLACE INTO \"_records_changes\" (record_table, record_id, kind, version, time) VALUES (?, ?, ?, ?, ?)",
+            """
+            INSERT OR REPLACE INTO "_records_meta"
+                (record_table, record_id, kind, version, time, acked, known, tag, snapshot, extra, synced_at, parked)
+            SELECT ?1, ?2, ?3, ?4, ?5, COALESCE(m.acked, 0), COALESCE(m.known, 0), m.tag, m.snapshot, m.extra, m.synced_at, m.parked
+            FROM (SELECT 1) LEFT JOIN "_records_meta" m ON m.record_table = ?1 AND m.record_id = ?2
+            """,
             [.text(table), id, .text(kind.rawValue), version, now]
         )
     }
@@ -1204,7 +1204,7 @@ extension RecordStore {
     var changeToken: ChangeToken {
         get throws {
             try locked {
-                let row = try db.run("SELECT seq FROM sqlite_sequence WHERE name = '_records_changes'").first
+                let row = try db.run("SELECT seq FROM sqlite_sequence WHERE name = '_records_meta'").first
                 guard case .integer(let seq) = row?["seq"] else { return .initial }
                 return ChangeToken(rawValue: seq)
             }
@@ -1216,7 +1216,7 @@ extension RecordStore {
     func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
         try locked {
             try db.run(
-                "SELECT * FROM \"_records_changes\" WHERE seq > ? ORDER BY seq", [.integer(token.rawValue)]
+                "SELECT * FROM \"_records_meta\" WHERE seq > ? AND kind IS NOT NULL ORDER BY seq", [.integer(token.rawValue)]
             ).compactMap { row in
                 guard case .integer(let seq) = row["seq"], case .text(let table) = row["record_table"],
                       case .text(let kind) = row["kind"], let kind = RecordChange.Kind(rawValue: kind),
@@ -1229,21 +1229,18 @@ extension RecordStore {
         }
     }
 
-    /// A record's version and last change from the change log, and its tag from the sync table, or `nil`
-    /// if it isn't stored.
+    /// A record's version, last change and tag, or `nil` if it isn't stored.
     func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
         try locked {
             let id = try ValueCoding.encode(id)
             guard try rowExists(R.table, id: id) else { return nil }
-            let change = try db.run(
-                "SELECT version, time FROM \"_records_changes\" WHERE record_table = ? AND record_id = ? AND kind = 'save'",
-                [.text(R.table), id]
-            ).first
+            let row = try syncRow(R.table, id: id)
+            let saved = row?["kind"] == .text(RecordChange.Kind.save.rawValue)
             var modified: Date?
-            if case .real(let time)? = change?["time"] { modified = Date(timeIntervalSince1970: time) }
+            if saved, case .real(let time)? = row?["time"] { modified = Date(timeIntervalSince1970: time) }
             var tag: Data?
-            if case .blob(let data)? = try syncRow(R.table, id: id)?["tag"] { tag = data }
-            return RecordMetadata(version: Int(change?["version"]?.integerValue ?? 0), modified: modified, tag: tag)
+            if case .blob(let data)? = row?["tag"] { tag = data }
+            return RecordMetadata(version: saved ? Int(row?["version"]?.integerValue ?? 0) : 0, modified: modified, tag: tag)
         }
     }
 

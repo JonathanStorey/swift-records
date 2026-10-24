@@ -193,10 +193,7 @@ extension RecordStore {
     /// The zone's asset files that are here but not yet on the server, oldest name first.
     func unsentAssets(zone: Zone) throws -> [RecordAssetData] {
         try locked {
-            let rows = try db.run("""
-                SELECT name FROM "_records_assets"
-                WHERE name NOT IN (SELECT name FROM "_records_uploaded_assets") ORDER BY name
-                """)
+            let rows = try db.run("SELECT name FROM \"_records_assets\" WHERE uploaded = 0 ORDER BY name")
             return rows.compactMap { row in
                 guard case .text(let name)? = row["name"] else { return nil }
                 let file = assetURL(named: name)
@@ -210,7 +207,7 @@ extension RecordStore {
     func markAssetsUploaded(_ ids: [String]) throws {
         try transaction {
             for id in ids {
-                try db.run("INSERT OR IGNORE INTO \"_records_uploaded_assets\" (name) VALUES (?)", [.text(id)])
+                try db.run("UPDATE \"_records_assets\" SET uploaded = 1 WHERE name = ?", [.text(id)])
             }
         }
     }
