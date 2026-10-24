@@ -141,6 +141,40 @@ final class RecordStore: @unchecked Sendable {
         if try !db.run("PRAGMA table_info(\"_records_sync\")").contains(where: { $0["name"] == .text("synced_at") }) {
             try db.execute("ALTER TABLE \"_records_sync\" ADD COLUMN synced_at REAL")
         }
+        try removeTrackingColumns()
+    }
+
+    /// Moves version 0.3.0's per-record tags into the sync table and drops the bookkeeping columns, so a
+    /// record's table holds only its ID, its place in the order and its properties. Versions and edit
+    /// times are already in the change log. Runs once per file.
+    private func removeTrackingColumns() throws {
+        guard case .integer(let schema)? = try db.run("PRAGMA user_version").first?["user_version"], schema < 1 else { return }
+        try db.transaction {
+            let tables = try db.run(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_records_%'"
+            ).compactMap { row -> String? in
+                if case .text(let name)? = row["name"] { return name }
+                return nil
+            }
+            for table in tables {
+                let existing = try db.run("PRAGMA table_info(\(quoted(table)))").compactMap { row -> String? in
+                    if case .text(let name)? = row["name"] { return name }
+                    return nil
+                }
+                if existing.contains("_tag") {
+                    try db.run("""
+                        INSERT INTO "_records_sync" (record_table, record_id, tag)
+                        SELECT ?, id, "_tag" FROM \(quoted(table)) WHERE "_tag" IS NOT NULL
+                        ON CONFLICT (record_table, record_id) DO UPDATE SET tag = excluded.tag
+                        """, [.text(table)])
+                }
+                // SQLite before 3.35 can't drop columns. Records ignore the ones left behind.
+                for column in Self.trackingColumns.sorted() where existing.contains(column) {
+                    try? db.execute("ALTER TABLE \(quoted(table)) DROP COLUMN \(quoted(column))")
+                }
+            }
+            try db.execute("PRAGMA user_version = 1")
+        }
     }
 
     deinit {
@@ -672,7 +706,6 @@ final class RecordStore: @unchecked Sendable {
             setUndecodable(nil, in: table)
         }
         try snapshotBeforeChange(table, id: id)
-        try keepTagOfDeletedRow(table, id: id)
         structuralChanges += 1
         let owned = relations().filter { $0.ownerTable == table }
 
@@ -1005,12 +1038,6 @@ final class RecordStore: @unchecked Sendable {
             try db.execute("CREATE TABLE \(quoted(table)) (\"id\" PRIMARY KEY, \"_position\" INTEGER)")
             columns[table] = ["id", "_position"]
         }
-        // Tables created before change tracking get its columns the first time they're written.
-        for column in ["_version", "_modified", "_tag"] where !columns[table, default: []].contains(column) {
-            let definition = column == "_version" ? " INTEGER NOT NULL DEFAULT 0" : ""
-            try db.execute("ALTER TABLE \(quoted(table)) ADD COLUMN \(quoted(column))\(definition)")
-            columns[table, default: []].insert(column)
-        }
     }
 
     /// Applies `@Renamed` and `@Indexed` to a table the first time this container uses its type: old
@@ -1058,7 +1085,9 @@ final class RecordStore: @unchecked Sendable {
         try db.run("UPDATE \"_records_assets\" SET field = ? WHERE owner_table = ? AND field = ?", [.text(new), .text(table), .text(old)])
     }
 
-    /// Columns records never see: their version, last change and sync tag.
+    /// Bookkeeping columns that files from version 0.3.0 kept beside each record. The change log and sync
+    /// table hold that now, and opening a file removes them, but a file whose SQLite can't drop columns
+    /// keeps them, so records never read or write them.
     static let trackingColumns: Set<String> = ["_version", "_modified", "_tag"]
     private static let internalColumns: Set<String> = Set(["id", "_position"]).union(trackingColumns)
 
@@ -1255,7 +1284,6 @@ extension RecordStore {
         let version = SQLiteValue.integer(last + 1)
         let now = SQLiteValue.real(Date().timeIntervalSince1970)
         if kind == .save {
-            try db.run("UPDATE \(quoted(table)) SET \"_version\" = ?, \"_modified\" = ? WHERE id = ?", [version, now, id])
             if let stamps = stampColumns[table] {
                 let sets = stamps.created.map { "\(quoted($0)) = COALESCE(\(quoted($0)), ?1)" } + stamps.modified.map { "\(quoted($0)) = ?1" }
                 if !sets.isEmpty {
@@ -1299,33 +1327,30 @@ extension RecordStore {
         }
     }
 
-    /// A record's version, last change and tag, or `nil` if it isn't stored.
+    /// A record's version and last change from the change log, and its tag from the sync table, or `nil`
+    /// if it isn't stored.
     func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
         try locked {
-            guard tableExists(R.table), columns[R.table, default: []].contains("_version") else {
-                return try fetch(type, id: id) == nil ? nil : RecordMetadata(version: 0, modified: nil, tag: nil)
-            }
-            guard let row = try db.run(
-                "SELECT \"_version\", \"_modified\", \"_tag\" FROM \(quoted(R.table)) WHERE id = ?", [try ValueCoding.encode(id)]
-            ).first else { return nil }
-            var version = 0
-            if case .integer(let stored) = row["_version"] { version = Int(stored) }
+            let id = try ValueCoding.encode(id)
+            guard try rowExists(R.table, id: id) else { return nil }
+            let change = try db.run(
+                "SELECT version, time FROM \"_records_changes\" WHERE record_table = ? AND record_id = ? AND kind = 'save'",
+                [.text(R.table), id]
+            ).first
             var modified: Date?
-            if case .real(let time) = row["_modified"] { modified = Date(timeIntervalSince1970: time) }
+            if case .real(let time)? = change?["time"] { modified = Date(timeIntervalSince1970: time) }
             var tag: Data?
-            if case .blob(let data) = row["_tag"] { tag = data }
-            return RecordMetadata(version: version, modified: modified, tag: tag)
+            if case .blob(let data)? = try syncRow(R.table, id: id)?["tag"] { tag = data }
+            return RecordMetadata(version: Int(change?["version"]?.integerValue ?? 0), modified: modified, tag: tag)
         }
     }
 
     /// Stores opaque sync data with a record without changing its version or logging a change.
     func setTag<R: Record>(_ tag: Data?, for type: R.Type, id: R.ID) throws {
         try transaction {
-            guard tableExists(R.table) else { return }
-            try ensureTable(R.table)
-            _ = try db.run(
-                "UPDATE \(quoted(R.table)) SET \"_tag\" = ? WHERE id = ?", [tag.map { .blob($0) } ?? .null, try ValueCoding.encode(id)]
-            )
+            let id = try ValueCoding.encode(id)
+            guard tableExists(R.table), try rowExists(R.table, id: id) else { return }
+            try storeTag(tag, table: R.table, id: id)
         }
     }
 }

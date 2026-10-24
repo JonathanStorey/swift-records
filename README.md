@@ -309,7 +309,8 @@ a view can call it while it updates, and each call costs one read by ID.
 
 ## Change tracking
 
-Every save keeps a record's bookkeeping beside it, out of the record's own properties:
+Every save keeps a record's bookkeeping in tables of its own, so a record's table holds only its ID,
+its place in the order and its properties:
 
 ```swift
 let meta = try context.metadata(ToDo.self, id: todo.id)
@@ -319,7 +320,8 @@ meta?.tag         // sync bookkeeping: the server's synced date for this copy, i
 ```
 
 Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
-and fetches never load tags.
+and fetches never load tags. Files from version 0.3.0 kept this in hidden columns on each record's table,
+which the container moves out and removes the first time it opens the file.
 
 Behind this sits a change log with one entry per record, which is how sync knows what the server
 doesn't have yet. A deleted record's entry stays until the server acknowledges the deletion.

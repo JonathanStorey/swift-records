@@ -9,8 +9,8 @@ struct SyncRecord: Sendable {
     var fields: SyncFields?
     /// The server's `synced` date for the copy this one is based on, as stored in the record's tag.
     var tag: Data?
-    /// For a copy from the server, when it was edited: the server's `synced` date, or the edit time an
-    /// older device sent. It settles a clash under `.latestWins` when the type has no `@Timestamp(.modified)`.
+    /// For a copy from the server, the server's `synced` date. It settles a clash under `.latestWins` when
+    /// the type has no `@Timestamp(.modified)`.
     var modified: Date?
     /// The record's place in its type's stored order.
     var position: Int64?
@@ -437,13 +437,6 @@ extension RecordStore {
         try updateSyncRow(table, id: id, ["snapshot": .blob(try fields.encoded())])
     }
 
-    /// Keeps a deleted record's tag, which its deletion is sent with.
-    func keepTagOfDeletedRow(_ table: String, id: SQLiteValue) throws {
-        guard syncEnabled, columns[table, default: []].contains("_tag"), try syncRow(table, id: id) != nil else { return }
-        let tag = try db.run("SELECT \"_tag\" FROM \(quoted(table)) WHERE id = ?", [id]).first?["_tag"] ?? .null
-        try updateSyncRow(table, id: id, ["tag": tag])
-    }
-
     private func logEntry(_ table: String, id: SQLiteValue) throws -> (kind: RecordChange.Kind, version: Int)? {
         guard let row = try db.run(
             "SELECT kind, version FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
@@ -455,10 +448,9 @@ extension RecordStore {
         try db.run("DELETE FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
     }
 
-    private func setTagColumn(_ tag: Data?, table: String, id: SQLiteValue) throws {
-        guard tableExists(table) else { return }
-        try ensureTable(table)
-        try db.run("UPDATE \(quoted(table)) SET \"_tag\" = ? WHERE id = ?", [tag.map { .blob($0) } ?? .null, id])
+    /// Stores the tag of the server copy a record, or its deletion, is based on.
+    func storeTag(_ tag: Data?, table: String, id: SQLiteValue) throws {
+        try updateSyncRow(table, id: id, ["tag": tag.map { .blob($0) } ?? .null])
     }
 
     /// How many records have changes the server doesn't have.
@@ -502,9 +494,8 @@ extension RecordStore {
                 return (SyncRecord(type: change.table, id: change.id, fields: nil, tag: tag), nil)
             }
             guard let fields = try syncFields(table: change.table, id: id) else { return nil }
-            let row = try db.run("SELECT \"_tag\" FROM \(quoted(change.table)) WHERE id = ?", [id]).first
             var tag: Data?
-            if case .blob(let data)? = row?["_tag"] { tag = data }
+            if case .blob(let data)? = try syncRow(change.table, id: id)?["tag"] { tag = data }
             var values = fields
             let position = values.removeValue(forKey: positionField)
             var record = SyncRecord(type: change.table, id: change.id, fields: values, tag: tag)
@@ -544,17 +535,13 @@ extension RecordStore {
         }
         let acked = max(change.version, Int(try syncRow(change.table, id: id)?["acked"]?.integerValue ?? 0))
         let snapshot: SQLiteValue = entry.version > change.version ? (try fields.map { .blob(try $0.encoded()) } ?? .null) : .null
-        // A record deleted since this was sent keeps the new tag for its deletion.
-        let deletedTag: SQLiteValue = entry.kind == .delete ? (tag.map { .blob($0) } ?? .null) : .null
+        // A record deleted since this was sent goes with the new tag too.
         try updateSyncRow(change.table, id: id, [
-            "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": deletedTag,
+            "acked": .integer(Int64(acked)), "known": .integer(1), "snapshot": snapshot, "tag": tag.map { .blob($0) } ?? .null,
             "synced_at": .real(synced.timeIntervalSince1970),
         ])
         // Views showing a synced timestamp refresh.
         changedData = true
-        if entry.kind == .save {
-            try setTagColumn(tag, table: change.table, id: id)
-        }
     }
 
     /// Applies changes from the server, merging any that have unsent local edits. Returns the ones this
@@ -587,7 +574,7 @@ extension RecordStore {
             if pending, entry?.kind == .save, deletePolicy == .localWins {
                 try updateSyncRow(table, id: id, ["acked": .integer(0), "known": .integer(0), "snapshot": .null, "tag": .null])
                 // The edit goes back based on the deletion, so a server that keeps it as a tombstone accepts it.
-                try setTagColumn(record.tag, table: table, id: id)
+                try storeTag(record.tag, table: table, id: id)
                 return
             }
             try applyingSyncedChanges { try deleteRow(table, id: id) }
@@ -618,7 +605,7 @@ extension RecordStore {
                 // The server's copy is the ancestor of whatever is sent next.
                 try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
                 try applySyncFields(table: table, id: record.id, fields: merged)
-                try setTagColumn(record.tag, table: table, id: id)
+                try storeTag(record.tag, table: table, id: id)
                 if merged == server {
                     let version = try logEntry(table, id: id)?.version ?? 0
                     try updateSyncRow(table, id: id, [
@@ -637,7 +624,7 @@ extension RecordStore {
             "acked": .integer(Int64(version)), "known": .integer(1), "snapshot": .null, "tag": .null,
             "synced_at": .real(Date().timeIntervalSince1970),
         ])
-        try setTagColumn(record.tag, table: table, id: id)
+        try storeTag(record.tag, table: table, id: id)
     }
 
     /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestWins`. A
@@ -651,8 +638,10 @@ extension RecordStore {
                 return localDate > serverDate
             }
         }
-        let row = try db.run("SELECT \"_modified\" FROM \(quoted(R.table)) WHERE id = ?", [id]).first
-        guard case .real(let time)? = row?["_modified"], let serverDate else { return false }
+        let row = try db.run(
+            "SELECT time FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(R.table), id]
+        ).first
+        guard case .real(let time)? = row?["time"], let serverDate else { return false }
         return time > serverDate.timeIntervalSince1970
     }
 
@@ -686,12 +675,10 @@ extension RecordStore {
             try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete'")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)
             for table in registered.keys.sorted() where tableExists(table) {
-                try ensureTable(table)
-                try db.run("UPDATE \(quoted(table)) SET \"_tag\" = NULL")
                 try db.run(
                     """
                     INSERT OR IGNORE INTO "_records_changes" (record_table, record_id, kind, version, time)
-                    SELECT ?, id, 'save', MAX("_version", 1), COALESCE("_modified", ?) FROM \(quoted(table)) ORDER BY "_position", rowid
+                    SELECT ?, id, 'save', 1, ? FROM \(quoted(table)) ORDER BY "_position", rowid
                     """,
                     [.text(table), now]
                 )
