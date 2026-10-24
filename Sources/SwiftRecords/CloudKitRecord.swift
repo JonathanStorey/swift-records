@@ -137,15 +137,36 @@ public struct CKRecordEncoder {
         self.zone = zone
     }
 
-    /// Throws `RecordsError.unsyncedZone` when `zone` is `.inMemory` or `.localOnly`, which never sync, and
+    /// Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, so the record
+    /// carries its change tag and saves as an update. Without them it's a new record.
+    ///
+    /// Throws `RecordsError.unsyncedZone` when `zone` is `.inMemory` or `.localOnly`, which never sync,
+    /// `RecordsError.mismatchedSystemFields` when the system fields name another record, type or zone, and
     /// `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)` that throws.
-    public func encode<R: Record>(_ record: R) throws -> CKRecord {
+    public func encode<R: Record>(_ record: R, systemFields: Data? = nil) throws -> CKRecord {
         guard zone.canSync else { throw RecordsError.unsyncedZone(zone) }
         let zoneID = zone == .default ? CKRecordZone.default().zoneID : CKRecordZone.ID(zoneName: zone.name, ownerName: CKCurrentUserDefaultName)
         let cloud = try RecordStore.cloudRecord(of: record)
-        let ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+        let ckRecord: CKRecord
+        if let systemFields {
+            ckRecord = try Self.record(fromSystemFields: systemFields, type: cloud.type, id: record.id, zoneID: zoneID)
+        } else {
+            ckRecord = CKRecord(recordType: cloud.type, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
+        }
         cloud.fill(ckRecord)
         return ckRecord
+    }
+
+    /// The server's last copy, rebuilt from its archived system fields, if they belong to this record. The
+    /// zone's owner isn't compared, since a shared zone's records name their real owner.
+    private static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
+        let mismatch = RecordsError.mismatchedSystemFields(type: type, id: id)
+        guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { throw mismatch }
+        coder.requiresSecureCoding = true
+        defer { coder.finishDecoding() }
+        guard let record = CKRecord(coder: coder), record.recordType == type, record.recordID.recordName == id.uuidString,
+              record.recordID.zoneID.zoneName == zoneID.zoneName else { throw mismatch }
+        return record
     }
 }
 #endif

@@ -205,6 +205,49 @@ import CloudKit
         #expect(reference.action == .deleteSelf)
     }
 
+    @Test func systemFieldsMakeAnUpdate() throws {
+        var recipe = SyncRecipe(title: "Soup")
+        let home = CKRecordZone.default().zoneID
+        let server = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: home))
+        server["title"] = "Soup"
+        server["summary"] = "Gone"
+        let archived = Self.systemFields(of: server)
+
+        recipe.title = "Stew"
+        let record = try CKRecordEncoder().encode(recipe, systemFields: archived)
+        #expect(record.recordID == server.recordID)
+        #expect(record["title"] as? String == "Stew")
+        // System fields carry no values, so nothing of the server's copy survives but its identity.
+        #expect(record["summary"] as? String == "")
+        #expect(try CKRecordEncoder().encode(recipe, systemFields: nil).recordID == server.recordID)
+    }
+
+    @Test func systemFieldsForAnotherRecordThrow() {
+        let recipe = SyncRecipe(title: "Soup")
+        let home = CKRecordZone.default().zoneID
+        let other = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: UUID().uuidString, zoneID: home))
+        let wrongType = CKRecord(recordType: "SyncStep", recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: home))
+        let wrongZone = CKRecord(
+            recordType: "SyncRecipe",
+            recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: CKRecordZone.ID(zoneName: "elsewhere", ownerName: CKCurrentUserDefaultName))
+        )
+        for server in [other, wrongType, wrongZone] {
+            #expect(throws: RecordsError.mismatchedSystemFields(type: "SyncRecipe", id: recipe.id)) {
+                try CKRecordEncoder().encode(recipe, systemFields: Self.systemFields(of: server))
+            }
+        }
+        #expect(throws: RecordsError.mismatchedSystemFields(type: "SyncRecipe", id: recipe.id)) {
+            try CKRecordEncoder().encode(recipe, systemFields: Data("not an archive".utf8))
+        }
+    }
+
+    private static func systemFields(of record: CKRecord) -> Data {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: coder)
+        coder.finishEncoding()
+        return coder.encodedData
+    }
+
     @Test func zonesThatNeverSyncThrow() {
         for zone in [Zone.inMemory, .localOnly] {
             #expect(throws: RecordsError.unsyncedZone(zone)) { try CKRecordEncoder(zone: zone).encode(SyncRecipe(title: "Soup")) }

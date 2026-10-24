@@ -473,7 +473,12 @@ no sync metadata, so the result is a new record with no change tag. It maps fiel
 ```swift
 let record = try CKRecordEncoder().encode(recipe)                     // CloudKit's default zone
 let other = try CKRecordEncoder(zone: "recipes").encode(recipe)        // the CloudKit zone "recipes"
+let update = try CKRecordEncoder().encode(recipe, systemFields: archived) // on top of the server's last copy
 ```
+
+Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, and the result
+carries its change tag so it saves as an update. System fields that name another record, type or zone
+throw `RecordsError.mismatchedSystemFields`.
 
 A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
 reference is whatever the struct holds, which saving it through its parent sets. An asset still in memory

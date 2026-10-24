@@ -15,6 +15,9 @@ public enum RecordsError: Error, Hashable, Sendable {
     case invalidZoneName(String)
     /// A zone that never syncs, `.inMemory` or `.localOnly`, was given where a sync server's zone is needed.
     case unsyncedZone(Zone)
+    /// Archived CloudKit system fields don't belong to the record they were given with: they don't unarchive,
+    /// or they name another record, type or zone.
+    case mismatchedSystemFields(type: String, id: UUID)
     /// A registered record type is set up in a way that would lose or mix up data, such as two types
     /// stored under one name. `reason` says what to fix.
     case invalidSchema(type: String, reason: String)
