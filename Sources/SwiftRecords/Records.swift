@@ -191,7 +191,10 @@ public struct Records<Value: Sendable>: DynamicProperty {
             cache.stored = value
             cache.changeCount = changeCount
         } else if cache.changeCount != changeCount || cache.value == nil || cache.key != key {
-            let stored = (try? query.fetch(context.storage(for: zone))) ?? query.empty
+            // If the fetch fails, such as while another process holds the file, the view keeps what it
+            // showed rather than go blank. A new query has nothing to keep, so it shows nothing.
+            let previous = cache.key == key ? cache.stored : nil
+            let stored = (try? query.fetch(context.storage(for: zone))) ?? previous ?? query.empty
             cache.stored = stored
             cache.value = query.overlay(context, zone, stored, source)
             cache.changeCount = changeCount

@@ -67,7 +67,8 @@ public final class RecordContext {
         case offline
         /// No sync account is signed in. Changes are saved here.
         case signedOut
-        /// The latest save, send or fetch failed.
+        /// The latest save, send or fetch failed. A stored record that no longer decodes, which fetches
+        /// skip, shows as `.failed(.incompatibleRecord(type:id:))` until it decodes again or is deleted.
         case failed(RecordsError)
     }
 
@@ -87,6 +88,8 @@ public final class RecordContext {
 
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
+    /// A stored record that no longer decodes, which fetches skip, until it decodes again or is deleted.
+    @ObservationIgnored private var undecodable: RecordsError?
 
     private struct Change: Sendable {
         let zone: Zone
@@ -208,6 +211,12 @@ public final class RecordContext {
         }
     }
 
+    /// Shows a stored record that fetches skip because it no longer decodes, or clears it.
+    func undecodableChanged(_ error: RecordsError?) {
+        undecodable = error
+        updateStatus()
+    }
+
     func assetTransferChanged() {
         let transfers = observed.values.compactMap(\.storage.assetTransfer)
         let total = transfers.reduce(0) { $0 + $1.total }
@@ -229,6 +238,8 @@ public final class RecordContext {
             .saving
         } else if let saveFailure {
             .failed(saveFailure)
+        } else if let undecodable {
+            .failed(undecodable)
         } else {
             switch observed[zone]?.storage.syncPhase ?? .idle {
             case .idle: .saved
@@ -652,8 +663,8 @@ public final class RecordContext {
 
     // MARK: Arrays
 
-    /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the rest
-    /// are updated. The array's order becomes the stored order among these records, leaving others in
+    /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the ones
+    /// that changed are updated. The array's order becomes the stored order among these records, leaving others in
     /// place. This is what the `@Records` binding calls when SwiftUI writes to it.
     /// Without a zone it applies to the context's current one.
     func apply<R: Record>(_ records: [R], replacing previous: [R], in zone: Zone? = nil, source: ObjectIdentifier? = nil) {
@@ -662,10 +673,13 @@ public final class RecordContext {
         for record in previous where !kept.contains(record.id) {
             enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .deleted) { try $0.delete(record) }
         }
-        for record in records {
+        // Only records the edit changed are saved, so typing in one row doesn't rewrite the whole list.
+        let before = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for record in records where !(before[record.id].map { StructuralEquality.equal($0, record) } ?? false) {
             enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
         }
         let ids = records.map(\.id)
+        guard ids != previous.map(\.id) else { return }
         enqueue(key: Self.orderKey(R.self, in: zone, source: source), zone: zone, table: R.table, source: source, isOrder: true, orderIDs: ids) {
             try $0.setOrder(ids, for: R.self)
         }

@@ -47,6 +47,12 @@ final class RecordStore: @unchecked Sendable {
 
     var structureVersion: Int { locked { structuralChanges } }
 
+    /// The first record of each type that no longer decodes, such as after a property changed type. Fetches
+    /// skip it rather than fail, so one bad row doesn't hide the rest.
+    private var undecodable: [String: RecordsError] = [:]
+    /// Hears the first stored record that doesn't decode, or `nil` once every type's records decode again.
+    var undecodableChanged: (@Sendable (RecordsError?) -> Void)?
+
     struct RelationInfo: Equatable {
         let ownerTable: String
         let field: String
@@ -662,6 +668,9 @@ final class RecordStore: @unchecked Sendable {
     /// Deletes by table name, so cascades work for types this process has never loaded.
     func deleteRow(_ table: String, id: SQLiteValue) throws {
         guard tableExists(table) else { return }
+        if case .incompatibleRecord(_, let bad)? = undecodable[table], (try? ValueCoding.encode(bad)) == id {
+            setUndecodable(nil, in: table)
+        }
         try snapshotBeforeChange(table, id: id)
         try keepTagOfDeletedRow(table, id: id)
         structuralChanges += 1
@@ -741,7 +750,7 @@ final class RecordStore: @unchecked Sendable {
                 found.sort { places[$0["id"]!, default: .max] < places[$1["id"]!, default: .max] }
             }
             return try prefetching(R.table, rows: found) {
-                try found.map { try decodeRow(R.self, row: $0) }
+                try decodeRows(R.self, found)
             }
         }
     }
@@ -804,10 +813,14 @@ final class RecordStore: @unchecked Sendable {
     /// The SQL `WHERE` clause for a predicate: empty for none, or nil when it must run in memory.
     private func whereClause<R: Record>(_ predicate: Predicate<R>?) throws -> (String, [SQLiteValue])? {
         guard let predicate else { return ("", []) }
+        guard let clause = try? PredicateTranslator.translate(predicate) else { return nil }
+        return try whereClause(clause, for: R.self)
+    }
+
+    /// The clause as SQL for a type, or nil when SQL can't run it.
+    private func whereClause<R: Record>(_ clause: PredicateTranslator.Clause, for type: R.Type) throws -> (String, [SQLiteValue])? {
         // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
-        guard let clause = try? PredicateTranslator.translate(predicate), clause.relations.allSatisfy(tableExists) else {
-            return nil
-        }
+        guard clause.relations.allSatisfy(tableExists) else { return nil }
         // A synced timestamp isn't a column, so a predicate on it runs in memory.
         let synced = Set(R.schema.fields.filter { $0.timestamp == .synced }.map(\.name))
         if clause.columns.contains(where: { $0.table == R.table && synced.contains($0.column) }) {
@@ -820,21 +833,28 @@ final class RecordStore: @unchecked Sendable {
     }
 
     /// Loads matching records in stored order, optionally one page of them.
+    ///
+    /// When only some of a predicate's `&&` terms translate, SQL narrows the rows by those and the whole
+    /// predicate checks the rest in memory, so a fetch never reads more of the table than it must.
     private func fetchRecords<R: Record>(_ type: R.Type, where predicate: Predicate<R>?, page: (limit: Int, offset: Int)?) throws -> [R] {
         guard tableExists(R.table) else { return [] }
         try prepare(R.self)
-        let translated = try whereClause(predicate)
+        var translated = try whereClause(predicate)
+        let exact = translated != nil
+        if !exact, let predicate, let clause = PredicateTranslator.translateTerms(predicate) {
+            translated = try whereClause(clause, for: R.self)
+        }
         var sql = "SELECT \(recordColumns(R.table)) FROM \(quoted(R.table))" + (translated?.0 ?? "") + " ORDER BY \"_position\", id"
         var bindings = translated?.1 ?? []
-        if let page, translated != nil {
+        if let page, exact {
             sql += " LIMIT ? OFFSET ?"
             bindings += [.integer(Int64(page.limit)), .integer(Int64(page.offset))]
         }
         let rows = try db.run(sql, bindings)
         var records = try prefetching(R.table, rows: rows) {
-            try rows.map { try decodeRow(R.self, row: $0) }
+            try decodeRows(R.self, rows)
         }
-        if translated == nil, let predicate {
+        if !exact, let predicate {
             records = try records.filter { try predicate.evaluate($0) }
             if let page {
                 let start = min(page.offset, records.count)
@@ -929,6 +949,31 @@ final class RecordStore: @unchecked Sendable {
             }
         }
         return try body()
+    }
+
+    /// Decodes rows, skipping and reporting any that don't decode as the type.
+    private func decodeRows<R: Record>(_ type: R.Type, _ rows: [[String: SQLiteValue]]) throws -> [R] {
+        try rows.compactMap { row -> R? in
+            do {
+                let record = try decodeRow(R.self, row: row)
+                if case .incompatibleRecord(_, let id)? = undecodable[R.table], id == record.id {
+                    setUndecodable(nil, in: R.table)
+                }
+                return record
+            } catch let error as RecordsError {
+                guard case .incompatibleRecord = error else { throw error }
+                if undecodable[R.table] == nil {
+                    setUndecodable(error, in: R.table)
+                }
+                return nil
+            }
+        }
+    }
+
+    /// Notes the bad record a type has, or that it has none now, and reports the first left.
+    private func setUndecodable(_ error: RecordsError?, in table: String) {
+        undecodable[table] = error
+        undecodableChanged?(undecodable.sorted { $0.key < $1.key }.first?.value)
     }
 
     private func decodeRow<R: Record>(_ type: R.Type, row: [String: SQLiteValue]) throws -> R {

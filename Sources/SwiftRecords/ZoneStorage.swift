@@ -39,6 +39,9 @@ package final class ZoneStorage: @unchecked Sendable {
         self.zone = zone
         self.store = store
         try store.register(types, syncSafe: syncProvider != nil)
+        store.undecodableChanged = { [weak self] error in
+            Task { @MainActor in self?.context?.undecodableChanged(error) }
+        }
         guard let syncProvider else { return }
         store.syncEnabled = true
         let sync = SyncCoordinator(
