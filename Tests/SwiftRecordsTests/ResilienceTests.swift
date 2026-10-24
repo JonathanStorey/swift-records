@@ -62,6 +62,23 @@ import Testing
         #expect(indexes.contains { $0["name"] == .text("SyncStep.recipe.index") })
     }
 
+    @Test func pendingChangesReadOnlyUnsentRows() throws {
+        let container = try RecordContainer(inMemory: true)
+        try container.save(Person(name: "Ana"))
+        let db = container.defaultStorage.store.db
+        for query in [
+            "SELECT record_table FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked ORDER BY seq",
+            "SELECT COUNT(*) FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked",
+        ] {
+            let plan = try db.run("EXPLAIN QUERY PLAN " + query).compactMap { row -> String? in
+                if case .text(let detail)? = row["detail"] { return detail }
+                return nil
+            }
+            #expect(plan.contains { $0.contains("_records_meta.pending") }, "\(plan)")
+        }
+        #expect(try container.defaultStorage.store.pendingChangeCount() == 1)
+    }
+
     @Test func bookkeepingFitsInFewTables() throws {
         let container = try RecordContainer(inMemory: true)
         try container.save(Person(name: "Ana"))

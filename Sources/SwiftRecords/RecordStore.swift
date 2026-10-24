@@ -127,6 +127,9 @@ final class RecordStore: @unchecked Sendable {
                 acked INTEGER NOT NULL DEFAULT 0, known INTEGER NOT NULL DEFAULT 0, tag BLOB, snapshot BLOB, extra BLOB,
                 synced_at REAL, parked BLOB,
                 UNIQUE (record_table, record_id));
+            -- Only rows with unsent changes, so each sync pass reads those and nothing else.
+            CREATE INDEX IF NOT EXISTS "_records_meta.pending" ON "_records_meta" (seq)
+                WHERE kind IS NOT NULL AND version > acked;
             """)
     }
 
