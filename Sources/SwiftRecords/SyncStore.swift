@@ -387,7 +387,7 @@ extension RecordStore {
         }
         let extra = fields.filter { !known.contains($0.key) }
         if extra.isEmpty {
-            try db.run("UPDATE \"_records_sync\" SET extra = NULL WHERE record_table = ? AND record_id = ?", [.text(R.table), sqlID])
+            try db.run("UPDATE \"_records_meta\" SET extra = NULL WHERE record_table = ? AND record_id = ?", [.text(R.table), sqlID])
         } else {
             try updateSyncRow(R.table, id: sqlID, ["extra": .blob(try extra.encoded())])
         }
@@ -397,21 +397,21 @@ extension RecordStore {
 // MARK: - What the server has
 
 extension RecordStore {
-    /// The sync bookkeeping for one record: what the server acknowledged, its last tag after a delete, the
-    /// snapshot and any fields from newer app versions.
+    /// The bookkeeping for one record: its log entry, what the server acknowledged, its last tag, the
+    /// snapshot, any fields from newer app versions and a server copy this version couldn't store.
     func syncRow(_ table: String, id: SQLiteValue) throws -> [String: SQLiteValue]? {
-        try db.run("SELECT * FROM \"_records_sync\" WHERE record_table = ? AND record_id = ?", [.text(table), id]).first
+        try db.run("SELECT * FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]).first
     }
 
-    /// Sets columns of a record's sync row, creating it if needed.
+    /// Sets columns of a record's bookkeeping row, creating it if needed.
     func updateSyncRow(_ table: String, id: SQLiteValue, _ values: [String: SQLiteValue]) throws {
         try db.run(
-            "INSERT OR IGNORE INTO \"_records_sync\" (record_table, record_id) VALUES (?, ?)", [.text(table), id]
+            "INSERT OR IGNORE INTO \"_records_meta\" (record_table, record_id) VALUES (?, ?)", [.text(table), id]
         )
         let names = values.keys.sorted()
         guard !names.isEmpty else { return }
         try db.run(
-            "UPDATE \"_records_sync\" SET \(names.map { "\($0) = ?" }.joined(separator: ", ")) WHERE record_table = ? AND record_id = ?",
+            "UPDATE \"_records_meta\" SET \(names.map { "\($0) = ?" }.joined(separator: ", ")) WHERE record_table = ? AND record_id = ?",
             names.map { values[$0]! } + [.text(table), id]
         )
     }
@@ -427,13 +427,22 @@ extension RecordStore {
 
     private func logEntry(_ table: String, id: SQLiteValue) throws -> (kind: RecordChange.Kind, version: Int)? {
         guard let row = try db.run(
-            "SELECT kind, version FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
+            "SELECT kind, version FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]
         ).first, case .text(let kind) = row["kind"], let kind = RecordChange.Kind(rawValue: kind) else { return nil }
         return (kind, Int(row["version"]?.integerValue ?? 0))
     }
 
-    private func dropLogEntry(_ table: String, id: SQLiteValue) throws {
-        try db.run("DELETE FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
+    /// Clears a record's log entry and keeps its sync state.
+    func dropLogEntry(_ table: String, id: SQLiteValue) throws {
+        try db.run(
+            "UPDATE \"_records_meta\" SET kind = NULL, version = 0, time = NULL WHERE record_table = ? AND record_id = ?",
+            [.text(table), id]
+        )
+    }
+
+    /// Forgets everything about a record, once neither side has it.
+    private func dropBookkeeping(_ table: String, id: SQLiteValue) throws {
+        try db.run("DELETE FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
     }
 
     /// Stores the tag of the server copy a record, or its deletion, is based on.
@@ -444,11 +453,7 @@ extension RecordStore {
     /// How many records have changes the server doesn't have.
     func pendingChangeCount() throws -> Int {
         try locked {
-            let rows = try db.run("""
-                SELECT COUNT(*) AS n FROM "_records_changes" c
-                LEFT JOIN "_records_sync" s ON s.record_table = c.record_table AND s.record_id = c.record_id
-                WHERE c.version > COALESCE(s.acked, 0)
-                """)
+            let rows = try db.run("SELECT COUNT(*) AS n FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked")
             return Int(rows.first?["n"]?.integerValue ?? 0)
         }
     }
@@ -457,9 +462,8 @@ extension RecordStore {
     func pendingChanges() throws -> [PendingChange] {
         try locked {
             try db.run("""
-                SELECT c.record_table, c.record_id, c.kind, c.version FROM "_records_changes" c
-                LEFT JOIN "_records_sync" s ON s.record_table = c.record_table AND s.record_id = c.record_id
-                WHERE c.version > COALESCE(s.acked, 0) ORDER BY c.seq
+                SELECT record_table, record_id, kind, version FROM "_records_meta"
+                WHERE kind IS NOT NULL AND version > acked ORDER BY seq
                 """).compactMap { row in
                 guard case .text(let table) = row["record_table"], case .text(let kind) = row["kind"],
                       let kind = RecordChange.Kind(rawValue: kind) else { return nil }
@@ -512,8 +516,7 @@ extension RecordStore {
         if change.kind == .delete {
             if entry.kind == .delete {
                 // The tombstone has done its job.
-                try dropLogEntry(change.table, id: id)
-                try db.run("DELETE FROM \"_records_sync\" WHERE record_table = ? AND record_id = ?", [.text(change.table), id])
+                try dropBookkeeping(change.table, id: id)
             }
             return
         }
@@ -562,8 +565,7 @@ extension RecordStore {
                 return
             }
             try applyingSyncedChanges { try deleteRow(table, id: id) }
-            try dropLogEntry(table, id: id)
-            try db.run("DELETE FROM \"_records_sync\" WHERE record_table = ? AND record_id = ?", [.text(table), id])
+            try dropBookkeeping(table, id: id)
             return
         }
         guard let type = registered[table] else {
@@ -620,27 +622,24 @@ extension RecordStore {
             }
         }
         let row = try db.run(
-            "SELECT time FROM \"_records_changes\" WHERE record_table = ? AND record_id = ?", [.text(R.table), id]
+            "SELECT time FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(R.table), id]
         ).first
         guard case .real(let time)? = row?["time"], let serverDate else { return false }
         return time > serverDate.timeIntervalSince1970
     }
 
     private func park(_ change: RecordChangeData) throws {
-        try db.run(
-            "INSERT OR REPLACE INTO \"_records_parked\" (record_table, record_id, record) VALUES (?, ?, ?)",
-            [.text(change.type), try ValueCoding.encode(change.id), .blob(try JSONEncoder().encode(change))]
-        )
+        try updateSyncRow(change.type, id: try ValueCoding.encode(change.id), ["parked": .blob(try JSONEncoder().encode(change))])
     }
 
     /// Tries changes kept back by an earlier version of the app again. Returns the ones still incompatible.
     func retryParked(policy: MergePolicy) throws -> [RecordChangeData] {
         try transaction {
-            let changes = try db.run("SELECT record FROM \"_records_parked\"").compactMap { row -> RecordChangeData? in
-                guard case .blob(let data)? = row["record"] else { return nil }
+            let changes = try db.run("SELECT parked FROM \"_records_meta\" WHERE parked IS NOT NULL").compactMap { row -> RecordChangeData? in
+                guard case .blob(let data)? = row["parked"] else { return nil }
                 return try? JSONDecoder().decode(RecordChangeData.self, from: data)
             }
-            try db.run("DELETE FROM \"_records_parked\"")
+            try db.run("UPDATE \"_records_meta\" SET parked = NULL WHERE parked IS NOT NULL")
             guard !changes.isEmpty else { return [] }
             return try applyReceived(changes, policy: policy)
         }
@@ -650,15 +649,22 @@ extension RecordStore {
     /// local data or a server reset. Tags and snapshots from the old server are dropped.
     func markAllPending() throws {
         try transaction {
-            try db.run("UPDATE \"_records_sync\" SET acked = 0, known = 0, tag = NULL, snapshot = NULL")
-            try db.run("DELETE FROM \"_records_uploaded_assets\"")
-            try db.run("DELETE FROM \"_records_sync\" WHERE extra IS NULL")
-            try db.run("DELETE FROM \"_records_changes\" WHERE kind = 'delete'")
+            try db.run("UPDATE \"_records_meta\" SET acked = 0, known = 0, tag = NULL, snapshot = NULL")
+            try db.run("UPDATE \"_records_assets\" SET uploaded = 0")
+            try db.run("DELETE FROM \"_records_meta\" WHERE kind = 'delete' OR (kind IS NULL AND extra IS NULL AND parked IS NULL)")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)
             for table in registered.keys.sorted() where tableExists(table) {
+                // Rows kept for their extra fields get a log entry, and every other record gets a row.
                 try db.run(
                     """
-                    INSERT OR IGNORE INTO "_records_changes" (record_table, record_id, kind, version, time)
+                    UPDATE "_records_meta" SET kind = 'save', version = 1, time = ?2
+                    WHERE record_table = ?1 AND kind IS NULL AND record_id IN (SELECT id FROM \(quoted(table)))
+                    """,
+                    [.text(table), now]
+                )
+                try db.run(
+                    """
+                    INSERT OR IGNORE INTO "_records_meta" (record_table, record_id, kind, version, time)
                     SELECT ?, id, 'save', 1, ? FROM \(quoted(table)) ORDER BY id
                     """,
                     [.text(table), now]

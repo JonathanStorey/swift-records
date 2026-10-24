@@ -53,6 +53,27 @@ import Testing
         #expect(try container.fetch(Person.self).map(\.name) == ["Cy"])
     }
 
+    @Test func referencesAreIndexed() throws {
+        let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true)
+        try container.save(SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")]))
+        let indexes = try container.defaultStorage.store.db.run(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'SyncStep'"
+        )
+        #expect(indexes.contains { $0["name"] == .text("SyncStep.recipe.index") })
+    }
+
+    @Test func bookkeepingFitsInFewTables() throws {
+        let container = try RecordContainer(inMemory: true)
+        try container.save(Person(name: "Ana"))
+        let tables = try container.defaultStorage.store.db.run(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '\\_records\\_%' ESCAPE '\\'"
+        ).compactMap { row -> String? in
+            if case .text(let name)? = row["name"] { return name }
+            return nil
+        }
+        #expect(Set(tables) == ["_records_assets", "_records_meta", "_records_relations", "_records_sync_state"])
+    }
+
     @Test func recordShowsAChangeWhileItsSaveCommits() async throws {
         let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false

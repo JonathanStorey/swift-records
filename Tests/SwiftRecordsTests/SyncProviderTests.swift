@@ -396,7 +396,7 @@ struct Device {
         await phone.download()
         #expect(phone.context.status == .failed(.incompatibleRecord(type: "SyncRecipe", id: id)))
         #expect(try await phone.recipes().map(\.title) == ["Fine"])
-        let parked = try phone.container.defaultStorage.store.db.run("SELECT COUNT(*) AS n FROM \"_records_parked\"")
+        let parked = try phone.container.defaultStorage.store.db.run("SELECT COUNT(*) AS n FROM \"_records_meta\" WHERE parked IS NOT NULL")
         #expect(parked.first?["n"] == .integer(2))
     }
 

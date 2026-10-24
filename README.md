@@ -214,7 +214,7 @@ one comment. The child holds its parent's ID, which is a column you can query an
   its reference is cleared. `.none`, the default, keeps the child and clears its reference.
 - Moving a child between two arrays in one save keeps it. A `.deleteSelf` child is only deleted if it
   ends the transaction without a parent.
-- `#Predicate { $0.todo == todoID }` runs as SQL.
+- `#Predicate { $0.todo == todoID }` runs as SQL, and the reference column is indexed.
 - A record with references to several parents, such as a `Membership` that belongs to a `Person` and a
   `Team`, declares one for each. That is how to give a many-to-many link properties of its own. Saving
   it through one parent's array never clears its reference to another.
@@ -310,8 +310,8 @@ a view can call it while it updates, and each call costs one read by ID.
 
 ## Change tracking
 
-Every save keeps a record's bookkeeping in tables of its own, so a record's table holds only its ID and
-its properties:
+Every save keeps a record's bookkeeping in one row of its own, in a separate table, so a record's table
+holds only its ID and its properties:
 
 ```swift
 let meta = try context.metadata(ToDo.self, id: todo.id)
@@ -324,8 +324,10 @@ Reading metadata saves the context's pending edits first. Storing a tag never ch
 and fetches never load tags. Files from version 0.3.0, which kept this in hidden columns beside each
 record, aren't supported, so start 0.4.0 with a new file.
 
-Behind this sits a change log with one entry per record, which is how sync knows what the server
-doesn't have yet. A deleted record's entry stays until the server acknowledges the deletion.
+That row is also the change log, which is how sync knows what the server doesn't have yet, and it keeps
+what sync needs for merging. A deleted record's row stays until the server acknowledges the deletion.
+Besides record and link tables, a file holds just four internal tables: that bookkeeping, asset files,
+relationship rules and sync state.
 
 The main context refreshes its views after any change committed to its container, including ones
 written by a background context or a sync provider.
