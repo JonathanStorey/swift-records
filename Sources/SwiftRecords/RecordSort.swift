@@ -30,7 +30,7 @@ struct RecordOrder<R: Record> {
     var columns: [(column: String, descending: Bool)]? {
         var columns: [(column: String, descending: Bool)] = []
         for descriptor in descriptors {
-            guard let field = R.schema.fields.first(where: { Self.sortsInSQL($0, as: descriptor) }) else { return nil }
+            guard let field = R.cachedSchema.fields.first(where: { Self.sortsInSQL($0, as: descriptor) }) else { return nil }
             columns.append((field.name, descriptor.order == .reverse))
         }
         return columns

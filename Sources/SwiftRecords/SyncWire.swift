@@ -168,7 +168,7 @@ extension RecordStore {
     }
 
     private func wireMembers<R: Record>(_ type: R.Type, fields: SyncFields) throws -> [String: Data] {
-        let schema = Dictionary(R.schema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        let schema = Dictionary(R.cachedSchema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         var members: [String: Data] = [:]
         for (key, value) in fields {
             guard let field = schema[key] else {
@@ -231,7 +231,7 @@ extension RecordStore {
 
     private func syncFields<R: Record>(_ type: R.Type, members: [String: Data]) throws -> SyncFields {
         var schema: [String: RecordSchema<R>.Field] = [:]
-        for field in R.schema.fields where field.name != "id" {
+        for field in R.cachedSchema.fields where field.name != "id" {
             for name in [field.name] + field.previousNames where schema[name] == nil {
                 schema[name] = field
             }

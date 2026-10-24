@@ -169,7 +169,7 @@ extension RecordStore {
 
     /// The types a type's relationships, references and inverses name.
     private static func relatedTypes<R: Record>(_ type: R.Type) -> [any Record.Type] {
-        R.schema.fields.compactMap { field in
+        R.cachedSchema.fields.compactMap { field in
             if let inverse = field.inverse ?? field.parent {
                 return Swift.type(of: inverse).rootType as? any Record.Type
             }
@@ -184,9 +184,9 @@ extension RecordStore {
         func invalid(_ reason: String) -> RecordsError {
             .invalidSchema(type: R.table, reason: reason)
         }
-        let names = Set(R.schema.fields.map(\.name))
+        let names = Set(R.cachedSchema.fields.map(\.name))
         var oldNames: [String: String] = [:]
-        for field in R.schema.fields {
+        for field in R.cachedSchema.fields {
             if let target = relationTarget(field), !declaresRelationship(target, field.keyPath) {
                 throw invalid(
                     "\(field.name) links to \(target), which doesn't say how it belongs. Give \(target) "
@@ -199,7 +199,7 @@ extension RecordStore {
                       let target = forwardTarget(of: owner, keyPath: parent), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
                     throw invalid("\(field.name) is a reference to \(parent), which isn't a relationship to \(R.self).")
                 }
-                if R.schema.fields.contains(where: { $0.parent == parent && $0.name != field.name }) {
+                if R.cachedSchema.fields.contains(where: { $0.parent == parent && $0.name != field.name }) {
                     throw invalid("Two properties are references to \(parent). Keep one.")
                 }
             }
@@ -231,14 +231,14 @@ extension RecordStore {
     /// True when `target` has a `@Reference(to:)` or `@Reference(from:)` property for the relationship at `keyPath`.
     private static func declaresRelationship(_ target: any Record.Type, _ keyPath: AnyKeyPath) -> Bool {
         func check<T: Record>(_ type: T.Type) -> Bool {
-            T.schema.fields.contains { $0.parent == keyPath || $0.inverse == keyPath }
+            T.cachedSchema.fields.contains { $0.parent == keyPath || $0.inverse == keyPath }
         }
         return check(target)
     }
 
     /// The related type of the forward relationship a key path names, or `nil` if it names none.
     private static func forwardTarget<O: Record>(of owner: O.Type, keyPath: AnyKeyPath) -> (any Record.Type)? {
-        O.schema.field(for: keyPath).flatMap(relationTarget)
+        O.cachedSchema.field(for: keyPath).flatMap(relationTarget)
     }
 
     /// Letters, digits and underscores, starting with a letter and at most 255 long, which CloudKit
@@ -253,7 +253,7 @@ extension RecordStore {
     private func prepareRegistered<R: Record>(_ type: R.Type) throws {
         try ensureTable(R.table)
         try prepare(R.self)
-        for field in R.schema.fields {
+        for field in R.cachedSchema.fields {
             guard let target = Self.relationTarget(field) else { continue }
             _ = try ensureRelation(R.self, field: field, target: target)
         }
@@ -285,7 +285,7 @@ extension RecordStore {
             return nil
         }
         var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
-        for field in R.schema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
+        for field in R.cachedSchema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
             fields[field.name] = nil
             if Self.relationTarget(field) != nil {
                 let join = R.table + "." + field.name
@@ -319,7 +319,17 @@ extension RecordStore {
     }
 
     /// Converts a field to its property's column, checking that it decodes as the property's type.
-    private static func column(_ value: SyncValue, as valueType: Any.Type) throws -> SQLiteValue {
+    static func column(_ value: SyncValue, as valueType: Any.Type) throws -> SQLiteValue {
+        // The common primitives store as they arrive, without a round trip through their Swift type.
+        switch value {
+        case .string(let text) where valueType == String.self || valueType == String?.self: return .text(text)
+        case .int(let int) where valueType == Int.self || valueType == Int?.self || valueType == Int64.self || valueType == Int64?.self:
+            return .integer(int)
+        case .double(let double) where valueType == Double.self || valueType == Double?.self: return .real(double)
+        case .bool(let bool) where valueType == Bool.self || valueType == Bool?.self: return .integer(bool ? 1 : 0)
+        case .date(let date) where valueType == Date.self || valueType == Date?.self: return .real(date.timeIntervalSince1970)
+        default: break
+        }
         guard let codable = valueType as? any Codable.Type else {
             throw DecodingError.typeMismatch(valueType, .init(codingPath: [], debugDescription: "Not Codable"))
         }
@@ -353,7 +363,7 @@ extension RecordStore {
         var links: [(field: RecordSchema<R>.Field, target: any Record.Type, ids: [SQLiteValue])] = []
         var assets: [String: Asset] = [:]
         do {
-            for field in R.schema.fields where field.name != "id" {
+            for field in R.cachedSchema.fields where field.name != "id" {
                 known.insert(field.name)
                 known.formUnion(field.previousNames)
                 guard field.inverse == nil, field.timestamp != .synced else { continue }
@@ -501,7 +511,7 @@ extension RecordStore {
     /// back, so it compares equal to the same reference sent from here.
     private static func normalizingReferences<R: Record>(of type: R.Type, in fields: SyncFields) -> SyncFields {
         var fields = fields
-        for field in R.schema.fields where field.parent != nil {
+        for field in R.cachedSchema.fields where field.parent != nil {
             switch fields[field.name] {
             case .uuid(let id)?: fields[field.name] = .reference(id, action: field.action)
             case .string(let text)?: fields[field.name] = UUID(uuidString: text).map { .reference($0, action: field.action) }
@@ -540,10 +550,21 @@ extension RecordStore {
     /// version of the app can't store, which are kept to try again after an update.
     func applyReceived(_ changes: [RecordChangeData], policy: MergePolicy) throws -> [RecordChangeData] {
         var incompatible: [RecordChangeData] = []
-        for change in changes where try !isStored(change) {
+        // The page's bookkeeping, read in one query per type. A deletion can cascade to other records'
+        // rows, so after one the rest of the page reads its own.
+        var rows: [RowKey: [String: SQLiteValue]]? = try bookkeepingRows(for: changes)
+        var seen: Set<RowKey> = []
+        for change in changes {
+            let id = try ValueCoding.encode(change.id)
+            let key = RowKey(table: change.type, id: id)
+            // A record that comes twice reads the row its first change left.
+            let cached = seen.insert(key).inserted ? rows : nil
+            let sync = try cached.map { $0[key] } ?? syncRow(change.type, id: id)
+            if Self.isStored(change, sync: sync) { continue }
+            if change.isDeletion { rows = nil }
             do {
                 let record = try syncRecord(from: change)
-                try transaction { try applyReceived(record, policy: policy) }
+                try transaction { try applyReceived(record, sync: sync, policy: policy) }
             } catch RecordsError.incompatibleRecord {
                 incompatible.append(change)
                 try park(change)
@@ -552,22 +573,36 @@ extension RecordStore {
         return incompatible
     }
 
+    /// The bookkeeping rows of the changes' records that have one.
+    private func bookkeepingRows(for changes: [RecordChangeData]) throws -> [RowKey: [String: SQLiteValue]] {
+        var rows: [RowKey: [String: SQLiteValue]] = [:]
+        for (table, group) in Dictionary(grouping: changes, by: \.type) {
+            for start in stride(from: 0, to: group.count, by: 500) {
+                let ids = try group[start..<min(start + 500, group.count)].map { try ValueCoding.encode($0.id) }
+                let found = try db.run(
+                    "SELECT * FROM \"_records_meta\" WHERE record_table = ? AND record_id IN (\(placeholders(ids.count)))",
+                    [.text(table)] + ids
+                )
+                for row in found {
+                    rows[RowKey(table: table, id: row["record_id"] ?? .null)] = row
+                }
+            }
+        }
+        return rows
+    }
+
     /// Whether a save is the server copy this device already holds unchanged, such as its own upload coming
     /// back in a download, so applying it would change nothing. It's checked before decoding.
-    private func isStored(_ change: RecordChangeData) throws -> Bool {
-        guard !change.isDeletion, let tag = SyncedTag.data(change.synced) else { return false }
-        let id = try ValueCoding.encode(change.id)
-        guard let row = try db.run(
-            "SELECT tag, kind, version, acked FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(change.type), id]
-        ).first, case .blob(let stored)? = row["tag"], stored == tag else { return false }
-        let pending = row["kind"] != .null && (row["version"]?.integerValue ?? 0) > (row["acked"]?.integerValue ?? 0)
+    private static func isStored(_ change: RecordChangeData, sync: [String: SQLiteValue]?) -> Bool {
+        guard !change.isDeletion, let tag = SyncedTag.data(change.synced), let sync,
+              case .blob(let stored)? = sync["tag"], stored == tag else { return false }
+        let pending = sync["kind"] != .null && (sync["version"]?.integerValue ?? 0) > (sync["acked"]?.integerValue ?? 0)
         return !pending
     }
 
-    private func applyReceived(_ record: SyncRecord, policy: MergePolicy) throws {
+    private func applyReceived(_ record: SyncRecord, sync: [String: SQLiteValue]?, policy: MergePolicy) throws {
         let table = record.type
         let id = try ValueCoding.encode(record.id)
-        let sync = try syncRow(table, id: id)
         let entry = Self.logEntry(sync)
         let pending = entry.map { $0.version > Int(sync?["acked"]?.integerValue ?? 0) } ?? false
         // A delete has no properties to merge, so it settles by the policy for clashes.
@@ -620,13 +655,13 @@ extension RecordStore {
 
         try applyingSyncedChanges { try applySyncFields(table: table, id: record.id, fields: server) }
         // The server's copy is now the record, so whatever version it was at counts as acknowledged.
-        try db.run("INSERT OR IGNORE INTO \"_records_meta\" (record_table, record_id) VALUES (?, ?)", [.text(table), id])
         try db.run(
             """
-            UPDATE "_records_meta" SET acked = version, known = 1, snapshot = NULL, tag = ?, synced_at = ?
-            WHERE record_table = ? AND record_id = ?
+            INSERT INTO "_records_meta" (record_table, record_id, known, tag, synced_at) VALUES (?1, ?2, 1, ?3, ?4)
+            ON CONFLICT (record_table, record_id) DO UPDATE
+            SET acked = version, known = 1, snapshot = NULL, tag = excluded.tag, synced_at = excluded.synced_at
             """,
-            [record.tag.map { .blob($0) } ?? .null, .real(Date().timeIntervalSince1970), .text(table), id]
+            [.text(table), id, record.tag.map { .blob($0) } ?? .null, .real(Date().timeIntervalSince1970)]
         )
     }
 
@@ -636,7 +671,7 @@ extension RecordStore {
     private func isLocalLater<R: Record>(
         _ type: R.Type, id: SQLiteValue, local: SyncFields, server: SyncFields, serverDate: Date?
     ) throws -> Bool {
-        for field in R.schema.fields where field.timestamp == .modified {
+        for field in R.cachedSchema.fields where field.timestamp == .modified {
             if case .date(let localDate)? = local[field.name], case .date(let serverDate)? = server[field.name] {
                 return localDate > serverDate
             }

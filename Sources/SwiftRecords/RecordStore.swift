@@ -251,12 +251,12 @@ final class RecordStore: @unchecked Sendable {
         var encoded = try RecordEncoder.encode(record)
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
         // Timestamps are the container's to set, so a save keeps the stored ones.
-        var preserving = Set(R.schema.fields.filter { $0.timestamp != nil }.map(\.name))
+        var preserving = Set(R.cachedSchema.fields.filter { $0.timestamp != nil }.map(\.name))
         if let parent {
             encoded.columns.removeAll { $0.name == parent.column }
             encoded.columns.append((parent.column, parent.id))
             // A copy saved through one parent may not know its other parents, so it never clears them.
-            for field in R.schema.fields where field.parent != nil && field.name != parent.column {
+            for field in R.cachedSchema.fields where field.parent != nil && field.name != parent.column {
                 if !encoded.columns.contains(where: { $0.name == field.name && $0.value != .null }) {
                     encoded.columns.removeAll { $0.name == field.name }
                     preserving.insert(field.name)
@@ -274,7 +274,7 @@ final class RecordStore: @unchecked Sendable {
         var linked: Set<String> = []
         for relation in encoded.relations {
             linked.insert(relation.name)
-            guard let field = R.schema.field(named: relation.name) else { continue }
+            guard let field = R.cachedSchema.field(named: relation.name) else { continue }
             let info = try ensureRelation(R.self, field: field, target: relation.targetType)
             for target in relation.targets {
                 try saveRecord(target, visited: &visited, parent: info.childField.map { ($0, id) })
@@ -291,7 +291,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
     func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
-        let assetFields = R.schema.fields.filter(\.isAsset)
+        let assetFields = R.cachedSchema.fields.filter(\.isAsset)
         let fields = Set(assetFields.map(\.name)).union(assets.keys)
         var columns: [(name: String, value: SQLiteValue)] = []
         for field in fields.sorted() {
@@ -463,7 +463,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// The current values of a record's `@Reference(to:)` columns, or `nil` if it isn't stored yet.
     func referenceValues<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> [String: SQLiteValue]? {
-        let names = R.schema.fields.filter { $0.parent != nil }.map(\.name)
+        let names = R.cachedSchema.fields.filter { $0.parent != nil }.map(\.name)
         guard !names.isEmpty else { return [:] }
         try ensureColumns(names, in: R.table)
         let columns = names.map(quoted).joined(separator: ", ")
@@ -474,7 +474,7 @@ final class RecordStore: @unchecked Sendable {
     /// old parent's array and onto the end of the new one's. A `.deleteSelf` child left without a parent is
     /// deleted when the transaction ends.
     func reconcileReferences<R: Record>(_ type: R.Type, id: SQLiteValue, before: [String: SQLiteValue]?) throws {
-        for field in R.schema.fields {
+        for field in R.cachedSchema.fields {
             guard let parent = field.parent, let parentType = Swift.type(of: parent).rootType as? any Record.Type,
                   let parentField = Self.fieldName(of: parentType, for: parent) else { continue }
             let old = before?[field.name] ?? .null
@@ -768,7 +768,7 @@ final class RecordStore: @unchecked Sendable {
         // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
         guard clause.relations.allSatisfy(tableExists) else { return nil }
         // A synced timestamp isn't a column, so a predicate on it runs in memory.
-        let synced = Set(R.schema.fields.filter { $0.timestamp == .synced }.map(\.name))
+        let synced = Set(R.cachedSchema.fields.filter { $0.timestamp == .synced }.map(\.name))
         if clause.columns.contains(where: { $0.table == R.table && synced.contains($0.column) }) {
             return nil
         }
@@ -855,7 +855,7 @@ final class RecordStore: @unchecked Sendable {
     private var prefetched: Prefetch?
     private static let batchSize = 500
 
-    private func placeholders(_ count: Int) -> String {
+    func placeholders(_ count: Int) -> String {
         Array(repeating: "?", count: count).joined(separator: ", ")
     }
 
@@ -974,7 +974,7 @@ final class RecordStore: @unchecked Sendable {
     /// columns, join tables and asset entries take the new name, and indexed columns get an index.
     func prepare<R: Record>(_ type: R.Type) throws {
         guard !prepared.contains(ObjectIdentifier(R.self)), tableExists(R.table) else { return }
-        for field in R.schema.fields {
+        for field in R.cachedSchema.fields {
             for old in field.previousNames {
                 try rename(field: old, to: field.name, in: R.table)
             }
@@ -990,7 +990,7 @@ final class RecordStore: @unchecked Sendable {
             }
         }
         stampColumns[R.table] = (
-            R.schema.fields.filter { $0.timestamp == .created }.map(\.name), R.schema.fields.filter { $0.timestamp == .modified }.map(\.name)
+            R.cachedSchema.fields.filter { $0.timestamp == .created }.map(\.name), R.cachedSchema.fields.filter { $0.timestamp == .modified }.map(\.name)
         )
         prepared.insert(ObjectIdentifier(R.self))
     }
@@ -1054,7 +1054,7 @@ final class RecordStore: @unchecked Sendable {
     /// The `@Reference(to:)` property of `target` that points at `parent`, such as `Note.todo` for `\ToDo.notes`.
     static func childReference(in target: any Record.Type, to parent: AnyKeyPath) -> (name: String, action: ReferenceAction)? {
         func find<T: Record>(_ type: T.Type) -> (name: String, action: ReferenceAction)? {
-            T.schema.fields.first { $0.parent == parent }.map { ($0.name, $0.action) }
+            T.cachedSchema.fields.first { $0.parent == parent }.map { ($0.name, $0.action) }
         }
         return find(target)
     }
@@ -1090,7 +1090,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     private func fieldName<O: Record>(_ type: O.Type, _ keyPath: AnyKeyPath) -> String? {
-        O.schema.field(for: keyPath)?.name
+        O.cachedSchema.field(for: keyPath)?.name
     }
 }
 
