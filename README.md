@@ -467,6 +467,19 @@ owner. Downloaded asset files are named by their contents, and `change(from:zone
 `downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
 `deletion(of:type:zone:)`.
 
+`CKRecordEncoder` turns a record struct into its `CKRecord` from the struct alone, with no container and
+no sync metadata, so the result is a new record with no change tag. It maps fields by the same table:
+
+```swift
+let record = try CKRecordEncoder().encode(recipe)                     // CloudKit's default zone
+let other = try CKRecordEncoder(zoneID: recipesZone).encode(recipe)
+```
+
+A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
+reference is whatever the struct holds, which saving it through its parent sets. An asset still in memory
+is written to a temporary file for its `CKAsset`. It throws `RecordsError.invalidValue` when a property
+won't encode.
+
 ### Syncing through iCloud files
 
 `FileSyncProvider` syncs through a folder, and the system copies the folder between devices. No server
