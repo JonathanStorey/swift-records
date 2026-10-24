@@ -142,6 +142,18 @@ struct Run {
             }
         }
 
+        try await measure("Read 100 pages of 50 sorted by a number", records: 100 * 50 * 6) {
+            for page in 0..<100 {
+                _ = try context.fetch(RecordDescriptor<Recipe>(
+                    sortBy: [SortDescriptor(\.rating, order: .reverse)], fetchLimit: 50, fetchOffset: page * 50
+                ))
+            }
+        }
+
+        try await measure("Fetch every recipe sorted by title", records: total * 6) {
+            all = try context.fetch(RecordDescriptor<Recipe>(sortBy: [SortDescriptor(\.title)]))
+        }
+
         // MARK: Changing
 
         let edited = Array(all.prefix(1_000))

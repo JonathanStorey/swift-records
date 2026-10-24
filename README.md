@@ -586,7 +586,7 @@ swift run -c release Benchmarks --compare before.json                 # each tim
 ```
 
 It covers a background import, saving on the main context, fetching every record with its nested
-children, fetching by ID, indexed and unindexed predicates, counting, paging, editing, reordering
+children, fetching by ID, indexed and unindexed predicates, counting, paging, sorting, editing, reordering
 children, cascading deletes, uploading and downloading a whole store, syncing 100 edits into a large
 store, and resyncing everything with a new server. Each step checks its result, so a run also fails
 when an operation goes wrong at scale. `Benchmarks/linux-baseline.json` is a run in the `swift:6.1-noble` image that CI uses, on a cloud VM.
