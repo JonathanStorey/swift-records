@@ -423,6 +423,34 @@ Inverses aren't sent. The container owns the rules:
 - **Accounts have policies.** `onSignOut` (keep local data by default), `onAccountSwitch` (delete) and
   `onServerReset` (keep and upload again) decide what an account change does.
 
+### CloudKit records
+
+On Apple platforms a change converts to a `CKRecord` and back, field for field, so a CloudKit provider
+stores records exactly as CloudKit expects:
+
+```swift
+let record = try container.ckRecord(for: change, in: zoneID, base: lastServerCopy)   // nil for a deletion
+let (change, assets) = try container.change(from: record, zone: zone)
+```
+
+| Record | CKRecord |
+| --- | --- |
+| `id`, type, zone | `recordName` (the `uuidString`), `recordType`, `zoneID` |
+| `String`, numbers, `Bool`, `Date`, `Data` | fields of the same name |
+| `[String]`, number and `[Date]` arrays | CloudKit lists |
+| any other `Codable` value | its JSON as `Data` |
+| `var notes: [Note]` | the notes' record names in order, as a `[String]`, never forward references |
+| a child's `@Reference(to:action:)` | a `CKRecord.Reference` with that action |
+| `@Asset` | a `CKAsset` |
+| inverses, `@Timestamp(.synced)` | nothing: they're rebuilt locally |
+
+Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Pass the
+server's last copy as `base`, such as one rebuilt from its encoded system fields, so a save carries its
+change tag. Coming back, `modificationDate` is the `synced` date, and in a public zone the creator is the
+owner. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
+`downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
+`deletion(of:type:zone:)`.
+
 ### Syncing through iCloud files
 
 `FileSyncProvider` syncs through a folder, and the system copies the folder between devices. No server
