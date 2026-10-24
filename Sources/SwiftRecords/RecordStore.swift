@@ -10,7 +10,11 @@ import Foundation
 final class RecordStore: @unchecked Sendable {
     let db: SQLiteDatabase
     private let lock = NSRecursiveLock()
-    private(set) var columns: [String: Set<String>] = [:]
+    private(set) var columns: [String: Set<String>] = [:] {
+        didSet { columnLists = [:] }
+    }
+    /// Each table's `recordColumns`, built once rather than for every row a save compares.
+    private var columnLists: [String: String] = [:]
     private var relationInfo: [RelationInfo]?
     private var decoding: Set<RowKey> = []
     /// Asset files written and released by each open transaction, innermost last.
@@ -251,7 +255,7 @@ final class RecordStore: @unchecked Sendable {
         var encoded = try RecordEncoder.encode(record)
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
         // Timestamps are the container's to set, so a save keeps the stored ones.
-        var preserving = Set(R.cachedSchema.fields.filter { $0.timestamp != nil }.map(\.name))
+        var preserving = Set(R.cachedSchema.fields.filter { $0.timestamp != nil }.map { $0.name })
         if let parent {
             encoded.columns.removeAll { $0.name == parent.column }
             encoded.columns.append((parent.column, parent.id))
@@ -291,8 +295,8 @@ final class RecordStore: @unchecked Sendable {
 
     /// Writes new asset files and releases the ones a record no longer holds. Returns the asset columns.
     func storeAssets<R: Record>(of type: R.Type, id: SQLiteValue, assets: [String: Asset]) throws -> [(name: String, value: SQLiteValue)] {
-        let assetFields = R.cachedSchema.fields.filter(\.isAsset)
-        let fields = Set(assetFields.map(\.name)).union(assets.keys)
+        let assetFields = R.cachedSchema.fields.filter { $0.isAsset }
+        let fields = Set(assetFields.map { $0.name }).union(assets.keys)
         var columns: [(name: String, value: SQLiteValue)] = []
         for field in fields.sorted() {
             let previous = try db.run(
@@ -463,7 +467,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// The current values of a record's `@Reference(to:)` columns, or `nil` if it isn't stored yet.
     func referenceValues<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> [String: SQLiteValue]? {
-        let names = R.cachedSchema.fields.filter { $0.parent != nil }.map(\.name)
+        let names = R.cachedSchema.fields.filter { $0.parent != nil }.map { $0.name }
         guard !names.isEmpty else { return [:] }
         try ensureColumns(names, in: R.table)
         let columns = names.map(quoted).joined(separator: ", ")
@@ -768,7 +772,7 @@ final class RecordStore: @unchecked Sendable {
         // A join table that does not exist yet means no links; SQL would fail on it, so filter in memory.
         guard clause.relations.allSatisfy(tableExists) else { return nil }
         // A synced timestamp isn't a column, so a predicate on it runs in memory.
-        let synced = Set(R.cachedSchema.fields.filter { $0.timestamp == .synced }.map(\.name))
+        let synced = Set(R.cachedSchema.fields.filter { $0.timestamp == .synced }.map { $0.name })
         if clause.columns.contains(where: { $0.table == R.table && synced.contains($0.column) }) {
             return nil
         }
@@ -990,7 +994,7 @@ final class RecordStore: @unchecked Sendable {
             }
         }
         stampColumns[R.table] = (
-            R.cachedSchema.fields.filter { $0.timestamp == .created }.map(\.name), R.cachedSchema.fields.filter { $0.timestamp == .modified }.map(\.name)
+            R.cachedSchema.fields.filter { $0.timestamp == .created }.map { $0.name }, R.cachedSchema.fields.filter { $0.timestamp == .modified }.map { $0.name }
         )
         prepared.insert(ObjectIdentifier(R.self))
     }
@@ -1016,7 +1020,10 @@ final class RecordStore: @unchecked Sendable {
 
     /// The columns a record decodes from.
     private func recordColumns(_ table: String) -> String {
-        columns[table, default: []].sorted().map { quoted(table) + "." + quoted($0) }.joined(separator: ", ")
+        if let list = columnLists[table] { return list }
+        let list = columns[table, default: []].sorted().map { quoted(table) + "." + quoted($0) }.joined(separator: ", ")
+        columnLists[table] = list
+        return list
     }
 
     /// Adds any missing columns. Columns have no declared type, so SQLite stores each value as given.

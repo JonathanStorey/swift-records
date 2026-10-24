@@ -589,20 +589,20 @@ It covers a background import, saving on the main context, fetching every record
 children, fetching by ID, indexed and unindexed predicates, counting, paging, sorting, editing, reordering
 children, cascading deletes, uploading and downloading a whole store, syncing 100 edits into a large
 store, and resyncing everything with a new server. Each step checks its result, so a run also fails
-when an operation goes wrong at scale. `Benchmarks/linux-baseline.json` is a run in the `swift:6.1-noble` image that CI uses, on a cloud VM.
+when an operation goes wrong at scale. `Benchmarks/linux-baseline.json` is a run in the `swift:6.1-noble` image that CI uses, on a cloud VM. Timings on a shared VM vary by about 10% between runs.
 
 Some timings from that run, for 60,000 records:
 
 | Operation | Time |
 | --- | --- |
-| Import in saves of 500 | 8.9 s |
-| Fetch every recipe with its steps | 2.5 s |
-| Fetch 1,000 recipes by ID | 0.24 s |
-| Edit and save 1,000 recipes | 0.48 s |
-| Delete 1,000 recipes and their steps | 0.71 s |
-| Upload the whole store | 8.2 s |
-| Download the whole store to a new device | 12.2 s |
-| Sync 100 edits from a large store | 18 ms |
+| Import in saves of 500 | 7.5 s |
+| Fetch every recipe with its steps | 2.4 s |
+| Fetch 1,000 recipes by ID | 0.33 s |
+| Edit and save 1,000 recipes | 0.31 s |
+| Delete 1,000 recipes and their steps | 0.55 s |
+| Upload the whole store | 8.7 s |
+| Download the whole store to a new device | 11.8 s |
+| Sync 100 edits from a large store | 17 ms |
 
 ## Requirements
 

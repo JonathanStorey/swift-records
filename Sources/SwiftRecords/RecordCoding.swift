@@ -148,7 +148,7 @@ final class RecordEncoder: Encoder {
     }
 
     static func encode<R: Record>(_ record: R) throws -> EncodedRecord {
-        let encoder = RecordEncoder(inverseFields: Set(R.cachedSchema.fields.filter { $0.inverse != nil }.map(\.name)))
+        let encoder = RecordEncoder(inverseFields: Set(R.cachedSchema.fields.filter { $0.inverse != nil }.map { $0.name }))
         do {
             try record.encode(to: encoder)
             for (name, node) in encoder.nested {
