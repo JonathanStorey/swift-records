@@ -40,6 +40,6 @@ extension Record {
 
     /// Properties the container sets, which `hasChanges(_:)` leaves out.
     static var containerManagedFields: Set<String> {
-        Set(schema.fields.filter { $0.inverse != nil || $0.timestamp != nil }.map(\.name))
+        Set(cachedSchema.fields.filter { $0.inverse != nil || $0.timestamp != nil }.map(\.name))
     }
 }

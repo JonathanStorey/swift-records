@@ -63,7 +63,8 @@ enum ValueCoding {
         if T.self == UUID.self {
             switch value {
             case .blob(let data) where data.count == 16:
-                var bytes = UUID().uuid
+                // Start from zeros: `UUID()` would draw random bytes, a file read on Linux, for every ID loaded.
+                var bytes: uuid_t = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
                 withUnsafeMutableBytes(of: &bytes) { $0.copyBytes(from: data) }
                 return UUID(uuid: bytes) as? T
             case .text(let text):

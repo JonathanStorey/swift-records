@@ -23,6 +23,30 @@ public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
     static var schema: RecordSchema<Self> { get }
 }
 
+extension Record {
+    /// `schema`, built once per type. The macro's `schema` builds its fields each time it's read, and
+    /// the store reads it several times for every record it writes or loads.
+    static var cachedSchema: RecordSchema<Self> {
+        SchemaCache.shared.schema(for: Self.self)
+    }
+}
+
+private final class SchemaCache: @unchecked Sendable {
+    static let shared = SchemaCache()
+    private let lock = NSLock()
+    private var schemas: [ObjectIdentifier: Any] = [:]
+
+    func schema<R: Record>(for type: R.Type) -> RecordSchema<R> {
+        let key = ObjectIdentifier(type)
+        if let schema = lock.withLock({ schemas[key] }) as? RecordSchema<R> {
+            return schema
+        }
+        let schema = R.schema
+        lock.withLock { schemas[key] = schema }
+        return schema
+    }
+}
+
 /// Generates `Record` conformance and the type's `schema`. The table is named after the struct.
 @attached(extension, conformances: Record, names: named(schema))
 @attached(memberAttribute)
@@ -189,11 +213,11 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
 }
 
 extension Record {
-    static var table: String { schema.table }
+    static var table: String { cachedSchema.table }
 
     /// The stored name of the property at `keyPath`.
     static func fieldName(for keyPath: AnyKeyPath) -> String? {
-        schema.field(for: keyPath)?.name
+        cachedSchema.field(for: keyPath)?.name
     }
 
     var sqlID: SQLiteValue {

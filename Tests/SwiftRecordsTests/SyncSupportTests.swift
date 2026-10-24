@@ -115,3 +115,22 @@ import Testing
         }
     }
 }
+
+@Suite struct ColumnFastPathTests {
+    /// The shortcut for common primitives stores exactly what encoding the Swift value would.
+    @Test func primitivesStoreAsTheirTypesWould() throws {
+        let date = Date(timeIntervalSince1970: 1_234.5)
+        #expect(try RecordStore.column(.string("a"), as: String.self) == ValueCoding.encode("a"))
+        #expect(try RecordStore.column(.string("a"), as: String?.self) == ValueCoding.encode("a"))
+        #expect(try RecordStore.column(.int(.max), as: Int.self) == ValueCoding.encode(Int.max))
+        #expect(try RecordStore.column(.int(-3), as: Int64?.self) == ValueCoding.encode(Int64(-3)))
+        #expect(try RecordStore.column(.double(2.5), as: Double.self) == ValueCoding.encode(2.5))
+        #expect(try RecordStore.column(.bool(true), as: Bool.self) == ValueCoding.encode(true))
+        #expect(try RecordStore.column(.bool(false), as: Bool?.self) == ValueCoding.encode(false))
+        #expect(try RecordStore.column(.date(date), as: Date.self) == ValueCoding.encode(date))
+        // Anything else still goes through its type, which checks it.
+        #expect(try RecordStore.column(.int(7), as: Int8.self) == ValueCoding.encode(Int8(7)))
+        #expect(throws: (any Error).self) { try RecordStore.column(.int(1_000), as: Int8.self) }
+        #expect(throws: (any Error).self) { try RecordStore.column(.string("x"), as: Int.self) }
+    }
+}

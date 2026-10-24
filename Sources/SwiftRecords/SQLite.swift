@@ -183,5 +183,8 @@ final class SQLiteDatabase {
 
 /// Quotes an identifier for use in SQL.
 func quoted(_ identifier: String) -> String {
-    "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    // Statements quote every table and column name, so skip Foundation's replace, which was a large share
+    // of the time spent writing each record, for the usual name with no quote in it.
+    guard identifier.utf8.contains(UInt8(ascii: "\"")) else { return "\"" + identifier + "\"" }
+    return "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
 }

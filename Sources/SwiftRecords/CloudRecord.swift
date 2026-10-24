@@ -35,7 +35,7 @@ extension RecordStore {
     }
 
     private func cloudFields<R: Record>(_ type: R.Type, fields: SyncFields) throws -> [String: CloudValue] {
-        let schema = Dictionary(R.schema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        let schema = Dictionary(R.cachedSchema.fields.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         var cloud: [String: CloudValue] = [:]
         for (key, value) in fields {
             guard let field = schema[key] else {
@@ -126,7 +126,7 @@ extension RecordStore {
 
     private func wireMembers<R: Record>(_ type: R.Type, cloud: [String: CloudValue]) throws -> [String: Data] {
         var schema: [String: RecordSchema<R>.Field] = [:]
-        for field in R.schema.fields where field.name != "id" {
+        for field in R.cachedSchema.fields where field.name != "id" {
             for name in [field.name] + field.previousNames where schema[name] == nil {
                 schema[name] = field
             }
@@ -155,7 +155,7 @@ extension RecordStore {
             }
         }
         // CloudKit drops empty lists, so a relationship it lacks is empty.
-        for field in R.schema.fields where Self.relationTarget(field) != nil && members[field.name] == nil {
+        for field in R.cachedSchema.fields where Self.relationTarget(field) != nil && members[field.name] == nil {
             members[field.name] = try encoder.encode([UUID]())
         }
         return members
@@ -165,7 +165,7 @@ extension RecordStore {
     func assetExtension(type: String, field: String) -> String {
         guard let type = registered[type] else { return "" }
         func find<R: Record>(_ type: R.Type) -> String {
-            R.schema.fields.first { $0.name == field || $0.previousNames.contains(field) }?.fileExtension ?? ""
+            R.cachedSchema.fields.first { $0.name == field || $0.previousNames.contains(field) }?.fileExtension ?? ""
         }
         return find(type)
     }

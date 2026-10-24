@@ -64,11 +64,11 @@ struct SQLBuilder {
             self.alias = alias
             table = R.table
             fieldName = { keyPath in
-                guard let field = R.schema.field(for: keyPath), field.inverse == nil else { return nil }
+                guard let field = R.cachedSchema.field(for: keyPath), field.inverse == nil else { return nil }
                 return field.name
             }
             inverseRelation = { keyPath in
-                guard let inverse = R.schema.field(for: keyPath)?.inverse,
+                guard let inverse = R.cachedSchema.field(for: keyPath)?.inverse,
                       let owner = Swift.type(of: inverse).rootType as? any Record.Type,
                       let field = owner.fieldName(for: inverse) else { return nil }
                 return owner.table + "." + field

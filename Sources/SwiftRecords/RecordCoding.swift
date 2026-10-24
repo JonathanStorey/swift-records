@@ -148,7 +148,7 @@ final class RecordEncoder: Encoder {
     }
 
     static func encode<R: Record>(_ record: R) throws -> EncodedRecord {
-        let encoder = RecordEncoder(inverseFields: Set(R.schema.fields.filter { $0.inverse != nil }.map(\.name)))
+        let encoder = RecordEncoder(inverseFields: Set(R.cachedSchema.fields.filter { $0.inverse != nil }.map(\.name)))
         do {
             try record.encode(to: encoder)
             for (name, node) in encoder.nested {
@@ -262,7 +262,7 @@ struct RecordDecoder<R: Record>: Decoder {
         /// A column's value, read under the property's earlier names when a row predates `@Renamed`.
         private func stored(_ name: String) -> SQLiteValue? {
             if let value = decoder.row[name], value != .null { return value }
-            for previous in R.schema.field(named: name)?.previousNames ?? [] {
+            for previous in R.cachedSchema.field(named: name)?.previousNames ?? [] {
                 if let value = decoder.row[previous], value != .null { return value }
             }
             return decoder.row[name]
@@ -271,16 +271,16 @@ struct RecordDecoder<R: Record>: Decoder {
         func contains(_ key: Key) -> Bool {
             let name = key.stringValue
             return stored(name) != nil
-                || R.schema.field(named: name)?.timestamp == .synced
-                || R.schema.field(named: name)?.inverse != nil
+                || R.cachedSchema.field(named: name)?.timestamp == .synced
+                || R.cachedSchema.field(named: name)?.inverse != nil
                 || decoder.loader.hasRelation(owner: R.table, field: name)
         }
 
         func decodeNil(forKey key: Key) throws -> Bool {
             let name = key.stringValue
-            if R.schema.field(named: name)?.timestamp == .synced { return false }
+            if R.cachedSchema.field(named: name)?.timestamp == .synced { return false }
             if let value = stored(name) { return value == .null }
-            if R.schema.field(named: name)?.inverse != nil { return false }
+            if R.cachedSchema.field(named: name)?.inverse != nil { return false }
             // An optional relation with no linked record decodes as nil.
             guard decoder.loader.hasRelation(owner: R.table, field: name) else { return true }
             return try decoder.loader.relationCount(owner: R.table, ownerID: id, field: name) == 0
@@ -289,13 +289,13 @@ struct RecordDecoder<R: Record>: Decoder {
         func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
             let name = key.stringValue
             if T.self == TimestampStorage.self {
-                if R.schema.field(named: name)?.timestamp == .synced {
+                if R.cachedSchema.field(named: name)?.timestamp == .synced {
                     return TimestampStorage(date: try decoder.loader.syncedDate(table: R.table, id: id)) as! T
                 }
                 guard let value = stored(name), value != .null else { return TimestampStorage(date: nil) as! T }
                 return TimestampStorage(date: try ValueCoding.decode(Date.self, from: value)) as! T
             }
-            if let inverse = R.schema.field(named: name)?.inverse {
+            if let inverse = R.cachedSchema.field(named: name)?.inverse {
                 let ids = try decoder.loader.loadInverse(targetID: id, inverse: inverse)
                 if T.self == InverseStorage.self {
                     return InverseStorage(ids: Set(try ids.map { try ValueCoding.decode(UUID.self, from: $0) })) as! T
@@ -317,7 +317,7 @@ struct RecordDecoder<R: Record>: Decoder {
             }
             guard let value = stored(name), value != .null else {
                 // A row saved before the property existed takes the property's declared default.
-                if let fallback = R.schema.field(named: name)?.defaultValue?() as? T {
+                if let fallback = R.cachedSchema.field(named: name)?.defaultValue?() as? T {
                     return fallback
                 }
                 guard let value = stored(name) else {
