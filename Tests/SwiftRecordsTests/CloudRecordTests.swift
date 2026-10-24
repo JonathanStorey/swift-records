@@ -148,7 +148,9 @@ import CloudKit
         try await phone.context.save()
         let store = phone.container.defaultStorage.store
 
-        let saved = try #require(server.record("SyncRecipe", recipe.id))
+        // The test server's stand-in system fields aren't CloudKit's, so these copies go as new records.
+        var saved = try #require(server.record("SyncRecipe", recipe.id))
+        saved.metadata.systemFields = nil
         let record = try #require(try phone.container.ckRecord(for: saved, in: zoneID))
         #expect(record.recordChangeTag == nil)
         #expect(record.recordID.recordName == recipe.id.uuidString)
@@ -168,7 +170,8 @@ import CloudKit
         #expect(try store.syncRecord(from: back).fields?["title"] == .string("Soup"))
         #expect(try store.syncRecord(from: back).fields?["steps"] == .ids([recipe.steps[0].id]))
 
-        let savedStep = try #require(server.record("SyncStep", recipe.steps[0].id))
+        var savedStep = try #require(server.record("SyncStep", recipe.steps[0].id))
+        savedStep.metadata.systemFields = nil
         let step = try #require(try phone.container.ckRecord(for: savedStep, in: zoneID))
         let reference = try #require(step["recipe"] as? CKRecord.Reference)
         #expect(reference.recordID.recordName == recipe.id.uuidString)
