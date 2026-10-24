@@ -104,7 +104,7 @@ struct Device {
         #expect(server.value("SyncRecipe", recipe.id, "tags") == .strings(["winter"]))
         #expect(server.value("SyncStep", recipe.steps[0].id, "recipe") == .reference(recipe.id, action: .deleteSelf))
         #expect(!server.has("SyncStep", recipe.steps[0].id, "recipes"))
-        #expect(server.record("SyncRecipe", recipe.id)?.synced != nil)
+        #expect(server.record("SyncRecipe", recipe.id)?.metadata.changeTag != nil)
 
         try await tablet.context.refresh()
         let received = try #require(try await tablet.recipes().first)
@@ -693,29 +693,52 @@ struct Device {
 @Suite struct SyncedOrderTests {
     let server = TestServer()
 
-    @Test func systemFieldsComeBackWithTheNextUpload() async throws {
+    @Test func metadataComesBackWithTheNextUpload() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Soup")
         phone.context.insert(recipe)
         try await phone.context.save()
-        let first = try #require(server.record("SyncRecipe", recipe.id)?.metadata.systemFields)
+        let first = try #require(server.record("SyncRecipe", recipe.id)?.metadata)
+        #expect(first.changeTag != nil && first.created != nil && first.creator == "alice" && first.systemFields != nil)
 
-        // The device that uploaded keeps what the server answered with.
+        // The device that uploaded keeps all of what the server answered with.
         recipe.title = "Stew"
         phone.context.insert(recipe)
         try await phone.context.save()
-        #expect(phone.provider.sentBatches.last?.first?.metadata.systemFields == first)
+        #expect(phone.provider.sentBatches.last?.first?.metadata == first)
 
         // Another device keeps what arrived with the download.
-        let second = try #require(server.record("SyncRecipe", recipe.id)?.metadata.systemFields)
+        let second = try #require(server.record("SyncRecipe", recipe.id)?.metadata)
         try await tablet.context.refresh()
         recipe = try #require(try await tablet.recipes().first)
         recipe.title = "Chili"
         tablet.context.insert(recipe)
         try await tablet.context.save()
-        #expect(tablet.provider.sentBatches.last?.first?.metadata.systemFields == second)
-        #expect(second != first)
+        #expect(tablet.provider.sentBatches.last?.first?.metadata == second)
+        #expect(second.changeTag != first.changeTag)
+        #expect(second.created == first.created)
+    }
+
+    @Test func aStaleChangeTagIsAConflict() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Soup")
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+
+        recipe.title = "Stew"
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        // The tablet's edit carries the first tag, so the server answers with its newer copy, and the merge goes back.
+        var edited = try #require(try await tablet.recipes().first)
+        edited.servings = 6
+        tablet.context.insert(edited)
+        try await tablet.context.save()
+        #expect(tablet.provider.sentBatches.count == 2)
+        let stored = try #require(server.record("SyncRecipe", recipe.id)?.fields)
+        #expect(stored["title"] == .string("Stew") && stored["servings"] == .int(6))
     }
 
     @Test func datesCrossToTheMillisecond() async throws {
@@ -753,7 +776,7 @@ struct Device {
         var recipe = SyncRecipe(title: "Shared")
         alice.context.insert(recipe)
         try await alice.context.save()
-        #expect(server.record("SyncRecipe", recipe.id)?.metadata.owner == "alice")
+        #expect(server.record("SyncRecipe", recipe.id)?.metadata.creator == "alice")
         #expect(!server.has("SyncRecipe", recipe.id, "_owner"))
 
         // Everyone sees it, and only its owner can change it.

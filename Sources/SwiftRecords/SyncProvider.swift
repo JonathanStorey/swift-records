@@ -7,9 +7,9 @@ import Foundation
 /// pending, merges conflicts, applies account changes and sets its contexts' `status`. A pass checks the
 /// account, uploads pending changes in batches, then downloads until the server has nothing more.
 ///
-/// The unit of sync is a whole record, `RecordChangeData`. The server stamps each accepted change with a
-/// strictly later `synced` date. An upload carries the `synced` date of the copy it was edited from, so the
-/// server can tell when someone else changed the record first. Throw `SyncError` when a whole call fails.
+/// The unit of sync is a whole record, `RecordChangeData`. As CloudKit does, the server gives each copy it
+/// accepts a new `changeTag`, and an upload carries the tag of the copy it was edited from, so the server
+/// can tell when someone else changed the record first. Throw `SyncError` when a whole call fails.
 public protocol SyncProvider: AnyObject, Sendable {
     /// A stable ID for the signed-in user, or `nil` when signed out. Called at the start of every pass.
     func userID() async throws -> String?
@@ -17,8 +17,8 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// Saves and deletes these changes. Returns one result per change, in any order. A change left out
     /// stays pending and goes again with the next pass.
     ///
-    /// Accept a save only when its `synced` date matches the server's copy, or it is `nil` and the server
-    /// has no copy. Otherwise return the server's copy as a conflict, including a deletion.
+    /// Accept a save only when its `changeTag` matches the server's copy, or it is `nil` and the server has
+    /// no copy. Otherwise return the server's copy as a conflict, including a deletion.
     func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult]
 
     /// Returns the zone's changes after `cursor`, oldest first, with each record's latest change only.
@@ -77,16 +77,6 @@ public struct RecordChangeData: Sendable, Hashable, Codable {
     }
 
     public var isDeletion: Bool { fields == nil }
-
-    /// When the server accepted this copy. The same as `metadata.synced`.
-    public var synced: Date? { metadata.synced }
-
-    /// The same change stamped with the server's date, as a server stores it.
-    public func syncing(at date: Date) -> RecordChangeData {
-        var change = self
-        change.metadata.synced = date
-        return change
-    }
 }
 
 /// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
@@ -157,29 +147,47 @@ extension RecordValue: Codable {
     }
 }
 
-/// What the server keeps about a record beside its values, like a `CKRecord`'s system fields.
+/// What the server keeps about a record beside its values, named as a `CKRecord`'s system fields are, so
+/// any server can keep the same bookkeeping CloudKit does.
+///
+/// Only `changeTag` decides anything: it's how the server tells an update of its copy from a stale one.
+/// The dates and users are a record of what the server saw, and `modified` dates the server's copy when
+/// a merge falls to the latest edit. A copy the server has never accepted has no tag.
 public struct SyncMetadata: Sendable, Hashable, Codable {
-    /// When the server accepted this copy, or `nil` for a record it has never accepted. The server stamps
-    /// each accepted change with a strictly later date.
-    public var synced: Date?
-    /// The user who created the record, set only in public zones.
-    public var owner: String?
-    /// The provider's own bookkeeping for the copy, such as a `CKRecord`'s archived system fields. The
-    /// container stores it with the record and hands it back, untouched, with the record's next upload.
+    /// The server's version of this copy, like `recordChangeTag`: any string, such as a counter or a hash,
+    /// that changes each time the server accepts a change.
+    public var changeTag: String?
+    /// When the server first accepted the record, like `creationDate`.
+    public var created: Date?
+    /// When the server accepted this copy, like `modificationDate`.
+    public var modified: Date?
+    /// The user who created the record, like `creatorUserRecordID`. In a public zone it's the record's
+    /// owner, the only user who can change it.
+    public var creator: String?
+    /// The user who made this copy, like `lastModifiedUserRecordID`.
+    public var lastModifier: String?
+    /// Anything else the provider keeps for the copy, such as a `CKRecord`'s archived system fields for a
+    /// shared or encrypted record. The container stores it and hands it back, untouched, with the next upload.
     public var systemFields: Data?
 
-    public init(synced: Date? = nil, owner: String? = nil, systemFields: Data? = nil) {
-        self.synced = synced
-        self.owner = owner
+    public init(
+        changeTag: String? = nil, created: Date? = nil, modified: Date? = nil, creator: String? = nil,
+        lastModifier: String? = nil, systemFields: Data? = nil
+    ) {
+        self.changeTag = changeTag
+        self.created = created
+        self.modified = modified
+        self.creator = creator
+        self.lastModifier = lastModifier
         self.systemFields = systemFields
     }
 }
 
 /// What happened to one uploaded change.
 public enum UploadResult: Sendable, Hashable {
-    /// Accepted. The server stamped this date. `systemFields` is the provider's new bookkeeping for the
-    /// saved copy, such as a `CKRecord`'s archived system fields, which goes back with the next upload.
-    case synced(id: UUID, at: Date, systemFields: Data? = nil)
+    /// Accepted, with the server's metadata for the saved copy: its new `changeTag` and dates. It goes back
+    /// with the record's next upload.
+    case saved(id: UUID, metadata: SyncMetadata)
     /// The server holds a newer copy, which may be a deletion. The container merges it and uploads again.
     case conflict(RecordChangeData)
     /// Refused for good, such as a record too large or one owned by someone else.
@@ -189,7 +197,7 @@ public enum UploadResult: Sendable, Hashable {
 /// A page of a zone's changes from the server.
 public struct RecordDownload: Sendable, Hashable {
     public var changes: [RecordChangeData]
-    /// Where the next download starts. A server that stamps `synced` dates can simply encode the newest one.
+    /// Where the next download starts, such as a `CKServerChangeToken` or the newest `modified` date.
     public var cursor: Data?
     /// Whether more changes are waiting after this page.
     public var hasMore: Bool

@@ -38,14 +38,21 @@ final class BenchmarkServer: SyncProvider, @unchecked Sendable {
         return lock.withLock {
             changes.map { change in
                 let key = "\(change.zone)|\(change.type)|\(change.id)"
-                if !change.isDeletion, let current = latest[key]?.change, current.synced != change.synced {
+                let current = latest[key]?.change
+                if !change.isDeletion, let current, current.metadata.changeTag != change.metadata.changeTag {
                     return .conflict(current)
                 }
+                // The metadata CloudKit hands back for a saved record.
                 let sequence = log.count + 1
                 let date = Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
-                latest[key] = (change.syncing(at: date), sequence)
+                var stored = change
+                stored.metadata = SyncMetadata(
+                    changeTag: String(sequence), created: current?.metadata.created ?? date, modified: date,
+                    creator: current?.metadata.creator ?? "benchmark", lastModifier: "benchmark"
+                )
+                latest[key] = (stored, sequence)
                 log.append((key, sequence))
-                return .synced(id: change.id, at: date)
+                return .saved(id: change.id, metadata: stored.metadata)
             }
         }
     }

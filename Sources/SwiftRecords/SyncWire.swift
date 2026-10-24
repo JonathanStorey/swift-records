@@ -1,11 +1,7 @@
 import Foundation
 
-/// Plain JSON for values that decode as a property's type, with dates in milliseconds.
+/// Plain JSON with dates in milliseconds, as CloudKit keeps them.
 enum WireJSON {
-    /// The key a public record's owner is kept under in the container's own copy of its fields. It crosses
-    /// as `SyncMetadata`'s `owner`, never among the fields.
-    static let ownerKey = "_owner"
-
     static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
@@ -23,14 +19,13 @@ enum WireJSON {
 // MARK: - Records to and from the wire
 
 extension RecordStore {
-    /// The change to upload for a pending record. `owner` is used when the record has none of its own yet.
+    /// The change to upload for a pending record. In a public zone, `owner` is its creator when the server
+    /// hasn't named one yet.
     func change(for record: SyncRecord, zone: Zone, owner: String?) throws -> RecordChangeData {
-        var metadata = SyncMetadata(synced: SyncedTag.date(record.tag), owner: owner, systemFields: record.systemFields)
-        guard var fields = record.fields else {
+        var metadata = record.metadata
+        if metadata.creator == nil { metadata.creator = owner }
+        guard let fields = record.fields else {
             return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: nil, metadata: metadata)
-        }
-        if case .string(let stored)? = fields.removeValue(forKey: WireJSON.ownerKey) {
-            metadata.owner = stored
         }
         let values = try registered[record.type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
         return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, metadata: metadata)
@@ -39,19 +34,11 @@ extension RecordStore {
     /// The container's typed copy of a change from the server. Throws `incompatibleRecord` when its type
     /// isn't registered or a value doesn't fit its property.
     func syncRecord(from change: RecordChangeData) throws -> SyncRecord {
-        var record = SyncRecord(type: change.type, id: change.id, fields: nil, tag: SyncedTag.data(change.synced))
-        record.systemFields = change.metadata.systemFields
-        guard var values = change.fields else { return record }
+        var record = SyncRecord(type: change.type, id: change.id, fields: nil, metadata: change.metadata)
+        guard let values = change.fields else { return record }
         guard let type = registered[change.type] else { throw RecordsError.incompatibleRecord(type: change.type, id: change.id) }
         do {
-            // The copy dates from when the server accepted it.
-            record.modified = change.synced
-            values[WireJSON.ownerKey] = nil
-            var fields = try syncFields(type, values: values)
-            if let owner = change.metadata.owner {
-                fields[WireJSON.ownerKey] = .string(owner)
-            }
-            record.fields = fields
+            record.fields = try syncFields(type, values: values)
             return record
         } catch {
             throw RecordsError.incompatibleRecord(type: change.type, id: change.id)

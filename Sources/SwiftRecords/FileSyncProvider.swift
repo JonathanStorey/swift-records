@@ -15,7 +15,7 @@ import Foundation
 /// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder,
 /// and anywhere else the folder is checked every `watchInterval`. When iCloud keeps two versions of a
 /// record file because devices wrote it at once, `NSFileVersion` settles them: the copy with the later
-/// `synced` date stays, as a whole record.
+/// `modified` date stays, as a whole record.
 ///
 /// iCloud needs the iCloud capability with iCloud Documents turned on. While the person is signed out of
 /// iCloud, the container reports `signedOut`.
@@ -130,12 +130,18 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
             try changes.map { change in
                 let file = Self.recordFile(change.type, change.id, in: root.appendingPathComponent(change.zone.name))
                 let current = try Self.read(file)
-                if !change.isDeletion, let current, current.synced.map(Self.milliseconds) != change.synced.map(Self.milliseconds) {
+                if !change.isDeletion, let current, current.metadata.changeTag != change.metadata.changeTag {
                     return .conflict(current)
                 }
-                let stamp = Self.stamp(after: current?.synced)
-                try Self.write(change.syncing(at: stamp), to: file)
-                return .synced(id: change.id, at: stamp)
+                // Each save gets a strictly later date, and its milliseconds are the new tag.
+                let stamp = Self.stamp(after: current?.metadata.modified)
+                var stored = change
+                stored.metadata.changeTag = String(Self.milliseconds(stamp))
+                stored.metadata.modified = stamp
+                stored.metadata.created = current?.metadata.created ?? stamp
+                stored.metadata.creator = current?.metadata.creator ?? change.metadata.creator
+                try Self.write(stored, to: file)
+                return .saved(id: change.id, metadata: stored.metadata)
             }
         }
     }
@@ -150,16 +156,18 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         state.epoch = epoch
         var found: [(key: String, change: RecordChangeData)] = []
         for file in Self.recordFiles(in: folder) {
-            guard let change = try? Self.read(file), let synced = change.synced else { continue }
+            guard let change = try? Self.read(file), let tag = change.metadata.changeTag else { continue }
             let key = "\(change.type)/\(change.id)"
-            if state.seen[key] != Self.milliseconds(synced) {
+            if state.seen[key] != tag {
                 found.append((key, change))
             }
         }
-        found.sort { ($0.change.synced ?? .distantPast, $0.key) < ($1.change.synced ?? .distantPast, $1.key) }
+        found.sort {
+            ($0.change.metadata.modified ?? .distantPast, $0.key) < ($1.change.metadata.modified ?? .distantPast, $1.key)
+        }
         let page = found.prefix(Self.pageSize)
         for (key, change) in page {
-            state.seen[key] = change.synced.map(Self.milliseconds)
+            state.seen[key] = change.metadata.changeTag
         }
         return RecordDownload(
             changes: page.map { $0.change }, cursor: try JSONEncoder().encode(state), hasMore: found.count > page.count
@@ -307,7 +315,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     // MARK: Conflicting versions
 
     /// Settles the versions iCloud kept when devices wrote a record file at once. The copy with the later
-    /// `synced` date stays.
+    /// `modified` date stays.
     private static func resolveConflicts(at file: URL) {
         #if canImport(Darwin)
         guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: file), !conflicts.isEmpty else { return }
@@ -326,12 +334,12 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         #endif
     }
 
-    /// The index of the copy to keep: the latest `synced` date, and the first of any tie.
+    /// The index of the copy to keep: the latest `modified` date, and the first of any tie.
     static func newest(_ copies: [RecordChangeData?]) -> Int {
         var best = 0
         var bestDate = Int64.min
         for (index, copy) in copies.enumerated() {
-            let date = copy?.synced.map(Self.milliseconds) ?? Int64.min
+            let date = copy?.metadata.modified.map(Self.milliseconds) ?? Int64.min
             if date > bestDate {
                 best = index
                 bestDate = date
@@ -346,10 +354,10 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     private static let assetsFolder = "_assets"
     private static let epochFile = "_zone.json"
 
-    /// Every record file seen, by type and ID, with the `synced` date it was seen at in milliseconds.
+    /// Every record file seen, by type and ID, with the change tag it was seen at.
     private struct Cursor: Codable {
         var epoch: String?
-        var seen: [String: Int64] = [:]
+        var seen: [String: String] = [:]
     }
 
     private func root() throws -> URL {
@@ -437,13 +445,17 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         return try decode(try coordinatedData(at: file))
     }
 
-    /// A record file: the change, with dates as milliseconds since 1970.
+    /// A record file: the change, with its metadata named as a `CKRecord`'s system fields are and dates as
+    /// milliseconds since 1970.
     private struct RecordFile: Codable {
         var id: UUID
         var zone: Zone
         var type: String
-        var owner: String?
-        var synced: Int64?
+        var changeTag: String?
+        var created: Int64?
+        var modified: Int64?
+        var creator: String?
+        var lastModifier: String?
         var record: [String: RecordValue]?
     }
 
@@ -462,16 +474,19 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     static func decode(_ data: Data) throws -> RecordChangeData {
         let file = try fileDecoder.decode(RecordFile.self, from: data)
-        return RecordChangeData(
-            id: file.id, zone: file.zone, type: file.type, fields: file.record,
-            metadata: SyncMetadata(synced: file.synced.map { date(milliseconds: $0) }, owner: file.owner)
+        let metadata = SyncMetadata(
+            // A hand-written file may carry only its date, which then serves as its tag.
+            changeTag: file.changeTag ?? file.modified.map { String($0) }, created: file.created.map { date(milliseconds: $0) },
+            modified: file.modified.map { date(milliseconds: $0) }, creator: file.creator, lastModifier: file.lastModifier
         )
+        return RecordChangeData(id: file.id, zone: file.zone, type: file.type, fields: file.record, metadata: metadata)
     }
 
     private static func write(_ change: RecordChangeData, to file: URL) throws {
         let data = try fileEncoder.encode(RecordFile(
-            id: change.id, zone: change.zone, type: change.type, owner: change.metadata.owner,
-            synced: change.synced.map(milliseconds), record: change.fields
+            id: change.id, zone: change.zone, type: change.type, changeTag: change.metadata.changeTag,
+            created: change.metadata.created.map(milliseconds), modified: change.metadata.modified.map(milliseconds),
+            creator: change.metadata.creator, lastModifier: change.metadata.lastModifier, record: change.fields
         ))
         try mapping {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)

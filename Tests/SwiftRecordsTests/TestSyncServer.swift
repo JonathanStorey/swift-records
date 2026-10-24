@@ -19,7 +19,7 @@ final class TestServer: @unchecked Sendable {
     var isOnline = true
     var isFull = false
     var rejectedTypes: Set<String> = []
-    /// Zones every account shares. Only a record's owner can change it.
+    /// Zones every account shares. Only a record's creator can change it.
     var publicZones: Set<Zone> = []
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
@@ -47,32 +47,36 @@ final class TestServer: @unchecked Sendable {
         withLock {
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
-            if !change.isDeletion, let current, current.synced != change.synced {
+            if !change.isDeletion, let current, current.metadata.changeTag != change.metadata.changeTag {
                 return .conflict(current)
             }
-            var stored = change
-            if publicZones.contains(change.zone) {
-                if let owner = current?.metadata.owner, owner != user {
-                    return .rejected(id: change.id)
-                }
-                // The server, not the device, decides who owns a new record.
-                stored.metadata.owner = current?.metadata.owner ?? user
+            // The server, not the device, decides who created a record, and in a public zone only they can change it.
+            let creator = current?.metadata.creator ?? user
+            if publicZones.contains(change.zone), creator != user {
+                return .rejected(id: change.id)
             }
             sequence += 1
             let date = Self.date(sequence)
-            // Like a change tag, the server's own bookkeeping for this copy.
-            stored.metadata.systemFields = Data("copy \(sequence)".utf8)
-            latest[storageKey] = (stored.syncing(at: date), sequence)
-            return .synced(id: change.id, at: date, systemFields: stored.metadata.systemFields)
+            var stored = change
+            stored.metadata = SyncMetadata(
+                changeTag: "tag \(sequence)", created: current?.metadata.created ?? date, modified: date, creator: creator,
+                lastModifier: user,
+                // Bookkeeping of the server's own, which the container hands back untouched.
+                systemFields: Data("copy \(sequence)".utf8)
+            )
+            latest[storageKey] = (stored, sequence)
+            return .saved(id: change.id, metadata: stored.metadata)
         }
     }
 
     /// Stores a record as if another device had saved it.
     func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, fields: [String: RecordValue]) {
-        let change = RecordChangeData(id: id, zone: zone, type: type, fields: fields)
         withLock {
             sequence += 1
-            latest[key(zone, type, id, account: account)] = (change.syncing(at: Self.date(sequence)), sequence)
+            let date = Self.date(sequence)
+            let metadata = SyncMetadata(changeTag: "tag \(sequence)", created: date, modified: date, creator: account, lastModifier: account)
+            let change = RecordChangeData(id: id, zone: zone, type: type, fields: fields, metadata: metadata)
+            latest[key(zone, type, id, account: account)] = (change, sequence)
         }
     }
 

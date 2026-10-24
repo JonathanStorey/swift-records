@@ -238,9 +238,9 @@ actor SyncCoordinator {
             try store.transaction {
                 for result in results {
                     switch result {
-                    case .synced(let id, let date, let systemFields):
+                    case .saved(let id, let metadata):
                         guard let entry = batch[id], answered.insert(id).inserted else { continue }
-                        try store.acknowledge(entry.change, sent: entry.fields, synced: date, systemFields: systemFields)
+                        try store.acknowledge(entry.change, sent: entry.fields, metadata: metadata)
                     case .conflict(let server):
                         guard batch[server.id] != nil, answered.insert(server.id).inserted else { continue }
                         conflicts.append(server)
