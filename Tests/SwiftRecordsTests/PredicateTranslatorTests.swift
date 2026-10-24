@@ -3,6 +3,17 @@ import Foundation
 import Testing
 
 @Suite struct PredicateTranslatorTests {
+    @Test func fingerprintsMatchTheSameFilterWithTheSameValues() {
+        func atLeast(_ minimum: Int) -> Predicate<ToDo> { #Predicate { $0.priority >= minimum } }
+        func titled(_ title: String) -> Predicate<ToDo> { #Predicate { $0.title == title && !$0.done } }
+        #expect(PredicateFingerprint.of(atLeast(2)) == PredicateFingerprint.of(atLeast(2)))
+        #expect(PredicateFingerprint.of(atLeast(2)) != PredicateFingerprint.of(atLeast(3)))
+        #expect(PredicateFingerprint.of(titled("A")) == PredicateFingerprint.of(titled("A")))
+        #expect(PredicateFingerprint.of(titled("A")) != PredicateFingerprint.of(titled("B")))
+        let fewer: Predicate<ToDo> = #Predicate { $0.priority <= 2 }
+        #expect(PredicateFingerprint.of(atLeast(2)) != PredicateFingerprint.of(fewer))
+    }
+
     @Test func translatesContainsOnAnInverse() throws {
         let id = UUID()
         let clause = try PredicateTranslator.translate(#Predicate<Note> { $0.todos.contains(id) })

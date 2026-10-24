@@ -80,6 +80,15 @@ private func makeLists() -> [RecipeList] {
         #expect(page.key != first.key)
     }
 
+    @Test func aChangedFilterFetchesAgain() {
+        func search(_ text: String) -> Records<[ToDo]>.Query {
+            .list(RecordDescriptor(predicate: #Predicate<ToDo> { $0.title == text }))
+        }
+        // A view's body builds its query again each time, so only a different filter changes the key.
+        #expect(search("Milk").key == search("Milk").key)
+        #expect(search("Milk").key != search("Eggs").key)
+    }
+
     @Test func unsavedAppendsShowInEveryForm() throws {
         let context = container.mainContext
         context.autosaveEnabled = false

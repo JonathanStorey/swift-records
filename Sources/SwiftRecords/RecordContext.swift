@@ -50,7 +50,9 @@ public final class RecordContext {
     /// by `save()`, by every fetch, and when the app moves to the background.
     public var autosaveDelay: Duration = .milliseconds(500)
 
-    /// The error from the most recent autosave, if it failed. A failed autosave discards its changes.
+    /// The error from the most recent autosave, if it failed. A failed autosave discards its changes, unless
+    /// the failure can pass, such as a full disk or another process holding the file. Then they stay pending
+    /// and the context tries again after a second, waiting twice as long each time up to a minute.
     public private(set) var lastSaveError: Error?
 
     /// Where this context's changes stand, locally and, with a sync provider, on the server.
@@ -337,7 +339,7 @@ public final class RecordContext {
         }
         let container = container
         let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
-        try finish(batch, result, keepingFailures: true)
+        try finish(batch, result, keepingFailures: { _ in true })
     }
 
     /// Commits every pending change off the main actor, so the interface keeps running
@@ -347,7 +349,7 @@ public final class RecordContext {
     /// synchronous `save()` only commits, for moments that can't wait, and its changes go with the next send.
     public func save() async throws {
         if let batch = takePending() {
-            try await commit(batch, keepingFailures: true)
+            try await commit(batch, keepingFailures: { _ in true })
         } else {
             try await onWriter {}
         }
@@ -423,7 +425,7 @@ public final class RecordContext {
         return Batch(taken: taken, changes: changes)
     }
 
-    private func commit(_ batch: Batch, keepingFailures: Bool) async throws {
+    private func commit(_ batch: Batch, keepingFailures: @escaping (Error) -> Bool) async throws {
         savesInFlight += 1
         let container = container
         let changes = batch.changes
@@ -462,7 +464,7 @@ public final class RecordContext {
         return Commit(bases: bases, changedStructure: changedStructure)
     }
 
-    private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: Bool) throws {
+    private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: (Error) -> Bool) throws {
         for (key, change) in batch.taken where inFlight[key]?.sequence == change.sequence {
             inFlight[key] = nil
         }
@@ -473,7 +475,7 @@ public final class RecordContext {
         } catch {
             saveFailure = (error as? RecordsError) ?? .database(code: -1, message: "\(error)")
             updateStatus()
-            if keepingFailures {
+            if keepingFailures(error) {
                 pending = batch.taken.merging(pending) { _, newer in newer }
             } else {
                 // Views may show edits that were never stored.
@@ -543,9 +545,11 @@ public final class RecordContext {
         }
     }
 
-    /// The record as this context holds it: its pending change if it has one, otherwise the stored copy.
+    /// The record as this context holds it: its unsaved change if it has one, including one a save is
+    /// committing now, otherwise the stored copy.
     func current<R: Record>(_ type: R.Type, id: R.ID, in zone: Zone) throws -> Latest? {
-        if let latest = pending[Self.key(type, id: id, in: zone)]?.latest {
+        let key = Self.key(type, id: id, in: zone)
+        if let latest = (pending[key] ?? inFlight[key])?.latest {
             return latest
         }
         return try storage(for: zone).fetch(type, id: id).map { .saved($0) }
@@ -693,9 +697,12 @@ public final class RecordContext {
         )
         // Views show unsaved changes at once.
         notifyHandlers()
+        scheduleAutosave(after: autosaveDelay)
+    }
+
+    private func scheduleAutosave(after delay: Duration) {
         guard autosaveEnabled else { return }
         autosaveTask?.cancel()
-        let delay = autosaveDelay
         autosaveTask = Task { @MainActor [weak self] in
             if delay > .zero {
                 try? await Task.sleep(for: delay)
@@ -707,8 +714,32 @@ public final class RecordContext {
         }
     }
 
-    // Nobody can fix and retry an autosave, and a change that always fails would block every later save,
-    // so a failed autosave discards its changes and views show what is stored.
+    // Nobody can fix an autosave, and a change that always fails would block every later save, so a
+    // failed autosave discards its changes and views show what is stored. A failure that can pass, such
+    // as a full disk or another process holding the file, keeps them and tries again later instead.
+
+    /// How long until an autosave that failed for a passing reason tries again. It doubles with each
+    /// failure, up to a minute, and resets once a save succeeds.
+    @ObservationIgnored private var autosaveRetryDelay: Duration = .zero
+
+    /// Whether a save that failed this way may succeed later without anything changing.
+    static func isTransient(_ error: Error) -> Bool {
+        guard case .database(let code, _)? = error as? RecordsError else { return false }
+        // SQLITE_BUSY, LOCKED, READONLY, IOERR, FULL and CANTOPEN, including their extended codes.
+        return [5, 6, 8, 10, 13, 14].contains(code & 0xFF)
+    }
+
+    private func autosaveSucceeded() {
+        lastSaveError = nil
+        autosaveRetryDelay = .zero
+    }
+
+    private func autosaveFailed(_ error: Error) {
+        lastSaveError = error
+        guard Self.isTransient(error) else { return }
+        autosaveRetryDelay = min(max(autosaveRetryDelay * 2, .seconds(1)), .seconds(60))
+        scheduleAutosave(after: autosaveRetryDelay)
+    }
 
     /// Saves before the app leaves the foreground, which can't wait for an async save.
     private func autosave() {
@@ -716,20 +747,20 @@ public final class RecordContext {
         let container = container
         let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
         do {
-            try finish(batch, result, keepingFailures: false)
-            lastSaveError = nil
+            try finish(batch, result, keepingFailures: Self.isTransient)
+            autosaveSucceeded()
         } catch {
-            lastSaveError = error
+            autosaveFailed(error)
         }
     }
 
     private func autosaveInBackground() async {
         guard autosaveEnabled, let batch = takePending() else { return }
         do {
-            try await commit(batch, keepingFailures: false)
-            lastSaveError = nil
+            try await commit(batch, keepingFailures: Self.isTransient)
+            autosaveSucceeded()
         } catch {
-            lastSaveError = error
+            autosaveFailed(error)
         }
         await send()
     }

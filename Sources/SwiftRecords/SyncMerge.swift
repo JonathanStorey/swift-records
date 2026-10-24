@@ -1,5 +1,12 @@
 import Foundation
 
+extension MergePolicy {
+    /// What settles a clash: the policy itself, or the one `mergeProperties` falls back to.
+    var clashPolicy: MergePolicy {
+        if case .mergeProperties(let otherwise) = self { otherwise.clashPolicy } else { self }
+    }
+}
+
 /// Settles a conflict between a record's unsent local edit and the server's copy.
 enum SyncMerge {
     /// Merges two copies of a record's fields. With `base`, the values both last synced from, a property

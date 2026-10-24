@@ -972,6 +972,10 @@ final class RecordStore: @unchecked Sendable {
     /// columns, join tables and asset entries take the new name, and indexed columns get an index.
     func prepare<R: Record>(_ type: R.Type) throws {
         guard !prepared.contains(ObjectIdentifier(R.self)), tableExists(R.table) else { return }
+        // Every list sorts by stored order and every insert reads the highest position, so both use an index.
+        try db.execute(
+            "CREATE INDEX IF NOT EXISTS \(quoted(R.table + "._position")) ON \(quoted(R.table)) (\"_position\", \"id\")"
+        )
         for field in R.schema.fields {
             for old in field.previousNames {
                 try rename(field: old, to: field.name, in: R.table)

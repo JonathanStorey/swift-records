@@ -123,21 +123,35 @@ final class SQLiteDatabase {
         }
     }
 
-    /// Runs `body` in a savepoint so calls can nest. Rolls back if `body` throws.
+    /// Runs `body` in a transaction, or in a savepoint inside one so calls can nest. Rolls back if `body` throws.
+    ///
+    /// The outermost level takes the write lock up front. A deferred transaction that reads before it
+    /// writes fails at once with `SQLITE_BUSY` when another process, such as a widget, commits in between,
+    /// and the busy timeout can't help it. Taking the lock first lets the timeout wait the other write out.
     func transaction<T>(_ body: () throws -> T) throws -> T {
         savepointDepth += 1
+        let outermost = savepointDepth == 1
         let name = "records_\(savepointDepth)"
         defer { savepointDepth -= 1 }
-        try execute("SAVEPOINT \(name)")
+        try execute(outermost ? "BEGIN IMMEDIATE" : "SAVEPOINT \(name)")
         do {
             let result = try body()
-            try execute("RELEASE \(name)")
+            try execute(outermost ? "COMMIT" : "RELEASE \(name)")
             return result
         } catch {
-            try? execute("ROLLBACK TO \(name)")
-            try? execute("RELEASE \(name)")
+            if outermost {
+                try? execute("ROLLBACK")
+            } else {
+                try? execute("ROLLBACK TO \(name)")
+                try? execute("RELEASE \(name)")
+            }
             throw error
         }
+    }
+
+    /// How long a statement waits for another connection's lock before failing with `SQLITE_BUSY`.
+    func setBusyTimeout(_ milliseconds: Int32) {
+        sqlite3_busy_timeout(handle, milliseconds)
     }
 
     private func value(_ statement: OpaquePointer?, _ column: Int32) -> SQLiteValue {
