@@ -184,7 +184,7 @@ import CloudKit
         recipe.photo = Data([1, 2, 3])
         let custom = CKRecordZone.ID(zoneName: "recipes", ownerName: CKCurrentUserDefaultName)
 
-        let record = try CKRecordEncoder(zone: "recipes").encode(recipe)
+        let record = try CKRecordEncoder().encode(recipe, zone: "recipes")
         #expect(record.recordID == CKRecord.ID(recordName: recipe.id.uuidString, zoneID: custom))
         #expect(record.recordType == "SyncRecipe")
         #expect(record.recordChangeTag == nil)
@@ -250,7 +250,7 @@ import CloudKit
 
     @Test func zonesThatNeverSyncThrow() {
         for zone in [Zone.inMemory, .localOnly] {
-            #expect(throws: RecordsError.unsyncedZone(zone)) { try CKRecordEncoder(zone: zone).encode(SyncRecipe(title: "Soup")) }
+            #expect(throws: RecordsError.unsyncedZone(zone)) { try CKRecordEncoder().encode(SyncRecipe(title: "Soup"), zone: zone) }
         }
     }
 }

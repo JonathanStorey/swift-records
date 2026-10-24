@@ -472,7 +472,7 @@ no sync metadata, so the result is a new record with no change tag. It maps fiel
 
 ```swift
 let record = try CKRecordEncoder().encode(recipe)                     // CloudKit's default zone
-let other = try CKRecordEncoder(zone: "recipes").encode(recipe)        // the CloudKit zone "recipes"
+let other = try CKRecordEncoder().encode(recipe, zone: "recipes")       // the CloudKit zone "recipes"
 let update = try CKRecordEncoder().encode(recipe, systemFields: archived) // on top of the server's last copy
 ```
 
