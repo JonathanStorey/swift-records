@@ -71,6 +71,9 @@ with `rollback()`. A failed autosave sets `lastSaveError`. If the failure can pa
 or a widget writing at the same moment, its changes stay pending and autosave tries again after a
 second, then two, up to a minute. Otherwise it rolls back, since retrying would fail the same way.
 Every error the library throws is a `RecordsError`, such as `.invalidValue(type:property:)` for a NaN.
+A stored record that no longer decodes, such as after a property changed type, is left out of fetches
+rather than failing them, and `status` shows `.failed(.incompatibleRecord(type:id:))` until it decodes
+again or is deleted.
 
 `context.status` says where changes stand: `saving`, `saved` or `failed(_:)` for a local container, plus
 `syncing`, `offline` and `signedOut` with a sync provider. It is observable, so a view can show it.
@@ -171,7 +174,8 @@ let greeted = try context.fetch(ToDo.self, where: #Predicate { todo in
 })
 ```
 
-Anything else is evaluated in memory, so every predicate works.
+Anything else is evaluated in memory, so every predicate works. When only some of a predicate's `&&`
+terms translate, those run as SQL to narrow the rows and only the rest is checked in memory.
 
 ## Changing a record type
 
