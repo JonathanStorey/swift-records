@@ -58,6 +58,18 @@ private struct ToDoDetail: View {
     }
 }
 
+/// A default value makes a new record, which its first edit inserts.
+@MainActor
+private struct NewToDo: View {
+    @Recordable var todo = ToDo(title: "")
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Button("Another") { $todo.reset() }.disabled($todo.isNew)
+        Button("Undo") { $todo.rollback() }
+    }
+}
+
 @MainActor
 private struct ToDoRow: View {
     @Binding var todo: ToDo

@@ -380,6 +380,19 @@ public final class RecordContext {
         didChange()
     }
 
+    /// Drops the pending changes from one source, such as one `@Recordable` view, and refreshes views.
+    func rollback(source: ObjectIdentifier) {
+        let count = pending.count
+        pending = pending.filter { $0.value.source != source }
+        guard pending.count != count else { return }
+        if pending.isEmpty {
+            autosaveTask?.cancel()
+            autosaveTask = nil
+        }
+        lastSaveSource = nil
+        didChange()
+    }
+
     /// Drops one zone's pending changes, before its data is deleted.
     func rollback(in zone: Zone) {
         pending = pending.filter { $0.value.zone != zone }

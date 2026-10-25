@@ -20,6 +20,9 @@ import SwiftUI
 /// container's `mainContext`, which saves them once edits pause. Changes from other views, background work
 /// or sync show up at once.
 ///
+/// A record the store hasn't seen, such as `@Recordable var todo = ToDo()` in a form for a new one, is new
+/// until its first edit inserts it, and `$todo.reset()` starts another.
+///
 /// It follows the context's `zone`. To pin one, initialize the wrapper in the view's initializer:
 /// `_todo = Recordable(wrappedValue: todo, "pantry")`. Once the record is deleted, `todo` keeps its last
 /// value, `$todo.isDeleted` turns true, and edits are ignored, so a late keystroke can't bring it back.
@@ -31,16 +34,20 @@ public struct Recordable<R: Record>: DynamicProperty {
     @State private var cache: Cache
 
     private let initial: R
+    /// Makes the default value again, for `reset()`.
+    private let makeInitial: @MainActor () -> R
     private let zone: ZoneChoice
     private let animation: Animation?
 
     /// Tracks the record, in the context's zone unless you pass one. Changes animate with the default
     /// animation unless you pass another, or `nil` for none.
-    public init(wrappedValue: R, _ zone: Zone? = nil, animation: Animation? = .default) {
-        initial = wrappedValue
+    public init(wrappedValue: @autoclosure @escaping @MainActor () -> R, _ zone: Zone? = nil, animation: Animation? = .default) {
+        let initial = wrappedValue()
+        self.initial = initial
+        makeInitial = wrappedValue
         self.zone = ZoneChoice(zone)
         self.animation = animation
-        _cache = State(initialValue: Cache(wrappedValue))
+        _cache = State(initialValue: Cache(initial))
     }
 
     /// The record as the context holds it, with unsaved edits. Setting it writes through the context.
@@ -82,6 +89,12 @@ public struct Recordable<R: Record>: DynamicProperty {
         return cache.tracker.isDeleted
     }
 
+    /// Whether the record hasn't been inserted yet. Its first edit inserts it.
+    public var isNew: Bool {
+        _ = value
+        return cache.tracker.isNew
+    }
+
     /// Whether edits made through this wrapper are still waiting to save.
     public var hasChanges: Bool {
         guard let context else { return false }
@@ -93,6 +106,21 @@ public struct Recordable<R: Record>: DynamicProperty {
     public func delete() {
         guard let context else { return }
         cache.tracker.delete(context: context, zone: zone.zone(in: context))
+        withAnimation(animation) { cache.version += 1 }
+    }
+
+    /// Drops the edits and delete made through this wrapper that haven't saved yet, leaving the context's
+    /// other changes alone. A new record that hasn't saved goes back to new.
+    public func rollback() {
+        guard let context else { return }
+        cache.tracker.rollback(context: context, zone: zone.zone(in: context))
+        withAnimation(animation) { cache.version += 1 }
+    }
+
+    /// Starts over with a new record, the wrapper's default value made fresh, such as for "Add Another". The
+    /// previous record stays as it was.
+    public func reset() {
+        cache.tracker.reset(to: makeInitial())
         withAnimation(animation) { cache.version += 1 }
     }
 

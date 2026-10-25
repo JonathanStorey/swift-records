@@ -669,8 +669,26 @@ struct ToDoDetail: View {
 context like `@Records` edits, and changes from other views, background work or sync show at once. It reads
 the record by primary key only after a commit it didn't make, so its own typing costs no fetches. Once the
 record is deleted, `todo` keeps its last value, `$todo.isDeleted` turns true, and edits are ignored so a late
-keystroke can't bring it back. `$todo.hasChanges`, `$todo.save()` and `$todo.binding`, the whole record as
-a `Binding<ToDo>`, round it out. It follows `context.zone`. To pin a zone, set it in the view's initializer:
+keystroke can't bring it back. `$todo.hasChanges`, `$todo.save()`, `$todo.rollback()`, which drops only this
+wrapper's unsaved edits, and `$todo.binding`, the whole record as a `Binding<ToDo>`, round it out.
+
+A form for a new record gives the wrapper a default value. The record is new until its first edit inserts
+it, and from then on it shows live in every `@Records`:
+
+```swift
+struct NewToDo: View {
+    @Recordable var todo = ToDo(title: "")
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Button("Add Another") { $todo.reset() }.disabled($todo.isNew)
+    }
+}
+```
+
+`$todo.isNew` stays true until that first edit, and `$todo.reset()` starts another new record, leaving the
+last one saved. The default value is made again each time the view's parent redraws, so the wrapper keeps
+the record it holds and switches only to a record the store already has. It follows `context.zone`. To pin a zone, set it in the view's initializer:
 `_todo = Recordable(wrappedValue: todo, "pantry")`.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
