@@ -331,7 +331,7 @@ holds only its ID and its properties:
 let meta = try context.metadata(ToDo.self, id: todo.id)
 meta?.version     // goes up once per save that changes the record's values or links
 meta?.modified    // when that save happened
-meta?.tag         // sync bookkeeping: the server's synced date for this copy, if any
+meta?.tag         // sync bookkeeping: the server's change tag for this copy, if any
 ```
 
 Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
@@ -394,22 +394,35 @@ sync metadata, kept apart.
 public struct RecordChangeData {
     var id: UUID, zone: Zone, type: String
     var fields: [String: RecordValue]?     // nil for a deletion
-    var metadata: SyncMetadata             // synced date, public owner, provider's system fields
+    var tag: Data?                         // the server's own data for this copy, read only by the provider
+    var synced: Date?                      // when the server saved it, if it says
 }
 ```
 
 Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.bytes`, the lists
 `.strings`, `.ints`, `.doubles` and `.dates`, `.reference(id, action:)` for a child's parent, and
 `.asset(id)` for an asset's file ID. Relationships are `.strings` of record names. Any other `Codable`
-value travels as its JSON in `.bytes`. Nothing else is added. The server stamps every accepted change
-with a strictly later `synced` date and returns it as `.synced(id:at:systemFields:)`. An upload carries
-the date of the copy it was edited from, and a server whose copy is newer answers `.conflict` with that
-copy, which the container merges and sends again. A server can use the newest `synced` date as its
-download cursor. Throw `SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
+value travels as its JSON in `.bytes`. Nothing else is added.
 
-`metadata.systemFields` is the provider's own bookkeeping, such as a `CKRecord`'s archived system fields.
-The container stores it with the record, outside the struct, and hands it back untouched with the
-record's next upload. It comes from `.synced(id:at:systemFields:)` or from a downloaded change.
+The container stays local first. It keeps its own creation and modification times, and it treats
+`tag` as opaque: it stores it with the record, outside the struct, and hands it back with the record's
+next upload. Only the provider reads it, so each server keeps whatever lets it version a record, the way
+an HTTP ETag works:
+
+| Provider | Its tag |
+| --- | --- |
+| CloudKit | the record's archived system fields, which carry its `recordChangeTag` |
+| MongoDB | a version number kept in the document |
+| Firestore | the document's `updateTime` |
+| `FileSyncProvider` | the time of the save in milliseconds |
+
+A server that versions records accepts a save only when its tag matches the server's copy, and
+otherwise answers `.conflict` with that copy, which the container merges and sends again. A save that
+works returns `.saved(id:tag:synced:)`. A server without tags returns none and every save overwrites.
+`synced` is optional: when a server gives one, `@Timestamp(.synced)` shows it, and otherwise it shows
+when this device heard the save went through. A provider's tags never reach another provider, because
+changing a zone's provider `identifier` clears them and uploads everything again. Throw
+`SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
 
 A provider that hears about changes, such as from push notifications, returns a stream from
 `pushedChanges()`. The container downloads each zone the stream names, so views update without a
@@ -428,7 +441,7 @@ if let progress = context.assetProgress {
 }
 ```
 
-`publicZones` names zones everyone shares. Their records carry the user who created them as `metadata.owner`,
+`publicZones` names zones everyone shares. The server records who created each record, and that user owns it:
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.
 
@@ -436,13 +449,11 @@ Inverses aren't sent. The container owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
-  item by item, so steps added on two devices both survive. Only a property both sides changed falls
-  to `mergePolicy`, which defaults to the latest edit. A `@Timestamp(.modified)` property dates each copy
-  when the type has one. Otherwise the server's copy dates from when the server accepted it, so an edit
-  made offline counts from when it uploaded. `.serverWins`, `.localWins` and `.latestWins`
-  settle whole records instead.
-- **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`. Under
-  `.mergeProperties(otherwise:)`, its `otherwise` policy decides.
+  item by item, so steps added on two devices both survive. Only a property both sides changed goes to
+  the latest edit, by the copies' `@Timestamp(.modified)` dates, which each device stamps as it saves. A
+  type without one has no edit dates to compare, so the server's copy wins, the same answer on every
+  device.
+- **A delete beats an edit made elsewhere**, whichever side made it.
 - **Arrival order doesn't matter.** A record can arrive before the records it links to, and its links
   appear when they do.
 - **A child's reference decides where it belongs.** If a parent's list and a child's reference
@@ -475,10 +486,10 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | `@Asset` | a `CKAsset` |
 | inverses, `@Timestamp(.synced)` | nothing: they're rebuilt locally |
 
-Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. A change
-whose metadata holds system fields builds on them, so a save carries the server copy's change tag.
-Coming back, `change(from:zone:)` archives the record's system fields into the metadata,
-`modificationDate` is the `synced` date, and in a public zone the creator is the owner. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
+Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Coming
+back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
+`modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
+change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
 `downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
 `deletion(of:type:zone:)`.
 
@@ -492,7 +503,7 @@ let update = try CKRecordEncoder().encode(recipe, systemFields: archived) // on 
 ```
 
 Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, and the result
-carries its change tag so it saves as an update. System fields that name another record, type or zone
+carries its change tag so it saves as an update. A synced change's `tag` is exactly these. System fields that name another record, type or zone
 throw `RecordsError.mismatchedSystemFields`.
 
 A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
@@ -518,7 +529,7 @@ let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in Fil
 | `.other(directory: url)` | Any folder |
 
 Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
-kind, such as `"title":{"string":"Soup"}`, and assets are plain files
+kind, such as `"title":{"string":"Soup"}`, beside its save time, and assets are plain files
 in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
 them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
 can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
@@ -529,7 +540,7 @@ Other devices' changes arrive on their own through `pushedChanges()`. In iCloud 
 watches the folder, including when another device's file finishes downloading. Other folders are
 checked every `watchInterval` (10 seconds by default, `nil` to turn it off). When two devices write a
 record file at once, iCloud keeps both versions, and `NSFileVersion` settles them by keeping the copy
-with the later `synced` date as a whole record.
+with the later `modified` date as a whole record.
 
 ## SwiftUI
 
@@ -630,12 +641,12 @@ Some timings from that run, for 60,000 records:
 | Operation | Time |
 | --- | --- |
 | Import in saves of 500 | 7.1 s |
-| Fetch every recipe with its steps | 2.5 s |
-| Fetch 1,000 recipes by ID | 0.24 s |
+| Fetch every recipe with its steps | 2.4 s |
+| Fetch 1,000 recipes by ID | 0.22 s |
 | Edit and save 1,000 recipes | 0.31 s |
-| Delete 1,000 recipes and their steps | 0.53 s |
-| Upload the whole store | 6.9 s |
-| Download the whole store to a new device | 9.1 s |
+| Delete 1,000 recipes and their steps | 0.52 s |
+| Upload the whole store | 6.1 s |
+| Download the whole store to a new device | 8.9 s |
 | Sync 100 edits from a large store | 14 ms |
 
 ## Requirements

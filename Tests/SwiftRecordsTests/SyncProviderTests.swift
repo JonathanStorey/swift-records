@@ -39,14 +39,14 @@ struct Device {
 
     init(
         _ server: TestServer, directory: URL? = nil, account: String?? = nil, publicZones: Set<Zone> = [],
-        mergePolicy: MergePolicy = .default, onSignOut: AccountPolicy = .keepLocalData,
+        onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData
     ) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
             for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: { _ in provider },
-            publicZones: publicZones, mergePolicy: mergePolicy, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
+            publicZones: publicZones, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -104,7 +104,7 @@ struct Device {
         #expect(server.value("SyncRecipe", recipe.id, "tags") == .strings(["winter"]))
         #expect(server.value("SyncStep", recipe.steps[0].id, "recipe") == .reference(recipe.id, action: .deleteSelf))
         #expect(!server.has("SyncStep", recipe.steps[0].id, "recipes"))
-        #expect(server.record("SyncRecipe", recipe.id)?.synced != nil)
+        #expect(server.record("SyncRecipe", recipe.id)?.tag != nil)
 
         try await tablet.context.refresh()
         let received = try #require(try await tablet.recipes().first)
@@ -217,7 +217,7 @@ struct Device {
         }
     }
 
-    @Test func aTrueClashGoesToTheLatestEdit() async throws {
+    @Test func aClashWithoutEditDatesKeepsTheServersCopy() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Cake")
@@ -230,35 +230,13 @@ struct Device {
         try phone.commit()
         recipe.title = "Carrot cake"
         tablet.context.insert(recipe)
-        try tablet.commit()   // the later edit
+        try tablet.commit()   // the later edit, but the type has no @Timestamp(.modified) to say so
 
         try await phone.context.save()
         try await tablet.context.save()
         try await phone.context.refresh()
-        #expect(try await phone.recipes().map(\.title) == ["Carrot cake"])
-        #expect(try await tablet.recipes().map(\.title) == ["Carrot cake"])
-    }
-
-    @Test func serverWinsDiscardsTheLocalEdit() async throws {
-        let phone = try Device(server)
-        let tablet = try Device(server, mergePolicy: .serverWins)
-        var recipe = SyncRecipe(title: "Salad")
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-
-        recipe.servings = 3
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        recipe.servings = 1
-        recipe.title = "Green salad"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-
-        let result = try #require(try await tablet.recipes().first)
-        #expect(result.title == "Salad")
-        #expect(result.servings == 3)
-        #expect(try tablet.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try await phone.recipes().map(\.title) == ["Lemon cake"])
+        #expect(try await tablet.recipes().map(\.title) == ["Lemon cake"])
     }
 
     @Test func listsMergeItemByItem() async throws {
@@ -334,34 +312,6 @@ struct Device {
         try await tablet.context.save()
         try await phone.context.refresh()
         #expect(try await phone.recipes().isEmpty)
-    }
-
-    @Test func deletesFollowTheMergePolicysChoiceForClashes() async throws {
-        // Under `.mergeProperties(otherwise: .localWins)` a local edit outlives a server delete.
-        let phone = try Device(server)
-        let tablet = try Device(server, mergePolicy: .mergeProperties(otherwise: .localWins))
-        var recipe = SyncRecipe(title: "Pie")
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        phone.context.delete(recipe)
-        try await phone.context.save()
-        recipe.title = "Pear pie"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-        #expect(try await tablet.recipes().map(\.title) == ["Pear pie"])
-        #expect(server.count == 1)
-
-        // Under `.mergeProperties(otherwise: .serverWins)` a server edit undoes a local delete.
-        let laptop = try Device(server, mergePolicy: .mergeProperties(otherwise: .serverWins))
-        try await laptop.context.refresh()
-        laptop.context.delete(recipe)
-        try laptop.commit()
-        recipe.title = "Pear and fig pie"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-        await laptop.download()
-        #expect(try await laptop.recipes().map(\.title) == ["Pear and fig pie"])
     }
 
     // MARK: Arrival order and newer versions
@@ -693,29 +643,71 @@ struct Device {
 @Suite struct SyncedOrderTests {
     let server = TestServer()
 
-    @Test func systemFieldsComeBackWithTheNextUpload() async throws {
+    @Test func tagsComeBackWithTheNextUpload() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Soup")
         phone.context.insert(recipe)
         try await phone.context.save()
-        let first = try #require(server.record("SyncRecipe", recipe.id)?.metadata.systemFields)
+        let first = try #require(server.record("SyncRecipe", recipe.id)?.tag)
 
-        // The device that uploaded keeps what the server answered with.
+        // The device that uploaded keeps the tag the server answered with.
         recipe.title = "Stew"
         phone.context.insert(recipe)
         try await phone.context.save()
-        #expect(phone.provider.sentBatches.last?.first?.metadata.systemFields == first)
+        #expect(phone.provider.sentBatches.last?.first?.tag == first)
 
-        // Another device keeps what arrived with the download.
-        let second = try #require(server.record("SyncRecipe", recipe.id)?.metadata.systemFields)
+        // Another device keeps the tag that arrived with the download.
+        let second = try #require(server.record("SyncRecipe", recipe.id)?.tag)
         try await tablet.context.refresh()
         recipe = try #require(try await tablet.recipes().first)
         recipe.title = "Chili"
         tablet.context.insert(recipe)
         try await tablet.context.save()
-        #expect(tablet.provider.sentBatches.last?.first?.metadata.systemFields == second)
+        #expect(tablet.provider.sentBatches.last?.first?.tag == second)
         #expect(second != first)
+    }
+
+    @Test func serversWithoutTagsOrDatesStillSync() async throws {
+        server.tagsRecords = false
+        server.datesRecords = false
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Soup")
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        #expect(server.record("SyncRecipe", recipe.id)?.tag == nil)
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["Soup"])
+
+        // With nothing to compare, a save simply overwrites.
+        recipe.title = "Stew"
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["Stew"])
+        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+    }
+
+    @Test func aStaleChangeTagIsAConflict() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Soup")
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+
+        recipe.title = "Stew"
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        // The tablet's edit carries the first tag, so the server answers with its newer copy, and the merge goes back.
+        var edited = try #require(try await tablet.recipes().first)
+        edited.servings = 6
+        tablet.context.insert(edited)
+        try await tablet.context.save()
+        #expect(tablet.provider.sentBatches.count == 2)
+        let stored = try #require(server.record("SyncRecipe", recipe.id)?.fields)
+        #expect(stored["title"] == .string("Stew") && stored["servings"] == .int(6))
     }
 
     @Test func datesCrossToTheMillisecond() async throws {
@@ -753,7 +745,7 @@ struct Device {
         var recipe = SyncRecipe(title: "Shared")
         alice.context.insert(recipe)
         try await alice.context.save()
-        #expect(server.record("SyncRecipe", recipe.id)?.metadata.owner == "alice")
+        #expect(server.creator("SyncRecipe", recipe.id) == "alice")
         #expect(!server.has("SyncRecipe", recipe.id, "_owner"))
 
         // Everyone sees it, and only its owner can change it.

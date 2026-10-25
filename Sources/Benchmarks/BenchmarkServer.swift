@@ -38,14 +38,16 @@ final class BenchmarkServer: SyncProvider, @unchecked Sendable {
         return lock.withLock {
             changes.map { change in
                 let key = "\(change.zone)|\(change.type)|\(change.id)"
-                if !change.isDeletion, let current = latest[key]?.change, current.synced != change.synced {
+                if !change.isDeletion, let current = latest[key]?.change, current.tag != change.tag {
                     return .conflict(current)
                 }
                 let sequence = log.count + 1
-                let date = Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
-                latest[key] = (change.syncing(at: date), sequence)
+                var stored = change
+                stored.tag = Data(String(sequence).utf8)
+                stored.synced = Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
+                latest[key] = (stored, sequence)
                 log.append((key, sequence))
-                return .synced(id: change.id, at: date)
+                return .saved(id: change.id, tag: stored.tag, synced: stored.synced)
             }
         }
     }

@@ -11,13 +11,13 @@ extension RecordContainer {
     /// is its own `CKRecord`. A child's `@Reference(to:action:)` is a `CKRecord.Reference` with that action,
     /// and an asset is a `CKAsset` of its file here.
     ///
-    /// When the change's metadata carries the server copy's archived system fields, the record is built on
-    /// them, so it carries the change tag and saves as an update. An asset whose file hasn't downloaded yet
-    /// is left out.
+    /// The change's `tag` is the server copy's archived system fields, as `change(from:zone:)` sets it, and
+    /// the record is built on them, so it carries the change tag and saves as an update. A change with no
+    /// tag is a new record. An asset whose file hasn't downloaded yet is left out.
     public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
         guard let fields = change.fields else { return nil }
         let store = try storage(for: change.zone).store
-        let record = try change.metadata.systemFields.map {
+        let record = try change.tag.map {
             try CKRecordEncoder.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
         } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
         record.fill(fields) { store.assetURL(named: $0) }
@@ -27,9 +27,8 @@ extension RecordContainer {
     /// The change a `CKRecord` from the server stands for, and the asset files it brought. Hand the files
     /// back from `downloadAsset(id:zone:into:)` when the container asks for them by ID.
     ///
-    /// The record's `modificationDate` is its `synced` date, and its archived system fields go in the
-    /// change's metadata, so the next upload of the record carries its change tag. In a public zone its
-    /// creator is its owner.
+    /// The record's archived system fields become the change's `tag`, so the next upload builds on exactly
+    /// the server's copy, and its `modificationDate` is the `synced` date.
     public func change(from record: CKRecord, zone: Zone) throws -> (change: RecordChangeData, assets: [RecordAssetData]) {
         let store = try storage(for: zone).store
         guard let id = UUID(uuidString: record.recordID.recordName) else {
@@ -68,19 +67,17 @@ extension RecordContainer {
                     ? .doubles(numbers.map(\.doubleValue)) : .ints(numbers.map(\.int64Value))
             }
         }
-        let metadata = SyncMetadata(
-            synced: record.modificationDate,
-            owner: publicZones.contains(zone) ? record.creatorUserRecordID?.recordName : nil,
-            systemFields: Self.systemFields(of: record)
+        let change = RecordChangeData(
+            id: id, zone: zone, type: record.recordType, fields: fields, tag: Self.systemFields(of: record), synced: record.modificationDate
         )
-        return (RecordChangeData(id: id, zone: zone, type: record.recordType, fields: fields, metadata: metadata), assets)
+        return (change, assets)
     }
 
     /// The deletion a record the server reports deleted stands for, such as from
     /// `recordWithIDWasDeletedBlock`. Returns `nil` for a record name that isn't a record's ID.
-    public func deletion(of recordID: CKRecord.ID, type: CKRecord.RecordType, zone: Zone, synced: Date? = nil) -> RecordChangeData? {
+    public func deletion(of recordID: CKRecord.ID, type: CKRecord.RecordType, zone: Zone) -> RecordChangeData? {
         guard let id = UUID(uuidString: recordID.recordName) else { return nil }
-        return RecordChangeData(id: id, zone: zone, type: type, fields: nil, metadata: SyncMetadata(synced: synced))
+        return RecordChangeData(id: id, zone: zone, type: type, fields: nil)
     }
 
     /// The record ID a record's `id` has in a CloudKit zone: its `uuidString` as the record name.

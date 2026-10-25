@@ -128,17 +128,13 @@ final class RecordStore: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS "_records_meta" (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, record_table TEXT NOT NULL, record_id NOT NULL,
                 kind TEXT, version INTEGER NOT NULL DEFAULT 0, time REAL,
-                acked INTEGER NOT NULL DEFAULT 0, known INTEGER NOT NULL DEFAULT 0, tag BLOB, system_fields BLOB,
+                acked INTEGER NOT NULL DEFAULT 0, known INTEGER NOT NULL DEFAULT 0, tag BLOB,
                 snapshot BLOB, extra BLOB, synced_at REAL, parked BLOB,
                 UNIQUE (record_table, record_id));
             -- Only rows with unsent changes, so each sync pass reads those and nothing else.
             CREATE INDEX IF NOT EXISTS "_records_meta.pending" ON "_records_meta" (seq)
                 WHERE kind IS NOT NULL AND version > acked;
             """)
-        // Databases from before system fields were kept gain their column.
-        if try !db.run("PRAGMA table_info(\"_records_meta\")").contains(where: { $0["name"] == .text("system_fields") }) {
-            try db.execute("ALTER TABLE \"_records_meta\" ADD COLUMN system_fields BLOB")
-        }
     }
 
     deinit {
@@ -1224,9 +1220,9 @@ extension RecordStore {
         try db.run(
             """
             INSERT OR REPLACE INTO "_records_meta"
-                (record_table, record_id, kind, version, time, acked, known, tag, system_fields, snapshot, extra, synced_at, parked)
-            SELECT ?1, ?2, ?3, ?4, ?5, COALESCE(m.acked, 0), COALESCE(m.known, 0), m.tag, m.system_fields, m.snapshot, m.extra,
-                m.synced_at, m.parked
+                (record_table, record_id, kind, version, time, acked, known, tag, snapshot, extra, synced_at, parked)
+            SELECT ?1, ?2, ?3, ?4, ?5, COALESCE(m.acked, 0), COALESCE(m.known, 0), m.tag, m.snapshot, m.extra, m.synced_at,
+                m.parked
             FROM (SELECT 1) LEFT JOIN "_records_meta" m ON m.record_table = ?1 AND m.record_id = ?2
             """,
             [.text(table), id, .text(kind.rawValue), version, now]

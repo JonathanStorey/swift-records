@@ -203,7 +203,7 @@ import Testing
         func copy(_ milliseconds: Double?) -> RecordChangeData {
             RecordChangeData(
                 id: UUID(), zone: .default, type: "Recipe", fields: [:],
-                metadata: SyncMetadata(synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) })
+                synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) }
             )
         }
         #expect(FileSyncProvider.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)
