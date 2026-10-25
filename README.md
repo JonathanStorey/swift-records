@@ -670,7 +670,8 @@ context like `@Records` edits, and changes from other views, background work or 
 the record by primary key only after a commit it didn't make, so its own typing costs no fetches. Once the
 record is deleted, `todo` keeps its last value, `$todo.isDeleted` turns true, and edits are ignored so a late
 keystroke can't bring it back. `$todo.hasChanges`, `$todo.save()` and `$todo.binding`, the whole record as
-a `Binding<ToDo>`, round it out. It follows `context.zone` unless you pin one: `@Recordable("pantry")`.
+a `Binding<ToDo>`, round it out. It follows `context.zone`. To pin a zone, set it in the view's initializer:
+`_todo = Recordable(wrappedValue: todo, "pantry")`.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`

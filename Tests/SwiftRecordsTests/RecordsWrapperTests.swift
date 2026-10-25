@@ -39,7 +39,13 @@ private struct WrapperUses: View {
 @MainActor
 private struct ToDoDetail: View {
     @Recordable var todo: ToDo
-    @Recordable("pantry", animation: nil) var person: Person
+    @Recordable var person: Person
+
+    /// A zone or animation goes through the wrapper's initializer, as attribute arguments would need a default.
+    init(todo: ToDo, person: Person) {
+        _todo = Recordable(wrappedValue: todo)
+        _person = Recordable(wrappedValue: person, "pantry", animation: nil)
+    }
 
     var body: some View {
         TextField("Title", text: $todo.title)

@@ -20,9 +20,9 @@ import SwiftUI
 /// container's `mainContext`, which saves them once edits pause. Changes from other views, background work
 /// or sync show up at once.
 ///
-/// It follows the context's `zone` unless you pin one, as `@Records` does: `@Recordable("pantry")`. Once the
-/// record is deleted, `todo` keeps its last value, `$todo.isDeleted` turns true, and edits are ignored, so a
-/// late keystroke can't bring it back.
+/// It follows the context's `zone`. To pin one, initialize the wrapper in the view's initializer:
+/// `_todo = Recordable(wrappedValue: todo, "pantry")`. Once the record is deleted, `todo` keeps its last
+/// value, `$todo.isDeleted` turns true, and edits are ignored, so a late keystroke can't bring it back.
 @MainActor
 @propertyWrapper
 @dynamicMemberLookup
