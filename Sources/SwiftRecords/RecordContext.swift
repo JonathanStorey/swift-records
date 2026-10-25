@@ -589,6 +589,11 @@ public final class RecordContext {
     // MARK: Unsaved changes in views
 
     /// Whether changes made after `sequence` by anything other than `source` aren't saved yet.
+    /// Whether changes from `source`, such as one `@Records` view, are waiting to save or saving now.
+    func hasPendingChanges(from source: ObjectIdentifier) -> Bool {
+        pending.values.contains { $0.source == source } || inFlight.values.contains { $0.source == source }
+    }
+
     func hasPendingChanges(after sequence: Int, excluding source: ObjectIdentifier) -> Bool {
         unsaved.contains { $0.change.sequence > sequence && $0.change.source != source }
     }

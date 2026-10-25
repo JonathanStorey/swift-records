@@ -614,13 +614,37 @@ Like `@Query`, `@Records` also takes a descriptor, which can limit how many reco
 Unsaved new records still count toward it, so the view never shows more than the limit. Pass a zone first,
 `@Records("pantry", descriptor)`, to pin it.
 
-`$todos` is a real `Binding<[ToDo]>`. Writes insert, update and delete through the main context,
+`todos` is a plain `[ToDo]`, and `$todos` is a `Binding<RecordList<ToDo>>`. `RecordList` is a random-access,
+mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
+they do on an array's binding. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes
 made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new or edited record
 takes its place in the list's sort, a filtered list drops records its filter rejects, and a rollback takes
 them back out. Deletes by predicate hide their matches at once too. The array's order isn't stored, so a
 move through the binding changes nothing.
+
+A list's indices are positions in the full result, as a slice keeps its base's, so a page that skips 40
+records starts at index 40. With a `fetchLimit`, `$todos` pages through the result while the limit stays
+the page size you chose:
+
+```swift
+@Records(RecordDescriptor<ToDo>(sortBy: [SortDescriptor(\.title)], fetchLimit: 20)) var todos: [ToDo]
+
+List($todos, editActions: .delete) { $todo in TextField("Title", text: $todo.title) }
+    .refreshable { try? await $todos.refresh() }           // saves, picks up other processes, syncs
+    .toolbar {
+        Button("Previous") { $todos.previousPage() }.disabled(!$todos.hasPreviousPage)
+        Button("Next") { $todos.nextPage() }.disabled(!$todos.hasNextPage)
+        Text("Page \($todos.page + 1) of \($todos.pageCount), \($todos.totalCount) in all")
+    }
+```
+
+`nextPage()` and `previousPage()` replace the rows with the neighboring page, and `$todos.page = 3` jumps
+to one. `loadMore()` instead appends the next page below the rows already shown, for an endless list.
+`fetchLimit` and `fetchOffset` report the descriptor's page, and `totalCount` counts every saved match.
+`$todos.hasChanges` says whether edits made through the list are still waiting to save, and
+`$todos.save()` saves now rather than when edits pause.
 
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
