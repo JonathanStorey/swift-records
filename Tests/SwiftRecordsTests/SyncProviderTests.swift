@@ -37,16 +37,11 @@ struct Device {
     let container: RecordContainer
     var context: RecordContext { container.mainContext }
 
-    init(
-        _ server: TestServer, directory: URL? = nil, account: String?? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData
-    ) throws {
+    init(_ server: TestServer, directory: URL? = nil, account: String?? = nil) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
-            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider,
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
+            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -568,7 +563,7 @@ struct Device {
 
     // MARK: Accounts and resets
 
-    @Test func signingOutKeepsLocalDataByDefault() async throws {
+    @Test func signingOutKeepsLocalData() async throws {
         let phone = try Device(server)
         phone.context.insert(SyncRecipe(title: "Mine"))
         try await phone.context.save()
@@ -589,11 +584,17 @@ struct Device {
         #expect(phone.context.status == .saved)
     }
 
-    @Test func signingOutCanDeleteLocalData() async throws {
-        let phone = try Device(server, onSignOut: .deleteLocalData)
-        phone.context.insert(SyncRecipe(title: "Mine"))
+    @Test func anotherAccountAfterASignOutReplacesTheRecords() async throws {
+        let phone = try Device(server)
+        phone.context.insert(SyncRecipe(title: "Alice's"))
         try await phone.context.save()
         server.withLock { server.account = nil }
+        try await phone.context.refresh()
+        phone.context.insert(SyncRecipe(title: "Unsent"))
+        try await phone.context.save()
+
+        // Bob never sees Alice's records, and none of them reach his account.
+        server.withLock { server.account = "bob" }
         try await phone.context.refresh()
         #expect(try await phone.recipes().isEmpty)
         #expect(server.count == 1)

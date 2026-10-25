@@ -21,16 +21,9 @@ public final class RecordContainer: @unchecked Sendable {
     /// The folder holding the zone files, or `nil` for an in-memory container.
     public let directory: URL?
 
-    /// What happens to this device's records when the sync account signs out.
-    public let onSignOut: AccountPolicy
-    /// What happens to this device's records when a different sync account signs in.
-    public let onAccountSwitch: AccountPolicy
-    /// What happens to a zone's records when the server's copy of it is deleted.
-    public let onServerReset: AccountPolicy
 
     private let types: [any Record.Type]
     private let syncProvider: (any SyncProvider)?
-    private let policies: SyncCoordinator.Policies
     /// The default zone, opened with the container so `mainContext` can't fail.
     let defaultStorage: ZoneStorage
     private var storages: [Zone: ZoneStorage]
@@ -48,19 +41,13 @@ public final class RecordContainer: @unchecked Sendable {
     ///
     /// `syncProvider` keeps each zone in step with its zone on the server, except `.inMemory` and `.localOnly`,
     /// which never sync, and any zone the provider's `syncs(_:)` turns down. The provider decides which zones
-    /// are public. The provider and policies stay fixed for the container's life.
+    /// are public. The provider stays fixed for the container's life.
     public convenience init(
         for types: [any Record.Type] = [],
         directory: URL? = nil,
-        syncProvider: (any SyncProvider)? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData,
-        onServerReset: AccountPolicy = .keepLocalData
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
-        try self.init(
-            for: types, directory: directory, inMemory: false, syncProvider: syncProvider,
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
-        )
+        try self.init(for: types, directory: directory, inMemory: false, syncProvider: syncProvider)
     }
 
     /// With `inMemory`, every zone lives only as long as the container, for tests.
@@ -68,28 +55,16 @@ public final class RecordContainer: @unchecked Sendable {
         for types: [any Record.Type] = [],
         directory: URL? = nil,
         inMemory: Bool,
-        syncProvider: (any SyncProvider)? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData,
-        onServerReset: AccountPolicy = .keepLocalData
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
         let directory = inMemory ? nil : directory ?? RecordContainer.defaultDirectory
         if let directory {
             try RecordContainer.prepare(directory)
         }
-        let policies = SyncCoordinator.Policies(
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
-        )
         self.directory = directory
         self.types = types
         self.syncProvider = syncProvider
-        self.policies = policies
-        self.onSignOut = onSignOut
-        self.onAccountSwitch = onAccountSwitch
-        self.onServerReset = onServerReset
-        defaultStorage = try Self.open(
-            .default, directory: directory, types: types, syncProvider: syncProvider, policies: policies
-        )
+        defaultStorage = try Self.open(.default, directory: directory, types: types, syncProvider: syncProvider)
         storages = [.default: defaultStorage]
         if directory != nil {
             Self.register(self)
@@ -97,14 +72,12 @@ public final class RecordContainer: @unchecked Sendable {
     }
 
     private static func open(
-        _ zone: Zone, directory: URL?, types: [any Record.Type],
-        syncProvider: (any SyncProvider)?, policies: SyncCoordinator.Policies
+        _ zone: Zone, directory: URL?, types: [any Record.Type], syncProvider: (any SyncProvider)?
     ) throws -> ZoneStorage {
         let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
         let provider = zone.canSync && syncProvider?.syncs(zone) == true ? syncProvider : nil
         return try ZoneStorage(
-            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false,
-            policies: policies
+            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false
         )
     }
 
@@ -115,9 +88,7 @@ public final class RecordContainer: @unchecked Sendable {
         if let storage = storages[zone] {
             return storage
         }
-        let storage = try Self.open(
-            zone, directory: directory, types: types, syncProvider: syncProvider, policies: policies
-        )
+        let storage = try Self.open(zone, directory: directory, types: types, syncProvider: syncProvider)
         storages[zone] = storage
         return storage
     }

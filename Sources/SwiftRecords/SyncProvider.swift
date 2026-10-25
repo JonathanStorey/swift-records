@@ -42,7 +42,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 
     /// Names the server this provider talks to, such as its URL. When it differs from the one a zone last
     /// synced with, the container treats the new server as empty: it uploads every local record and
-    /// downloads from the beginning, and keeps local data whatever the account policies say. The default
+    /// downloads from the beginning, and keeps local data even when the account differs. The default
     /// is the provider's type name, so return something more specific when one type can reach several
     /// servers.
     var identifier: String { get }
@@ -217,14 +217,6 @@ public enum SyncError: Error, Sendable, Hashable {
     /// The account is out of storage.
     case storageFull
     /// The server's copy of the zone is gone, for example because the person deleted it in Settings. The
-    /// container applies its `onServerReset` policy and downloads from the beginning.
+    /// container keeps its records, uploads them all again and downloads from the beginning.
     case serverReset
-}
-
-/// What happens to the records on this device when its account signs out, switches or loses its server data.
-public enum AccountPolicy: Sendable, Hashable {
-    /// Keep them, and upload them when an account is next available.
-    case keepLocalData
-    /// Delete them from this device. The server keeps its copy.
-    case deleteLocalData
 }

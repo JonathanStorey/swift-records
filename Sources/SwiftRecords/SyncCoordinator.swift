@@ -20,12 +20,6 @@ actor SyncCoordinator {
         var total: Int
     }
 
-    struct Policies: Sendable {
-        var onSignOut: AccountPolicy
-        var onAccountSwitch: AccountPolicy
-        var onServerReset: AccountPolicy
-    }
-
     private struct Key: Hashable {
         let table: String
         let id: UUID
@@ -44,7 +38,6 @@ actor SyncCoordinator {
     /// them, and it downloads without an account.
     private let isPublic: Bool
     private let store: RecordStore
-    private let policies: Policies
     private let phaseChanged: @Sendable (Phase) -> Void
     /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
     private let transferChanged: @Sendable (Transfer?, _ landed: Bool) async -> Void
@@ -70,7 +63,7 @@ actor SyncCoordinator {
     private var failure: RecordsError?
 
     init(
-        provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore, policies: Policies,
+        provider: any SyncProvider, zone: Zone, isPublic: Bool = false, store: RecordStore,
         phaseChanged: @escaping @Sendable (Phase) -> Void,
         transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) async -> Void = { _, _ in }
     ) {
@@ -78,7 +71,6 @@ actor SyncCoordinator {
         self.zone = zone
         self.isPublic = isPublic
         self.store = store
-        self.policies = policies
         self.phaseChanged = phaseChanged
         self.transferChanged = transferChanged
     }
@@ -186,7 +178,8 @@ actor SyncCoordinator {
                 phase = .idle
             }
         } catch SyncError.serverReset {
-            apply(policies.onServerReset)
+            // The server's copy is gone, but the records on this device aren't, so they go up again.
+            keepLocalData()
             passRequested = true
             downloadRequested = downloadRequested || download
             uploadRequested = true
@@ -350,13 +343,9 @@ actor SyncCoordinator {
         account = current
         let stored = (try? store.syncValue(forKey: Self.accountKey)).flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } }
         guard let current else {
+            // Records stay, tied to the account that synced them: edits wait for it to sign back in, and a
+            // different account replaces them.
             signedOut = true
-            if stored != nil {
-                if !isPublic {
-                    apply(policies.onSignOut)
-                }
-                try? store.setSyncValue(nil, forKey: Self.accountKey)
-            }
             // Anyone can read a public zone.
             guard isPublic else {
                 phase = .signedOut
@@ -369,9 +358,10 @@ actor SyncCoordinator {
             phase = .idle
         }
         guard current != stored else { return true }
-        // A first sign-in uploads everything here. Another account's data follows the switch policy.
+        // A first sign-in uploads everything here. Another account's records leave this device, so they
+        // never reach this one's server data.
         if !isPublic {
-            apply(stored == nil ? .keepLocalData : policies.onAccountSwitch)
+            if stored == nil { keepLocalData() } else { deleteLocalData() }
         }
         try? store.setSyncValue(Data(current.utf8), forKey: Self.accountKey)
         return true
@@ -390,15 +380,19 @@ actor SyncCoordinator {
         try? store.setSyncValue(Data(current.utf8), forKey: Self.identifierKey)
     }
 
-    private func apply(_ policy: AccountPolicy) {
+    /// Makes every record pending, to upload as if new, and downloads the server's copy from the beginning.
+    private func keepLocalData() {
+        startOver { try store.markAllPending() }
+    }
+
+    /// Deletes the records on this device, which the server keeps, and downloads from the beginning.
+    private func deleteLocalData() {
+        startOver { try store.deleteAllData() }
+    }
+
+    private func startOver(_ body: () throws -> Void) {
         do {
-            switch policy {
-            case .keepLocalData:
-                try store.markAllPending()
-            case .deleteLocalData:
-                try store.deleteAllData()
-            }
-            // Whatever the server has is downloaded again from the beginning.
+            try body()
             try store.setSyncValue(nil, forKey: Self.cursorKey)
         } catch {
             phase = .failed(Self.recordsError(error))
