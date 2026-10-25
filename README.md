@@ -641,7 +641,7 @@ List($todos, editActions: .delete) { $todo in TextField("Title", text: $todo.tit
 ```
 
 `nextPage()` and `previousPage()` replace the rows with the neighboring page, and `$todos.page = 3` jumps
-to one. `loadMore()` instead appends the next page below the rows already shown, for an endless list.
+to one. `appendNextPage()` instead appends the next page below the rows already shown, for an endless list.
 `fetchLimit` and `fetchOffset` report the descriptor's page, and `totalCount` counts every saved match.
 `$todos.hasChanges` says whether edits made through the list are still waiting to save, and
 `$todos.save()` saves now rather than when edits pause.

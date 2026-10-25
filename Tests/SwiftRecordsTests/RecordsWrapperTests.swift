@@ -27,7 +27,7 @@ private struct WrapperUses: View {
         .refreshable { try? await $firstOpen.refresh() }
         .toolbar {
             Button("Next") { $firstOpen.nextPage() }.disabled(!$firstOpen.hasNextPage)
-            Button("More") { $firstOpen.loadMore() }
+            Button("More") { $firstOpen.appendNextPage() }
             Button("First") { $firstOpen.page = 0 }
             Text("\($firstOpen.totalCount) in \($firstOpen.pageCount) pages")
             ForEach($todos) { $todo in Toggle(todo.title, isOn: $todo.done) }

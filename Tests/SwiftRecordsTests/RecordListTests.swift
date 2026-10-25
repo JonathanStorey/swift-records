@@ -53,19 +53,19 @@ private final class Pages: RecordPager {
         list.previousPage()
         list.show(page: 9)
         list.show(page: 1)
-        list.loadMore()
+        list.appendNextPage()
         #expect(pages.moves == [
             RecordPage(limit: 4, offset: 8), RecordPage(limit: 4, offset: 0), RecordPage(limit: 4, offset: 8),
             RecordPage(limit: 4, offset: 4, pages: 2),
         ])
     }
 
-    @Test func loadMoreKeepsThePageSize() {
+    @Test func appendNextPageKeepsThePageSize() {
         let pages = Pages()
         let list = RecordList(Array(todos[0..<8]), page: RecordPage(limit: 4, pages: 2), totalCount: 10, pager: pages)
         #expect(list.fetchLimit == 4)
         #expect(list.hasNextPage)
-        list.loadMore()
+        list.appendNextPage()
         list.nextPage()
         list.show(page: 0)
         #expect(pages.moves == [
@@ -78,11 +78,11 @@ private final class Pages: RecordPager {
         let pages = Pages()
         let last = RecordList(Array(todos[8...]), page: RecordPage(limit: 4, offset: 8), totalCount: 10, pager: pages)
         last.nextPage()
-        last.loadMore()
+        last.appendNextPage()
         #expect(!last.hasNextPage)
         let unlimited = RecordList(todos, pager: pages)
         unlimited.nextPage()
-        unlimited.loadMore()
+        unlimited.appendNextPage()
         #expect(unlimited.pageCount == 1)
         #expect(unlimited.totalCount == 10)
         #expect(pages.moves.isEmpty)

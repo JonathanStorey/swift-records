@@ -8,16 +8,16 @@ import Foundation
 /// `List($todos, editActions: .delete)` work as they do on an array. Inserts, edits and deletes write
 /// through the main context. The order comes from the query's sort, so moving or swapping records changes
 /// nothing.
-public struct RecordList<R: Record>: RandomAccessCollection, MutableCollection, RangeReplaceableCollection {
+public struct RecordList<R: Record>: RandomAccessCollection, MutableCollection, RangeReplaceableCollection, Sendable {
     public typealias Index = Int
 
     /// The records the view holds, in the query's order.
     public internal(set) var elements: [R]
     /// How many records come before the page. `startIndex` is this offset.
     public let fetchOffset: Int
-    /// The page size the descriptor chose, or `nil` for no limit. `loadMore()` adds pages without changing it.
+    /// The page size the descriptor chose, or `nil` for no limit. `appendNextPage()` adds pages without changing it.
     public let fetchLimit: Int?
-    /// How many pages from `fetchOffset` the list holds, more than 1 after `loadMore()`.
+    /// How many pages from `fetchOffset` the list holds, more than 1 after `appendNextPage()`.
     let pages: Int
     /// Every saved record the query matches, not only the page's.
     public let totalCount: Int
@@ -102,7 +102,7 @@ public struct RecordList<R: Record>: RandomAccessCollection, MutableCollection, 
     /// Appends the next page to the list, for an endless list's last row. `fetchLimit` stays the page
     /// size. A list without a limit, or already holding the rest of the result, has nothing more to load.
     @MainActor
-    public func loadMore() {
+    public func appendNextPage() {
         guard let fetchLimit, hasNextPage else { return }
         pager?.move(to: RecordPage(limit: fetchLimit, offset: fetchOffset, pages: pages + 1))
     }
@@ -135,7 +135,7 @@ public protocol RecordListProtocol {
     @MainActor func show(page: Int)
     @MainActor func nextPage()
     @MainActor func previousPage()
-    @MainActor func loadMore()
+    @MainActor func appendNextPage()
     @MainActor func refresh() async throws
     @MainActor func save() throws
 }
@@ -144,7 +144,7 @@ extension RecordList: RecordListProtocol {}
 
 /// Moves a `@Records` view's page and refreshes its context.
 @MainActor
-protocol RecordPager: AnyObject {
+protocol RecordPager: AnyObject, Sendable {
     func move(to page: RecordPage)
     func refresh() async throws
     func save() throws

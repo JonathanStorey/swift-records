@@ -24,8 +24,8 @@ import SwiftUI
 ///
 /// The array's order isn't stored. An edit through the binding moves the record to where it sorts, and
 /// moving rows changes nothing. With a `fetchLimit`, `$todos.page += 1` shows the next page and
-/// `$todos.loadMore()` grows the list, while `$todos.totalCount` counts every match. Changes animate with
-/// the default animation unless you pass another, or `nil` for none.
+/// `$todos.appendNextPage()` grows the list, while `$todos.totalCount` counts every match. Changes
+/// animate with the default animation unless you pass another, or `nil` for none.
 ///
 /// It can also load records by ID, such as an inverse's owners:
 ///
@@ -126,7 +126,8 @@ public struct Records<R: Record>: DynamicProperty {
     }
 
     /// The records as a `RecordList`, whose indices are positions in the full result. Writing to it
-    /// inserts, updates and deletes records, and `$todos.page`, `loadMore()` and `refresh()` move through it.
+    /// inserts, updates and deletes records, and `$todos.page`, `appendNextPage()` and `refresh()` move
+    /// through it.
     public var projectedValue: Binding<RecordList<R>> {
         let context = resolvedContext
         let cache = cache
@@ -360,8 +361,8 @@ extension Binding where Value: RecordListProtocol {
     }
 
     /// Appends the next page, for an endless list's last row. `fetchLimit` stays the page size.
-    public func loadMore() {
-        wrappedValue.loadMore()
+    public func appendNextPage() {
+        wrappedValue.appendNextPage()
     }
 
     /// Saves, picks up other processes' changes, and syncs, for `.refreshable`.
