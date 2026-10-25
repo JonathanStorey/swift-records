@@ -359,7 +359,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     }
 
     private static func zone(named name: String) -> Zone? {
-        [Zone.default, .inMemory, .localOnly].first { $0.name == name } ?? (try? Zone(name))
+        Zone(stored: name)
     }
 
     // MARK: Conflicting versions

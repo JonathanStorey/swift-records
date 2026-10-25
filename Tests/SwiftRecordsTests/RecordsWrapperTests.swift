@@ -70,6 +70,21 @@ private struct NewToDo: View {
     }
 }
 
+/// `@RecordStorage` keeps a record as a setting, keyed by type or by name.
+@MainActor
+private struct SettingsView: View {
+    @RecordStorage var preferences = ToDo(title: "Defaults")
+    @RecordStorage("favorite", animation: nil) var favorite = ToDo(title: "")
+
+    var body: some View {
+        Toggle("Done", isOn: $preferences.done)
+        TextField("Favorite", text: $favorite.title)
+        Button("Defaults") { $preferences.restoreDefault() }.disabled(!$preferences.isStored)
+        Button("Rename") { favorite.title = "Renamed" }
+        ToDoRow(todo: $favorite.binding)
+    }
+}
+
 @MainActor
 private struct ToDoRow: View {
     @Binding var todo: ToDo
