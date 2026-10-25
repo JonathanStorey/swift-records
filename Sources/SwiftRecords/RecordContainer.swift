@@ -21,9 +21,6 @@ public final class RecordContainer: @unchecked Sendable {
     /// The folder holding the zone files, or `nil` for an in-memory container.
     public let directory: URL?
 
-    /// Whether every zone lives only as long as the container, as for tests and previews.
-    public var isStoredInMemoryOnly: Bool { directory == nil }
-
     /// What happens to this device's records when the sync account signs out.
     public let onSignOut: AccountPolicy
     /// What happens to this device's records when a different sync account signs in.
@@ -31,12 +28,8 @@ public final class RecordContainer: @unchecked Sendable {
     /// What happens to a zone's records when the server's copy of it is deleted.
     public let onServerReset: AccountPolicy
 
-    /// The zones everyone shares, such as a public CloudKit database. Their records carry the user who created
-    /// them, signing out or switching accounts never deletes them, and they download without an account.
-    public let publicZones: Set<Zone>
-
     private let types: [any Record.Type]
-    private let syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)?
+    private let syncProvider: (any SyncProvider)?
     private let policies: SyncCoordinator.Policies
     /// The default zone, opened with the container so `mainContext` can't fail.
     let defaultStorage: ZoneStorage
@@ -46,24 +39,36 @@ public final class RecordContainer: @unchecked Sendable {
     private let lock = NSLock()
 
     /// Opens a folder of zones, `Application Support/Records` unless you pass `directory`, such as an App Group
-    /// folder from `RecordContainer.directory(appGroup:)`. With `inMemory`, every zone lives only as long as the
-    /// container.
+    /// folder from `RecordContainer.directory(appGroup:)`. Previews and tests can pass a temporary folder.
     ///
     /// Registering types creates their tables and applies renames and indexes in each zone as it opens,
     /// rather than the first time code uses each type. Types reached through relationships are registered
     /// too. A sync provider needs it, because a server's records can arrive before any code has touched their
     /// type.
     ///
-    /// `syncProvider` is called once for each zone as it opens, except `.inMemory` and `.localOnly`, which
-    /// never sync. Return a provider to keep that zone in step with its zone on the server, or `nil` to keep it
-    /// on this device. The provider and policies stay fixed for the container's life. Name the zones everyone
-    /// shares in `publicZones`.
-    public init(
+    /// `syncProvider` keeps each zone in step with its zone on the server, except `.inMemory` and `.localOnly`,
+    /// which never sync, and any zone the provider's `syncs(_:)` turns down. The provider decides which zones
+    /// are public. The provider and policies stay fixed for the container's life.
+    public convenience init(
         for types: [any Record.Type] = [],
         directory: URL? = nil,
-        inMemory: Bool = false,
-        syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)? = nil,
-        publicZones: Set<Zone> = [],
+        syncProvider: (any SyncProvider)? = nil,
+        onSignOut: AccountPolicy = .keepLocalData,
+        onAccountSwitch: AccountPolicy = .deleteLocalData,
+        onServerReset: AccountPolicy = .keepLocalData
+    ) throws {
+        try self.init(
+            for: types, directory: directory, inMemory: false, syncProvider: syncProvider,
+            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
+        )
+    }
+
+    /// With `inMemory`, every zone lives only as long as the container, for tests.
+    package init(
+        for types: [any Record.Type] = [],
+        directory: URL? = nil,
+        inMemory: Bool,
+        syncProvider: (any SyncProvider)? = nil,
         onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData,
         onServerReset: AccountPolicy = .keepLocalData
@@ -78,13 +83,12 @@ public final class RecordContainer: @unchecked Sendable {
         self.directory = directory
         self.types = types
         self.syncProvider = syncProvider
-        self.publicZones = publicZones
         self.policies = policies
         self.onSignOut = onSignOut
         self.onAccountSwitch = onAccountSwitch
         self.onServerReset = onServerReset
         defaultStorage = try Self.open(
-            .default, directory: directory, types: types, syncProvider: syncProvider, isPublic: publicZones.contains(.default), policies: policies
+            .default, directory: directory, types: types, syncProvider: syncProvider, policies: policies
         )
         storages = [.default: defaultStorage]
         if directory != nil {
@@ -94,11 +98,12 @@ public final class RecordContainer: @unchecked Sendable {
 
     private static func open(
         _ zone: Zone, directory: URL?, types: [any Record.Type],
-        syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)?, isPublic: Bool, policies: SyncCoordinator.Policies
+        syncProvider: (any SyncProvider)?, policies: SyncCoordinator.Policies
     ) throws -> ZoneStorage {
         let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
+        let provider = zone.canSync && syncProvider?.syncs(zone) == true ? syncProvider : nil
         return try ZoneStorage(
-            zone: zone, store: store, types: types, syncProvider: zone.canSync ? syncProvider?(zone) : nil, isPublic: isPublic,
+            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false,
             policies: policies
         )
     }
@@ -111,7 +116,7 @@ public final class RecordContainer: @unchecked Sendable {
             return storage
         }
         let storage = try Self.open(
-            zone, directory: directory, types: types, syncProvider: syncProvider, isPublic: publicZones.contains(zone), policies: policies
+            zone, directory: directory, types: types, syncProvider: syncProvider, policies: policies
         )
         storages[zone] = storage
         return storage

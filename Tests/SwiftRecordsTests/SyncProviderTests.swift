@@ -38,15 +38,15 @@ struct Device {
     var context: RecordContext { container.mainContext }
 
     init(
-        _ server: TestServer, directory: URL? = nil, account: String?? = nil, publicZones: Set<Zone> = [],
+        _ server: TestServer, directory: URL? = nil, account: String?? = nil,
         onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData
     ) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
-            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: { _ in provider },
-            publicZones: publicZones, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
+            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider,
+            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -774,8 +774,8 @@ struct Device {
 
     @Test func publicRecordsCarryTheirOwner() async throws {
         server.publicZones = [.default]
-        let alice = try Device(server, publicZones: [.default])
-        let bob = try Device(server, account: "bob", publicZones: [.default])
+        let alice = try Device(server)
+        let bob = try Device(server, account: "bob")
         var recipe = SyncRecipe(title: "Shared")
         alice.context.insert(recipe)
         try await alice.context.save()
@@ -793,7 +793,7 @@ struct Device {
         #expect(server.value("SyncRecipe", recipe.id, "title") == .string("Shared"))
 
         // Signing out never deletes public records, and they still download.
-        let reader = try Device(server, account: .some(nil), publicZones: [.default])
+        let reader = try Device(server, account: .some(nil))
         try await reader.context.refresh()
         #expect(try await reader.recipes().map(\.title) == ["Shared"])
     }

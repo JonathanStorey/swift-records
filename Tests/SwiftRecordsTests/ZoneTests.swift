@@ -63,7 +63,7 @@ import Testing
         let container = try RecordContainer(directory: directory, inMemory: true)
         try container.save(ToDo(title: "Gone"))
         #expect(container.url == nil)
-        #expect(container.isStoredInMemoryOnly)
+        #expect(container.directory == nil)
         #expect(!FileManager.default.fileExists(atPath: directory.path))
     }
 
@@ -102,25 +102,34 @@ import Testing
         #expect(!files.contains { $0.hasPrefix("_memory") })
     }
 
-    @Test func reservedZonesNeverAskForAProvider() throws {
-        let asked = AskedZones()
-        let container = try RecordContainer(inMemory: true, syncProvider: { zone in
-            asked.append(zone)
-            return nil
-        })
-        let context = container.mainContext
+    @Test func reservedZonesNeverAskTheProvider() throws {
+        let provider = AskingProvider()
+        let context = try RecordContainer(inMemory: true, syncProvider: provider).mainContext
         for zone: Zone in [.inMemory, .localOnly, "drafts"] {
             context.zone = zone
             _ = try context.fetch(ToDo.self)
         }
-        #expect(asked.zones == [.default, "drafts"])
+        #expect(provider.zones == [.default, "drafts"])
     }
 
-    private final class AskedZones: @unchecked Sendable {
+    /// Records the zones it's asked about, and keeps every one on the device.
+    private final class AskingProvider: SyncProvider, @unchecked Sendable {
         private let lock = NSLock()
         private var list: [Zone] = []
         var zones: [Zone] { lock.withLock { list } }
-        func append(_ zone: Zone) { lock.withLock { list.append(zone) } }
+
+        func syncs(_ zone: Zone) -> Bool {
+            lock.withLock { list.append(zone) }
+            return false
+        }
+
+        func userID() async throws -> String? { nil }
+        func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] { [] }
+        func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
+            RecordDownload(changes: [], cursor: cursor)
+        }
+        func uploadAssets(_ assets: [RecordAssetData]) async throws {}
+        func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL { throw SyncError.offline }
     }
 
     @Test func defaultDirectoryIsApplicationSupport() {

@@ -135,7 +135,6 @@ context.zone = .default                   // back to the default zone
 try await container.performBackgroundTask(in: "drafts") { try $0.insert(imported) }
 context.zone = .inMemory                  // never written to disk, never synced
 context.zone = .localOnly                 // _local.sqlite, never synced
-let scratch = try RecordContainer(inMemory: true)   // every zone lives in memory
 ```
 
 Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay
@@ -348,15 +347,17 @@ written by a background context or a sync provider.
 
 ## Sync
 
-A `SyncProvider` keeps a zone in step with a server. Pass a closure when the container opens, and it's
-called once for each zone as the zone opens, except `.inMemory` and `.localOnly`. Return a provider to sync that zone with its zone on the
-server, or `nil` to keep it on the device. The same app code works with or without it: sync adds to
-saving, it doesn't replace it.
+A `SyncProvider` keeps zones in step with a server. Pass one when the container opens, and it syncs
+every zone except `.inMemory` and `.localOnly`. To keep another zone on the device, return `false` from
+the provider's `syncs(_:)`, which is asked once as each zone opens. The same app code works with or
+without a provider: sync adds to saving, it doesn't replace it.
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self], syncProvider: { zone in
-    zone == "drafts" ? nil : MyProvider(zone: zone)     // keep drafts on the device
-})
+final class MyProvider: SyncProvider {
+    func syncs(_ zone: Zone) -> Bool { zone != "drafts" }      // keep drafts on the device
+    // ...
+}
+let container = try RecordContainer(for: [ToDo.self], syncProvider: MyProvider())
 
 try await context.save()       // commits, then sends what the server doesn't have
 try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
@@ -441,7 +442,9 @@ if let progress = context.assetProgress {
 }
 ```
 
-`publicZones` names zones everyone shares. The server records who created each record, and that user owns it:
+A provider names the zones everyone shares, such as a public CloudKit database, through `isPublic(_:)`,
+which defaults to `false`. Only the provider knows its server's layout, so it's the one place that decides.
+The server records who created each record in a public zone, and that user owns it:
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.
 
@@ -517,7 +520,7 @@ won't encode, and `RecordsError.unsyncedZone` for `.inMemory` or `.localOnly`, w
 is needed.
 
 ```swift
-let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in FileSyncProvider() })
+let container = try RecordContainer(for: [Recipe.self], syncProvider: FileSyncProvider())
 ```
 
 | Location | Folder |

@@ -68,7 +68,7 @@ final class SilentProvider: SyncProvider {
     private func reason(registering types: [any Record.Type], sync: Bool = false) -> String? {
         do {
             if sync {
-                _ = try RecordContainer(for: types, inMemory: true, syncProvider: { _ in SilentProvider() })
+                _ = try RecordContainer(for: types, inMemory: true, syncProvider: SilentProvider())
             } else {
                 _ = try RecordContainer(for: types, inMemory: true)
             }

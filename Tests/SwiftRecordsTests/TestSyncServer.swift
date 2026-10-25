@@ -161,6 +161,8 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     var identifier: String { server.name }
 
+    func isPublic(_ zone: Zone) -> Bool { server.withLock { server.publicZones.contains(zone) } }
+
     init(server: TestServer, account: String?? = nil) {
         self.server = server
         self.account = account
