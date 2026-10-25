@@ -10,10 +10,6 @@ import Testing
         container.mainContext
     }
 
-    init() {
-        container.mainContext.autosaveEnabled = false
-    }
-
     private func stored() throws -> [Draft] {
         try context.storage(for: .default).fetch(Draft.self, where: nil)
     }

@@ -43,7 +43,6 @@ struct Device {
         container = try RecordContainer(
             for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider
         )
-        container.mainContext.autosaveEnabled = false
     }
 
     func recipes() async throws -> [SyncRecipe] {
@@ -549,7 +548,6 @@ struct Device {
 
     @Test func localContainersReportStatusToo() async throws {
         let context = try RecordContainer(inMemory: true).mainContext
-        context.autosaveEnabled = false
         #expect(context.status == .saved)
         context.insert(Measurement(value: .nan))
         await #expect(throws: RecordsError.self) { try await context.save() }

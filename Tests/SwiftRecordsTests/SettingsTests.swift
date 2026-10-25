@@ -33,7 +33,6 @@ import Testing
     }
 
     @Test func storingCollapsesDuplicates() throws {
-        context.autosaveEnabled = false
         let zone = Zone.settings("todo")
         let first = ToDo(title: "First")
         let second = ToDo(title: "Second")

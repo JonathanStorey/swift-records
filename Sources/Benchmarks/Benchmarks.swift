@@ -86,7 +86,6 @@ struct Run {
             for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: server
         )
         let context = phone!.mainContext
-        context.autosaveEnabled = false
         say("Store of \(count) recipes with 5 steps each (\(count * 6) records)\n")
 
         // MARK: Writing
@@ -194,7 +193,6 @@ struct Run {
             for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: server
         )
         let tabletContext = tablet.mainContext
-        tabletContext.autosaveEnabled = false
         _ = try tabletContext.fetchCount(RecordDescriptor<Recipe>())
         try await measure("Download the whole store to a new device", records: remaining * 6) {
             try await tabletContext.refresh()
@@ -221,7 +219,6 @@ struct Run {
             for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: newServer
         )
         let movedContext = moved.mainContext
-        movedContext.autosaveEnabled = false
         _ = try movedContext.fetchCount(RecordDescriptor<Recipe>())
         newServer.isOnline = true
         try await measure("Resync the whole store with a new server", records: remaining * 6) {

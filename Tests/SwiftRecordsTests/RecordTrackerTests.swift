@@ -13,7 +13,6 @@ import Testing
     }
 
     @Test func showsTheStoredRecord() throws {
-        context.autosaveEnabled = false
         var todo = ToDo(title: "Old")
         try container.save(todo)
         let (_, read) = track(todo)
@@ -25,7 +24,6 @@ import Testing
     }
 
     @Test func writesGoThroughTheContext() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Old")
         try container.save(todo)
         let (tracker, read) = track(todo)
@@ -42,7 +40,6 @@ import Testing
     }
 
     @Test func showsOtherCodesUnsavedEdits() throws {
-        context.autosaveEnabled = false
         var todo = ToDo(title: "Old")
         try container.save(todo)
         let (_, read) = track(todo)
@@ -55,7 +52,6 @@ import Testing
     }
 
     @Test func deleteKeepsTheLastValueAndIgnoresEdits() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Kept")
         try container.save(todo)
         let (tracker, read) = track(todo)
@@ -71,7 +67,6 @@ import Testing
     }
 
     @Test func ownDeleteSaves() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Gone")
         try container.save(todo)
         let (tracker, read) = track(todo)
@@ -85,7 +80,6 @@ import Testing
     }
 
     @Test func unsavedInsertIsNotDeleted() {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Draft")
         context.insert(todo)
         let (tracker, read) = track(todo)
@@ -100,7 +94,6 @@ import Testing
     var context: RecordContext { container.mainContext }
 
     @Test func newRecordIsInsertedByItsFirstEdit() throws {
-        context.autosaveEnabled = false
         let draft = ToDo(title: "")
         let tracker = RecordTracker(draft)
         _ = tracker.update(context: context, initial: draft, zone: .default) {}
@@ -116,7 +109,6 @@ import Testing
     }
 
     @Test func aFreshDefaultDoesNotReplaceTheRecord() throws {
-        context.autosaveEnabled = false
         let draft = ToDo(title: "")
         let tracker = RecordTracker(draft)
         _ = tracker.update(context: context, initial: draft, zone: .default) {}
@@ -131,7 +123,6 @@ import Testing
     }
 
     @Test func startNewBeginsAnotherRecord() throws {
-        context.autosaveEnabled = false
         let draft = ToDo(title: "")
         let tracker = RecordTracker(draft)
         _ = tracker.update(context: context, initial: draft, zone: .default) {}
@@ -147,7 +138,6 @@ import Testing
     }
 
     @Test func rollbackDropsOnlyUnsavedEdits() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Saved")
         try container.save(todo)
         let tracker = RecordTracker(todo)
@@ -167,7 +157,6 @@ import Testing
     }
 
     @Test func rollbackReturnsAnUnsavedRecordToNew() throws {
-        context.autosaveEnabled = false
         let draft = ToDo(title: "")
         let tracker = RecordTracker(draft)
         _ = tracker.update(context: context, initial: draft, zone: .default) {}

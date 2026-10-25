@@ -8,7 +8,6 @@ import Testing
     let context = try! RecordContainer(inMemory: true).mainContext
 
     @Test func editingANestedValueIsNotStructural() throws {
-        context.autosaveEnabled = false
         let source = ObjectIdentifier(NSObject())
         var todos = [ToDo(title: "A", notes: [Note(text: "h")]), ToDo(title: "B")]
         context.apply(todos, replacing: [], source: source)
@@ -26,7 +25,6 @@ import Testing
     }
 
     @Test func editingIsStructuralOnlyWhenLinksChange() throws {
-        context.autosaveEnabled = false
         let source = ObjectIdentifier(NSObject())
         var todos = [ToDo(title: "A"), ToDo(title: "B")]
         context.apply(todos, replacing: [], source: source)
@@ -47,7 +45,6 @@ import Testing
     }
 
     @Test func changesFromSeveralSourcesAreNotAttributed() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "A")
         context.apply([todo], replacing: [], source: ObjectIdentifier(NSObject()))
         context.insert(ToDo(title: "B"))

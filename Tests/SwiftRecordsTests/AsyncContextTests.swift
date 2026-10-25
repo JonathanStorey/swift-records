@@ -6,10 +6,6 @@ import Testing
 @Suite struct AsyncContextTests {
     let context = try! RecordContainer(inMemory: true).mainContext
 
-    init() {
-        context.autosaveEnabled = false
-    }
-
     /// In async code the compiler picks the async `save()`. A synchronous function reaches the other one.
     private func saveNow() throws {
         try context.save()
@@ -55,28 +51,6 @@ import Testing
         await #expect(throws: RecordsError.self) { try await context.save() }
         #expect(context.unsavedChanges == 1)
     }
-
-    @Test func autosaveCommitsOffTheMainActor() async throws {
-        context.autosaveEnabled = true
-        context.autosaveDelay = .zero
-        context.insert(ToDo(title: "Auto"))
-        for _ in 0..<1_000 where context.changeCount == 0 {
-            await Task.yield()
-        }
-        #expect(context.changeCount == 1)
-        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Auto"])
-    }
-
-    @Test func failedAutosaveDiscardsOnlyItsChanges() async throws {
-        context.autosaveEnabled = true
-        context.autosaveDelay = .zero
-        context.insert(Measurement(value: .nan))
-        for _ in 0..<1_000 where context.lastSaveError == nil {
-            await Task.yield()
-        }
-        #expect(context.lastSaveError is RecordsError)
-        #expect(!context.hasChanges)
-    }
 }
 
 @MainActor
@@ -87,7 +61,6 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
         let context = container.mainContext
-        context.autosaveEnabled = false
         let person = Person(name: "Ana")
         context.insert(person)
         try await context.save()

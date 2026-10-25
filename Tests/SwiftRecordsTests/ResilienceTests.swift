@@ -6,11 +6,10 @@ import Testing
 @Suite struct ResilienceTests {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
-    @Test func autosaveKeepsChangesWhileAnotherProcessHoldsTheFile() async throws {
+    @Test func leavingSaveKeepsChangesWhileAnotherProcessHoldsTheFile() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
         let context = container.mainContext
-        context.autosaveEnabled = false
         context.insert(Person(name: "Ana"))
         try await context.save()
         container.initialStorage.store.db.setBusyTimeout(0)
@@ -18,22 +17,29 @@ import Testing
         // A second connection stands in for a widget in the middle of a write.
         let other = try SQLiteDatabase(url: try #require(container.url))
         try other.execute("BEGIN IMMEDIATE")
-        context.autosaveEnabled = true
-        context.autosaveDelay = .zero
         context.insert(Person(name: "Bea"))
-        for _ in 0..<1_000 where context.lastSaveError == nil {
-            await Task.yield()
-        }
+        context.saveBeforeLeaving()
         #expect(context.lastSaveError is RecordsError)
         #expect(context.unsavedChanges == 1)
 
-        // Once the other write ends, the retry a second later saves the change.
+        // Once the other write ends, the next save commits the change.
         try other.execute("COMMIT")
-        for _ in 0..<100 where context.unsavedChanges > 0 || context.lastSaveError != nil {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        context.saveBeforeLeaving()
         #expect(context.lastSaveError == nil)
         #expect(try container.fetch(Person.self).map(\.name) == ["Ana", "Bea"])
+    }
+
+    @Test func changesWaitForASave() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let container = try RecordContainer(directory: directory)
+        let context = container.mainContext
+        context.insert(Person(name: "Ana"))
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(context.hasChanges)
+        #expect(try container.fetch(Person.self).isEmpty)
     }
 
     @Test func writesHoldTheLockFromTheStart() throws {
@@ -93,7 +99,6 @@ import Testing
 
     @Test func recordShowsAChangeWhileItsSaveCommits() async throws {
         let context = try RecordContainer(inMemory: true).mainContext
-        context.autosaveEnabled = false
         var todo = ToDo(title: "Old")
         context.insert(todo)
         try await context.save()
@@ -126,7 +131,6 @@ import Testing
 
     @Test func aRecordThatDoesNotDecodeIsSkippedAndReported() async throws {
         let context = container.mainContext
-        context.autosaveEnabled = false
         let bad = ToDo(title: "Bad")
         try container.save([ToDo(title: "A"), bad, ToDo(title: "B")])
         // As if a property changed type: the stored value no longer decodes.
@@ -160,7 +164,6 @@ import Testing
 
     @Test func aBindingWriteSavesOnlyWhatChanged() throws {
         let context = container.mainContext
-        context.autosaveEnabled = false
         let todos = (0..<5).map { ToDo(title: "T\($0)") }
         try container.save(todos)
         var edited = todos

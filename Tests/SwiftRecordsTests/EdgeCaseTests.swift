@@ -193,10 +193,6 @@ struct DishV3 {
 @Suite struct ContextEdgeCaseTests {
     let context = try! RecordContainer(inMemory: true).mainContext
 
-    init() {
-        context.autosaveEnabled = false
-    }
-
     @Test func rollbackRefreshes() throws {
         context.rollback()
         #expect(context.changeCount == 0)  // nothing pending, nothing to refresh

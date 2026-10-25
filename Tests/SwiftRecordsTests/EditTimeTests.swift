@@ -18,7 +18,6 @@ struct SyncNote {
         let container = try RecordContainer(
             for: types, inMemory: true, syncProvider: provider
         )
-        container.mainContext.autosaveEnabled = false
         return container
     }
 

@@ -11,7 +11,6 @@ import Testing
         let provider = FileSyncProvider(location: .other(directory: folder))
         provider.watchMode = mode
         let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider)
-        container.mainContext.autosaveEnabled = false
         return container
     }
 

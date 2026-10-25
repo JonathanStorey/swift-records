@@ -114,7 +114,7 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
         try await pager?.refresh()
     }
 
-    /// Saves the context's pending changes, this list's among them, now rather than once edits pause.
+    /// Saves the context's pending changes, this list's among them.
     @MainActor
     public func save() throws {
         try pager?.save()
