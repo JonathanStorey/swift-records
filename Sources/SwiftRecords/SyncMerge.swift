@@ -31,9 +31,11 @@ enum SyncMerge {
         }
     }
 
-    /// Merges an ordered relationship item by item. A removal on either side applies, an insertion keeps
-    /// its place after the item it followed on its own side, and a reordering made on one side only wins.
-    /// When both sides reordered, or there's no ancestor, the preferred side's order is kept.
+    /// Merges an ordered relationship item by item. A removal on either side applies, and an insertion keeps
+    /// its place after the item it followed on its own side. A move is an item that left its order relative
+    /// to the others, found as the items outside the longest run each side kept in the ancestor's order, so
+    /// moves made on both sides all apply. An item both sides moved takes the preferred side's place, as does
+    /// the whole order when there's no ancestor.
     static func mergeList(local: [UUID], server: [UUID], base: [UUID]?, preferLocal: Bool) -> [UUID] {
         let preferred = preferLocal ? local : server
         let other = preferLocal ? server : local
@@ -45,11 +47,57 @@ enum SyncMerge {
         let removed = baseSet.subtracting(local).union(baseSet.subtracting(server))
         let keep = { (id: UUID) in !removed.contains(id) }
         let baseOrder = base.filter(keep)
-        let sharedOrder = { (list: [UUID]) in list.filter { baseSet.contains($0) && keep($0) } }
-        let reorderedOnlyByOther = sharedOrder(preferred) == baseOrder && sharedOrder(other) != baseOrder
-        let skeleton = reorderedOnlyByOther ? other : preferred
-        let rest = reorderedOnlyByOther ? preferred : other
-        return inserting(rest, into: skeleton.filter(keep), keeping: keep)
+        let shared = { (list: [UUID]) in list.filter { baseSet.contains($0) && keep($0) } }
+        let preferredMoves = moves(from: baseOrder, to: shared(preferred))
+        let otherMoves = moves(from: baseOrder, to: shared(other)).subtracting(preferredMoves)
+        var result = baseOrder.filter { !preferredMoves.contains($0) && !otherMoves.contains($0) }
+        place(otherMoves, from: shared(other), into: &result, skipping: preferredMoves)
+        place(preferredMoves, from: shared(preferred), into: &result, skipping: otherMoves)
+        result = inserting(preferred, into: result, keeping: keep)
+        return inserting(other, into: result, keeping: keep)
+    }
+
+    /// The items of `list` that left the order of `base`: those outside a longest common subsequence.
+    private static func moves(from base: [UUID], to list: [UUID]) -> Set<UUID> {
+        guard list != base else { return [] }
+        let n = base.count, m = list.count
+        // lengths[i][j] is the longest common subsequence of base[i...] and list[j...].
+        var lengths = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                lengths[i][j] = base[i] == list[j] ? lengths[i + 1][j + 1] + 1 : max(lengths[i + 1][j], lengths[i][j + 1])
+            }
+        }
+        var stayed: Set<UUID> = []
+        var i = 0, j = 0
+        while i < n, j < m {
+            if base[i] == list[j] {
+                stayed.insert(base[i])
+                i += 1
+                j += 1
+            } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        return Set(list).subtracting(stayed)
+    }
+
+    /// Puts each moved item after the item it follows in `list`, skipping items the other side moved, whose
+    /// place is that side's to decide. An item with nothing before it goes first.
+    private static func place(_ moved: Set<UUID>, from list: [UUID], into result: inout [UUID], skipping: Set<UUID>) {
+        guard !moved.isEmpty else { return }
+        var anchor: UUID?
+        for id in list {
+            if moved.contains(id) {
+                let index = anchor.flatMap { result.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+                result.insert(id, at: index)
+                anchor = id
+            } else if !skipping.contains(id) {
+                anchor = id
+            }
+        }
     }
 
     /// Adds the items of `list` missing from `result`, each after the item it follows in `list`.
