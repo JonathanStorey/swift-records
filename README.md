@@ -541,9 +541,13 @@ won't encode, and `RecordsError.unsyncedZone` for `.inMemory` or `.localOnly`, w
 ### Syncing through iCloud files
 
 `FileSyncProvider` syncs through a folder, and the system copies the folder between devices. No server
-is needed.
+is needed. It lives in its own library, `SwiftRecordsFileSync`, so apps that sync another way don't build
+it. Add that product to your target and import it beside `SwiftRecords`. It uses only the public
+`SyncProvider` API, so it doubles as a worked example of a provider.
 
 ```swift
+import SwiftRecordsFileSync
+
 let container = try RecordContainer(for: [Recipe.self], syncProvider: FileSyncProvider())
 ```
 
