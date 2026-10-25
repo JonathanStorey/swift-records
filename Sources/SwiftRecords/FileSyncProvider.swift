@@ -14,7 +14,7 @@ import Foundation
 ///
 /// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder, and
 /// App Group and other folders are watched for changes. A network drive may not report its changes, so
-/// they arrive with the refresh the container runs as the app becomes active, or a manual one.
+/// they arrive with the sync the context runs as the app returns from a break, or a manual one.
 /// Application Support has no other writer, so it isn't watched. When iCloud keeps two versions of a
 /// record file because devices wrote it at once, `NSFileVersion` settles them: the copy with the later
 /// `synced` time stays, as a whole record.

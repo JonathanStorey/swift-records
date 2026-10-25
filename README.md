@@ -385,6 +385,10 @@ the next send. `refresh()` throws only what leaves `status` at `failed`: offline
 errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
 the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
 
+Besides pushes, the one sync the context starts on its own is when the app becomes active after being
+away for `resumeSyncInterval`, five minutes by default. It downloads and sends what's already saved,
+and never saves, so an edit you're in the middle of stays unsaved.
+
 You can switch providers later, for example to a bigger server as traffic grows. Each provider has an
 `identifier`, its type name by default, so return something like the server's URL when one type can reach
 several servers. When a zone's provider identifier changes, the container treats the new server as empty:
@@ -562,7 +566,7 @@ For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder sho
 Other devices' changes arrive on their own through `pushedChanges()`. In iCloud an `NSMetadataQuery`
 watches the folder, including when another device's file finishes downloading. App Group and other
 folders are watched directly, so an extension's saves reach the app at once. A network drive may not
-report its changes, so they arrive with the refresh the container runs as the app becomes active, or a
+report its changes, so they arrive with the sync the context runs as the app returns from a break, or a
 pull to refresh. Application Support isn't watched, since nothing else writes it.
 When two devices write a record file at once, iCloud keeps both versions, and `NSFileVersion` settles
 them by keeping the copy with the later save time as a whole record.

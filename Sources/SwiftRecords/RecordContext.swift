@@ -121,6 +121,13 @@ public final class RecordContext {
         let journals: [(zone: Zone, journal: RecordStore.Journal)]
     }
 
+    /// How long the app must be away before becoming active again syncs, five minutes by default. A
+    /// shorter absence only picks up changes other processes wrote. Pushes from the server sync
+    /// whenever they arrive.
+    @ObservationIgnored public var resumeSyncInterval: TimeInterval = 300
+    /// When the app last stopped being active.
+    @ObservationIgnored var leftAt: Date?
+
     /// Hears what undoes each save, which turns on journaling. `undoManager` sets it.
     @ObservationIgnored var registerUndo: ((SaveStep) -> Void)?
 
@@ -187,14 +194,11 @@ public final class RecordContext {
         self.container = container
         zone = container.initialZone
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
-            self?.saveBeforeLeaving()
-        }, becomeActive: { [weak self] in
             guard let self else { return }
-            if observed.values.allSatisfy({ $0.storage.sync == nil }) {
-                refresh()
-            } else {
-                Task { try? await self.refresh() }
-            }
+            saveBeforeLeaving()
+            leftAt = Date()
+        }, becomeActive: { [weak self] in
+            self?.resume()
         })
         observe(container.initialStorage)
         updateStatus()
@@ -453,6 +457,24 @@ public final class RecordContext {
         // by the time a pull-to-refresh ends.
         for storage in storages {
             zoneDidCommit(storage.zone)
+        }
+    }
+
+    /// Picks up other processes' changes as the app becomes active, and after a long enough absence syncs
+    /// with the server. It never saves: leaving already did.
+    func resume(now: Date = Date()) {
+        refresh()
+        guard let leftAt, now.timeIntervalSince(leftAt) >= resumeSyncInterval else { return }
+        self.leftAt = nil
+        let storages = observed.values.map(\.storage).filter { $0.sync != nil }
+        guard !storages.isEmpty else { return }
+        Task {
+            for storage in storages {
+                try? await storage.sync?.refresh()
+            }
+            for storage in storages {
+                zoneDidCommit(storage.zone)
+            }
         }
     }
 
