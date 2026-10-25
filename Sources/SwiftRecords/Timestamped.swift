@@ -8,9 +8,9 @@ import Foundation
 /// struct Recipe {
 ///     var id = UUID()
 ///     var title: String
-///     @Timestamp(.created) var created: Date?    // stamped on the first save
-///     @Timestamp(.modified) var modified: Date?  // stamped on each save that changes the record
-///     @Timestamp(.synced) var synced: Date?      // nil while the server lacks this version
+///     @Timestamped(.created) var created: Date?    // stamped on the first save
+///     @Timestamped(.modified) var modified: Date?  // stamped on each save that changes the record
+///     @Timestamped(.synced) var synced: Date?      // nil while the server lacks this version
 /// }
 /// ```
 ///
@@ -19,19 +19,19 @@ import Foundation
 /// this device's own view: when the server acknowledged the record as it is now, or `nil` while it has
 /// changes the server doesn't. It isn't stored or sent, and a predicate on it runs in memory.
 ///
-/// `@Timestamp` is a marker that `@Record` turns into a `TimestampStorage` wrapper. Outside a `@Record`
+/// `@Timestamped` is a marker that `@Record` turns into a `TimestampStorage` wrapper. Outside a `@Record`
 /// struct it does nothing, and the compiler warns.
 @attached(peer)
-public macro Timestamp(_ kind: TimestampKind = .modified) = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
+public macro Timestamped(_ kind: TimestampKind = .modified) = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
-/// What the container stamps into a `@Timestamp` property.
+/// What the container stamps into a `@Timestamped` property.
 public enum TimestampKind: String, Sendable {
     case created
     case modified
     case synced
 }
 
-/// The wrapper `@Record` adds to each `@Timestamp` property. Write `@Timestamp` rather than this.
+/// The wrapper `@Record` adds to each `@Timestamped` property. Write `@Timestamped` rather than this.
 @propertyWrapper
 public struct TimestampStorage: Hashable, Sendable, Codable {
     var date: Date?

@@ -30,7 +30,7 @@ final class RecordStore: @unchecked Sendable {
     private var commitObservers: [UUID: @Sendable () -> Void] = [:]
     /// Record types whose renames and indexes have been applied.
     private var prepared: Set<ObjectIdentifier> = []
-    /// Each table's `@Timestamp(.created)` and `@Timestamp(.modified)` columns, which a local change stamps.
+    /// Each table's `@Timestamped(.created)` and `@Timestamped(.modified)` columns, which a local change stamps.
     private var stampColumns: [String: (created: [String], modified: [String])] = [:]
     /// Goes up whenever links change, a row is deleted or an asset file is written: anything a cached copy
     /// of the edited records could not already show.

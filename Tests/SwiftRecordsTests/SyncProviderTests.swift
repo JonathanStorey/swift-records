@@ -224,7 +224,7 @@ struct Device {
         try phone.commit()
         recipe.title = "Carrot cake"
         tablet.context.insert(recipe)
-        try tablet.commit()   // the later edit, but the type has no @Timestamp(.modified) to say so
+        try tablet.commit()   // the later edit, but the type has no @Timestamped(.modified) to say so
 
         try await phone.context.save()
         try await tablet.context.save()

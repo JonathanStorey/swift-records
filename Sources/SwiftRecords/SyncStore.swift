@@ -646,7 +646,7 @@ extension RecordStore {
     }
 
     /// Whether the local copy's edit is later than the server copy's, for a clash, by the
-    /// type's `@Timestamp(.modified)` property. Without one, or without a date on both sides, the server's
+    /// type's `@Timestamped(.modified)` property. Without one, or without a date on both sides, the server's
     /// copy is kept.
     private static func isLocalLater<R: Record>(_ type: R.Type, local: SyncFields, server: SyncFields) -> Bool {
         for field in R.cachedSchema.fields where field.timestamp == .modified {

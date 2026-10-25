@@ -6,7 +6,7 @@ import XCTest
 final class RecordMacroTests: XCTestCase {
     let macros: [String: Macro.Type] = [
         "Record": RecordMacro.self, "Reference": ReferenceMacro.self,
-        "Renamed": MarkerMacro.self, "Indexed": MarkerMacro.self, "Timestamp": MarkerMacro.self,
+        "Renamed": MarkerMacro.self, "Indexed": MarkerMacro.self, "Timestamped": MarkerMacro.self,
     ]
 
     func testGeneratesSchema() {
@@ -314,10 +314,10 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Entry {
                 var id = UUID()
-                @Timestamp(.created) var created: Date?
-                @Timestamp var modified: Date?
-                @Timestamp(TimestampKind.synced) var synced: Date?
-                @Timestamp var wrong: Date
+                @Timestamped(.created) var created: Date?
+                @Timestamped var modified: Date?
+                @Timestamped(TimestampKind.synced) var synced: Date?
+                @Timestamped var wrong: Date
             }
             """,
             expandedSource: """
@@ -341,7 +341,7 @@ final class RecordMacroTests: XCTestCase {
             }
             """,
             diagnostics: [
-                DiagnosticSpec(message: "A @Timestamp property must be declared as 'Date?'", line: 7, column: 20),
+                DiagnosticSpec(message: "A @Timestamped property must be declared as 'Date?'", line: 7, column: 22),
             ],
             macros: macros
         )
@@ -391,7 +391,7 @@ final class RecordMacroTests: XCTestCase {
             """
             struct Settings {
                 @Indexed var name = ""
-                @Timestamp var updated: Date?
+                @Timestamped var updated: Date?
                 @Reference(to: \\Folder.items) var folder: Folder.ID?
             }
             """,
@@ -404,7 +404,7 @@ final class RecordMacroTests: XCTestCase {
             """,
             diagnostics: [
                 DiagnosticSpec(message: "@Indexed has no effect outside a @Record struct", line: 2, column: 5, severity: .warning),
-                DiagnosticSpec(message: "@Timestamp has no effect outside a @Record struct", line: 3, column: 5, severity: .warning),
+                DiagnosticSpec(message: "@Timestamped has no effect outside a @Record struct", line: 3, column: 5, severity: .warning),
                 DiagnosticSpec(message: "@Reference has no effect outside a @Record struct", line: 4, column: 5, severity: .warning),
             ],
             macros: macros

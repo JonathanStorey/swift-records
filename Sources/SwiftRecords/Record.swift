@@ -141,7 +141,7 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         private(set) var previousNames: [String] = []
         /// True for an `@Indexed` property.
         private(set) var isIndexed = false
-        /// What the container stamps into a `@Timestamp` property.
+        /// What the container stamps into a `@Timestamped` property.
         private(set) var timestamp: TimestampKind?
 
         init(

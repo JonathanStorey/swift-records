@@ -85,7 +85,7 @@ public struct RecordChangeData: Sendable, Hashable, Codable {
     /// record's archived system fields, a version number, a hash. `nil` for a copy the server never had,
     /// and always `nil` for a server that doesn't version records.
     public var tag: Data?
-    /// When the server saved this copy, if it says. The container stores it as `@Timestamp(.synced)` and
+    /// When the server saved this copy, if it says. The container stores it as `@Timestamped(.synced)` and
     /// never relies on it.
     public var synced: Date?
 

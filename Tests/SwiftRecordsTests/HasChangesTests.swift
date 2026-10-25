@@ -9,7 +9,7 @@ struct Draft {
     var tags: Set<String> = []
     var steps: [DraftStep] = []
     @Asset(fileExtension: "png") var image: Data?
-    @Timestamp var modified: Date?
+    @Timestamped var modified: Date?
 }
 
 @Record

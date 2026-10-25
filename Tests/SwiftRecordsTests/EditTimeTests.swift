@@ -6,7 +6,7 @@ import Testing
 struct SyncNote {
     var id = UUID.ordered()
     var text = ""
-    @Timestamp(.modified) var edited: Date?
+    @Timestamped(.modified) var edited: Date?
 }
 
 @MainActor

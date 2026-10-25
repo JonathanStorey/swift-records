@@ -63,7 +63,7 @@ being active, such as when the user switches apps or the app quits, so nothing e
 save, `rollback()` discards changes, and `unsavedChanges` counts them. Every fetch
 lays unsaved changes over what's stored, so results include your own edits without saving them. Records come back in a descriptor's `sortBy` order, and
 by ID where that leaves a tie or when there's none. ID order is stable but carries no meaning. A
-`@Timestamp(.created)` property gives you creation order, and a property of your own can hold a manual
+`@Timestamped(.created)` property gives you creation order, and a property of your own can hold a manual
 order. `transaction { }` runs a block
 and saves its changes in one commit, or rolls back just that block's changes if it throws.
 
@@ -205,7 +205,7 @@ terms translate, those run as SQL to narrow the rows and only the rest is checke
   type nested inside another needs one, since its simple name could clash.
 - A property renamed more than once lists every earlier name: `@Renamed(from: "minutes", "time")`.
 - `@Indexed` adds an index to a property that predicates compare, and changes nothing about encoding.
-- `@Reference`, `@Renamed`, `@Indexed` and `@Timestamp` are read by `@Record`, so they only mean
+- `@Reference`, `@Renamed`, `@Indexed` and `@Timestamped` are read by `@Record`, so they only mean
   something on a `@Record` struct's properties. Elsewhere the compiler warns that they have no effect.
 - Generic structs can't be records, since each specialization would need its own fixed name.
 - `rowid`, `oid` and `_rowid_` are SQLite's names for a row's ID, and the macro rejects them as
@@ -304,16 +304,16 @@ predicate and sort translate.
 
 ## Timestamps
 
-`@Timestamp` marks a `Date?` property that the container sets and your code can only read:
+`@Timestamped` marks a `Date?` property that the container sets and your code can only read:
 
 ```swift
 @Record
 struct Journal {
     var id = UUID()
     var text: String
-    @Timestamp(.created) var created: Date?    // stamped on the first save
-    @Timestamp(.modified) var modified: Date?  // stamped on each save that changes the record
-    @Timestamp(.synced) var synced: Date?      // nil while the server lacks this version
+    @Timestamped(.created) var created: Date?    // stamped on the first save
+    @Timestamped(.modified) var modified: Date?  // stamped on each save that changes the record
+    @Timestamped(.synced) var synced: Date?      // nil while the server lacks this version
 }
 ```
 
@@ -321,7 +321,7 @@ struct Journal {
 and every device agrees on them. A save that changes nothing leaves `modified` alone. `.synced` is this
 device's view of the server: when it acknowledged the record as it is now, or `nil` while there are
 changes it doesn't have, so a list can show which rows are still waiting. It isn't stored or sent, and
-a predicate on it runs in memory. A bare `@Timestamp` means `.modified`.
+a predicate on it runs in memory. A bare `@Timestamped` means `.modified`.
 
 ## Unsaved edits
 
@@ -335,7 +335,7 @@ Button("Save") { context.insert(draft); dismiss() }
 
 It counts the context's pending changes and related records, so editing a step marks its recipe as
 changed, and undoing an edit makes it false again. A record the context has never saved is changed.
-`@Timestamp` properties and inverses are left out, because the container sets them. It never saves, so
+`@Timestamped` properties and inverses are left out, because the container sets them. It never saves, so
 a view can call it while it updates, and each call costs one read by ID.
 
 ## Change tracking
@@ -441,7 +441,7 @@ an HTTP ETag works:
 A server that versions records accepts a save only when its tag matches the server's copy, and
 otherwise answers `.conflict` with that copy, which the container merges and sends again. A save that
 works returns `.saved(id:tag:synced:)`. A server without tags returns none and every save overwrites.
-`synced` is optional: when a server gives one, `@Timestamp(.synced)` shows it, and otherwise it shows
+`synced` is optional: when a server gives one, `@Timestamped(.synced)` shows it, and otherwise it shows
 when this device heard the save went through. A provider's tags never reach another provider, because
 changing a zone's provider `identifier` clears them and uploads everything again. Throw
 `SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
@@ -474,7 +474,7 @@ Inverses aren't sent. The container owns the rules:
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
   item by item, so steps added on two devices both survive, and so do steps moved on both. Only a property both sides changed goes to
-  the latest edit, by the copies' `@Timestamp(.modified)` dates, which each device stamps as it saves. A
+  the latest edit, by the copies' `@Timestamped(.modified)` dates, which each device stamps as it saves. A
   type without one has no edit dates to compare, so the server's copy wins, the same answer on every
   device.
 - **A delete beats an edit made elsewhere**, whichever side made it.
@@ -511,7 +511,7 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | `var notes: [Note]` | the notes' record names in order, as a `[String]`, never forward references |
 | a child's `@Reference(to:action:)` | a `CKRecord.Reference` with that action |
 | `@Asset` | a `CKAsset` |
-| inverses, `@Timestamp(.synced)` | nothing: they're rebuilt locally |
+| inverses, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
 
 Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Coming
 back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
