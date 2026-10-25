@@ -33,8 +33,7 @@ package final class ZoneStorage: @unchecked Sendable {
     private var pushTask: Task<Void, Never>?
 
     init(
-        zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false,
-        policies: SyncCoordinator.Policies
+        zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false
     ) throws {
         self.zone = zone
         self.store = store
@@ -45,7 +44,7 @@ package final class ZoneStorage: @unchecked Sendable {
         guard let syncProvider else { return }
         store.syncEnabled = true
         let sync = SyncCoordinator(
-            provider: syncProvider, zone: zone, isPublic: isPublic, store: store, policies: policies,
+            provider: syncProvider, zone: zone, isPublic: isPublic, store: store,
             phaseChanged: { [weak self] phase in
                 Task { @MainActor in self?.syncPhase = phase }
             },

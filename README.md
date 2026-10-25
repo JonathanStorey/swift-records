@@ -135,6 +135,7 @@ context.zone = .default                   // back to the default zone
 try await container.performBackgroundTask(in: "drafts") { try $0.insert(imported) }
 context.zone = .inMemory                  // never written to disk, never synced
 context.zone = .localOnly                 // _local.sqlite, never synced
+let family = try RecordContainer(initialZone: "family")   // its main context starts in family.sqlite
 ```
 
 Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay
@@ -371,8 +372,8 @@ the server hasn't confirmed. It stays at 0 without a provider and grows while of
 You can switch providers later, for example to a bigger server as traffic grows. Each provider has an
 `identifier`, its type name by default, so return something like the server's URL when one type can reach
 several servers. When a zone's provider identifier changes, the container treats the new server as empty:
-it keeps every local record, uploads them all and downloads from the beginning, whatever `onAccountSwitch`
-says, since a new server's user IDs needn't match the old one's.
+it keeps every local record, uploads them all and downloads from the beginning, even if the account
+looks different, since a new server's user IDs needn't match the old one's.
 
 The provider is transport only, so anyone can write one: a CloudKit provider, a central database or a
 folder of files. Each call returns what happened, and the container drives it:
@@ -465,8 +466,11 @@ Inverses aren't sent. The container owns the rules:
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.
-- **Accounts have policies.** `onSignOut` (keep local data by default), `onAccountSwitch` (delete) and
-  `onServerReset` (keep and upload again) decide what an account change does.
+- **Records stay with their account.** Signing out keeps them on the device, tied to the account that
+  synced them, and edits wait for it to sign back in. A different account signing in replaces them with
+  its own, so one person's records never reach another's server data. Records made before any sign-in
+  upload with the first account. When the server loses its copy, the device keeps its records and
+  uploads them all again. An app that wants records gone at sign-out calls `deleteAllData(in:)`.
 
 ### CloudKit records
 

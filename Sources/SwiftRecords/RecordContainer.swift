@@ -21,18 +21,13 @@ public final class RecordContainer: @unchecked Sendable {
     /// The folder holding the zone files, or `nil` for an in-memory container.
     public let directory: URL?
 
-    /// What happens to this device's records when the sync account signs out.
-    public let onSignOut: AccountPolicy
-    /// What happens to this device's records when a different sync account signs in.
-    public let onAccountSwitch: AccountPolicy
-    /// What happens to a zone's records when the server's copy of it is deleted.
-    public let onServerReset: AccountPolicy
+    /// The zone the main context starts in, opened with the container.
+    public let initialZone: Zone
 
     private let types: [any Record.Type]
     private let syncProvider: (any SyncProvider)?
-    private let policies: SyncCoordinator.Policies
-    /// The default zone, opened with the container so `mainContext` can't fail.
-    let defaultStorage: ZoneStorage
+    /// The initial zone, opened with the container so `mainContext` can't fail.
+    let initialStorage: ZoneStorage
     private var storages: [Zone: ZoneStorage]
     /// Created on first use by `mainContext`, on the main actor.
     private nonisolated(unsafe) var mainContextStorage: RecordContext?
@@ -48,19 +43,18 @@ public final class RecordContainer: @unchecked Sendable {
     ///
     /// `syncProvider` keeps each zone in step with its zone on the server, except `.inMemory` and `.localOnly`,
     /// which never sync, and any zone the provider's `syncs(_:)` turns down. The provider decides which zones
-    /// are public. The provider and policies stay fixed for the container's life.
+    /// are public. The provider stays fixed for the container's life.
+    ///
+    /// `initialZone` is where the main context starts and what methods that take an optional zone use. It
+    /// opens with the container, so an error opening it throws here. Switch zones later with
+    /// `RecordContext.zone`.
     public convenience init(
         for types: [any Record.Type] = [],
         directory: URL? = nil,
-        syncProvider: (any SyncProvider)? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData,
-        onServerReset: AccountPolicy = .keepLocalData
+        initialZone: Zone = .default,
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
-        try self.init(
-            for: types, directory: directory, inMemory: false, syncProvider: syncProvider,
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
-        )
+        try self.init(for: types, directory: directory, inMemory: false, initialZone: initialZone, syncProvider: syncProvider)
     }
 
     /// With `inMemory`, every zone lives only as long as the container, for tests.
@@ -68,43 +62,31 @@ public final class RecordContainer: @unchecked Sendable {
         for types: [any Record.Type] = [],
         directory: URL? = nil,
         inMemory: Bool,
-        syncProvider: (any SyncProvider)? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData,
-        onServerReset: AccountPolicy = .keepLocalData
+        initialZone: Zone = .default,
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
         let directory = inMemory ? nil : directory ?? RecordContainer.defaultDirectory
         if let directory {
             try RecordContainer.prepare(directory)
         }
-        let policies = SyncCoordinator.Policies(
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
-        )
         self.directory = directory
+        self.initialZone = initialZone
         self.types = types
         self.syncProvider = syncProvider
-        self.policies = policies
-        self.onSignOut = onSignOut
-        self.onAccountSwitch = onAccountSwitch
-        self.onServerReset = onServerReset
-        defaultStorage = try Self.open(
-            .default, directory: directory, types: types, syncProvider: syncProvider, policies: policies
-        )
-        storages = [.default: defaultStorage]
+        initialStorage = try Self.open(initialZone, directory: directory, types: types, syncProvider: syncProvider)
+        storages = [initialZone: initialStorage]
         if directory != nil {
             Self.register(self)
         }
     }
 
     private static func open(
-        _ zone: Zone, directory: URL?, types: [any Record.Type],
-        syncProvider: (any SyncProvider)?, policies: SyncCoordinator.Policies
+        _ zone: Zone, directory: URL?, types: [any Record.Type], syncProvider: (any SyncProvider)?
     ) throws -> ZoneStorage {
         let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
         let provider = zone.canSync && syncProvider?.syncs(zone) == true ? syncProvider : nil
         return try ZoneStorage(
-            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false,
-            policies: policies
+            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false
         )
     }
 
@@ -115,16 +97,14 @@ public final class RecordContainer: @unchecked Sendable {
         if let storage = storages[zone] {
             return storage
         }
-        let storage = try Self.open(
-            zone, directory: directory, types: types, syncProvider: syncProvider, policies: policies
-        )
+        let storage = try Self.open(zone, directory: directory, types: types, syncProvider: syncProvider)
         storages[zone] = storage
         return storage
     }
 
-    /// The zone's database file, or `nil` in memory.
-    public func url(for zone: Zone = .default) -> URL? {
-        directory.flatMap { zone.url(in: $0) }
+    /// The zone's database file, the initial zone's by default, or `nil` in memory.
+    public func url(for zone: Zone? = nil) -> URL? {
+        directory.flatMap { (zone ?? initialZone).url(in: $0) }
     }
 
     // MARK: Contexts
@@ -141,25 +121,28 @@ public final class RecordContainer: @unchecked Sendable {
         return context
     }
 
-    /// Runs `body` off the main actor with a context of its own in the zone, for work such as an import.
+    /// Runs `body` off the main actor with a context of its own in the zone, the initial zone by default, for
+    /// work such as an import.
     /// Each save or delete commits right away unless it is inside the context's `transaction(_:)`, and the
     /// zone's main context refreshes after each commit.
     ///
     /// Each zone serializes access to its file, so the main context waits while a transaction runs. Keep
     /// transactions to a few hundred records, and split a large import into several.
     public func performBackgroundTask<T: Sendable>(
-        in zone: Zone = .default,
+        in zone: Zone? = nil,
         _ body: @escaping @Sendable (BackgroundContext) throws -> T
     ) async throws -> T {
-        let storage = try storage(for: zone)
+        let storage = try storage(for: zone ?? initialZone)
         return try await Task.detached { try body(BackgroundContext(storage: storage)) }.value
     }
 
-    /// Removes every record and asset file in the zone, along with its change log and sync state, and
+    /// Removes every record and asset file in the zone, the initial zone by default, along with its change log
+    /// and sync state, and
     /// discards its main context's pending changes. Use it for signing out or resetting app data. Nothing
     /// is sent to a sync server: the next sync starts over.
     @MainActor
-    public func deleteAllData(in zone: Zone = .default) throws {
+    public func deleteAllData(in zone: Zone? = nil) throws {
+        let zone = zone ?? initialZone
         mainContextStorage?.rollback(in: zone)
         mainContextStorage?.waitForSaves()
         try storage(for: zone).deleteAllData()
@@ -204,88 +187,88 @@ public final class RecordContainer: @unchecked Sendable {
 
 // MARK: - Package interface
 
-// Tests reach the default zone's store through these.
+// Tests reach the initial zone's store through these.
 extension RecordContainer {
     package func transaction<T>(_ body: () throws -> T) throws -> T {
-        try defaultStorage.transaction(body)
+        try initialStorage.transaction(body)
     }
 
     package func save<R: Record>(_ record: R) throws {
-        try defaultStorage.save(record)
+        try initialStorage.save(record)
     }
 
     package func save<R: Record>(_ records: [R]) throws {
-        try defaultStorage.save(records)
+        try initialStorage.save(records)
     }
 
     package func delete<R: Record>(_ record: R) throws {
-        try defaultStorage.delete(record)
+        try initialStorage.delete(record)
     }
 
     package func delete<R: Record>(_ type: R.Type, id: R.ID) throws {
-        try defaultStorage.delete(type, id: id)
+        try initialStorage.delete(type, id: id)
     }
 
     package func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>?) throws {
-        try defaultStorage.delete(type, where: predicate)
+        try initialStorage.delete(type, where: predicate)
     }
 
     package func fetch<R: Record>(_ type: R.Type, id: R.ID) throws -> R? {
-        try defaultStorage.fetch(type, id: id)
+        try initialStorage.fetch(type, id: id)
     }
 
     package func fetch<R: Record>(_ type: R.Type, ids: [R.ID]) throws -> [R] {
-        try defaultStorage.fetch(type, ids: ids)
+        try initialStorage.fetch(type, ids: ids)
     }
 
     package func fetch<R: Record>(_ type: R.Type, ids: Set<UUID>) throws -> [R] {
-        try defaultStorage.fetch(type, ids: ids)
+        try initialStorage.fetch(type, ids: ids)
     }
 
     package func fetch<R: Record>(_ type: R.Type = R.self, where predicate: Predicate<R>? = nil) throws -> [R] {
-        try defaultStorage.fetch(type, where: predicate)
+        try initialStorage.fetch(type, where: predicate)
     }
 
     package func count<R: Record>(_ type: R.Type, where predicate: Predicate<R>? = nil) throws -> Int {
-        try defaultStorage.count(type, where: predicate)
+        try initialStorage.count(type, where: predicate)
     }
 
     package var changeToken: ChangeToken {
-        get throws { try defaultStorage.changeToken }
+        get throws { try initialStorage.changeToken }
     }
 
     package func changes(since token: ChangeToken = .initial) throws -> [RecordChange] {
-        try defaultStorage.changes(since: token)
+        try initialStorage.changes(since: token)
     }
 
     package func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
-        try defaultStorage.metadata(type, id: id)
+        try initialStorage.metadata(type, id: id)
     }
 
     package func setTag<R: Record>(_ tag: Data?, for type: R.Type, id: R.ID) throws {
-        try defaultStorage.setTag(tag, for: type, id: id)
+        try initialStorage.setTag(tag, for: type, id: id)
     }
 
     package func applyingSyncedChanges<T>(_ body: () throws -> T) throws -> T {
-        try defaultStorage.applyingSyncedChanges(body)
+        try initialStorage.applyingSyncedChanges(body)
     }
 
     package func syncValue(forKey key: String) throws -> Data? {
-        try defaultStorage.syncValue(forKey: key)
+        try initialStorage.syncValue(forKey: key)
     }
 
     package func setSyncValue(_ value: Data?, forKey key: String) throws {
-        try defaultStorage.setSyncValue(value, forKey: key)
+        try initialStorage.setSyncValue(value, forKey: key)
     }
 
     package func fetch<R: Record>(
         _ type: R.Type = R.self, where predicate: Predicate<R>? = nil, limit: Int, offset: Int = 0
     ) throws -> RecordSlice<R> {
-        try defaultStorage.fetch(type, where: predicate, limit: limit, offset: offset)
+        try initialStorage.fetch(type, where: predicate, limit: limit, offset: offset)
     }
 
-    var commitCount: Int { defaultStorage.commitCount }
-    var structureVersion: Int { defaultStorage.structureVersion }
-    package var url: URL? { defaultStorage.url }
-    package var assetsDirectory: URL { defaultStorage.assetsDirectory }
+    var commitCount: Int { initialStorage.commitCount }
+    var structureVersion: Int { initialStorage.structureVersion }
+    package var url: URL? { initialStorage.url }
+    package var assetsDirectory: URL { initialStorage.assetsDirectory }
 }

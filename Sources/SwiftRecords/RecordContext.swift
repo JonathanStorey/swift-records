@@ -24,10 +24,10 @@ public final class RecordContext {
     /// The container this context belongs to.
     public let container: RecordContainer
 
-    /// The zone that saves, deletes and fetches use: `.default` until you set it. Setting it switches every
+    /// The zone that saves, deletes and fetches use: the container's `initialZone` until you set it. Setting it switches every
     /// `@Records` view that doesn't name a zone of its own, and they fetch again from the new zone. Changes
     /// already pending stay with the zone they were made in. A zone's file opens the first time it's used.
-    public var zone: Zone = .default {
+    public var zone: Zone {
         didSet {
             guard zone != oldValue else { return }
             _ = try? storage(for: zone)
@@ -152,6 +152,7 @@ public final class RecordContext {
 
     init(container: RecordContainer) {
         self.container = container
+        zone = container.initialZone
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
             self?.autosave()
         }, becomeActive: { [weak self] in
@@ -162,7 +163,7 @@ public final class RecordContext {
                 Task { try? await self.refresh() }
             }
         })
-        observe(container.defaultStorage)
+        observe(container.initialStorage)
         updateStatus()
     }
 

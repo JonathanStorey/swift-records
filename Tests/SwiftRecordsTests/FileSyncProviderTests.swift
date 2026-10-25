@@ -91,10 +91,10 @@ import Testing
         recipe.photo = Data([1, 2, 3])
         phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
-        await phone.defaultStorage.sync?.transfers()
+        await phone.initialStorage.sync?.transfers()
 
         try await tablet.mainContext.refresh()
-        await tablet.defaultStorage.sync?.transfers()
+        await tablet.initialStorage.sync?.transfers()
         let received = try #require(try await recipes(tablet).first)
         #expect(received.photo == Data([1, 2, 3]))
         let name = try #require(received.$photo.url?.lastPathComponent)
@@ -131,7 +131,7 @@ import Testing
 
         let phone = try device()
         try await phone.mainContext.refresh()
-        await phone.defaultStorage.sync?.transfers()
+        await phone.initialStorage.sync?.transfers()
         let recipe = try #require(try await recipes(phone).first)
         #expect(recipe.id == id)
         #expect(recipe.title == "Bread")

@@ -107,8 +107,8 @@ struct DishV3 {
         let parent = TreeFolder(name: "Parent", subfolders: [child])
         try container.save(parent)
         // Point the child back at its parent through the link table, which no value type can express.
-        try container.defaultStorage.store.transaction {
-            try container.defaultStorage.store.db.run(
+        try container.initialStorage.store.transaction {
+            try container.initialStorage.store.db.run(
                 "INSERT INTO \"TreeFolder.subfolders\" (owner, target, position) VALUES (?, ?, 0)",
                 [try ValueCoding.encode(child.id), try ValueCoding.encode(parent.id)]
             )
@@ -293,7 +293,7 @@ struct DishV3 {
         let first = try RecordContainer(directory: directory)
         let second = try RecordContainer(directory: directory)
         defer { try? FileManager.default.removeItem(at: directory) }
-        #expect(first.defaultStorage.store === second.defaultStorage.store)
+        #expect(first.initialStorage.store === second.initialStorage.store)
 
         // A column the second container adds is visible to the first.
         try first.save(ToDo(title: "Plain"))

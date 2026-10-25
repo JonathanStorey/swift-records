@@ -37,16 +37,11 @@ struct Device {
     let container: RecordContainer
     var context: RecordContext { container.mainContext }
 
-    init(
-        _ server: TestServer, directory: URL? = nil, account: String?? = nil,
-        onSignOut: AccountPolicy = .keepLocalData,
-        onAccountSwitch: AccountPolicy = .deleteLocalData
-    ) throws {
+    init(_ server: TestServer, directory: URL? = nil, account: String?? = nil) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
-            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider,
-            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
+            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -62,13 +57,13 @@ struct Device {
 
     /// Downloads the server's changes without uploading, as if they arrived before anything was sent.
     func download() async {
-        await container.defaultStorage.sync?.download()
+        await container.initialStorage.sync?.download()
         await settle()
     }
 
     /// Waits for the background asset transfers, then lets their progress reach the context.
     func transfers() async {
-        await container.defaultStorage.sync?.transfers()
+        await container.initialStorage.sync?.transfers()
         await settle()
     }
 
@@ -132,7 +127,7 @@ struct Device {
         try await tablet.context.refresh()
         // A pull-to-refresh spinner stops when this returns, so views must already show the new record.
         #expect(refreshes > 0)
-        let stored = try tablet.container.defaultStorage.fetch(SyncRecipe.self)
+        let stored = try tablet.container.initialStorage.fetch(SyncRecipe.self)
         #expect(tablet.context.overlay(stored, in: .default) { _ in true }.map(\.title) == ["Toast"])
     }
 
@@ -166,14 +161,14 @@ struct Device {
         try await phone.context.save()
         #expect(server.count == 4_100)
         #expect(phone.provider.sentBatches.count == 21)
-        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
     }
 
     @Test func ownUploadsComingBackChangeNothing() async throws {
         let phone = try Device(server)
         phone.context.insert(SyncRecipe(title: "Pie", steps: [SyncStep(text: "Bake")]))
         try await phone.context.save()
-        let store = phone.container.defaultStorage.store
+        let store = phone.container.initialStorage.store
         let token = try store.changeToken
         try await phone.context.refresh()
         #expect(try store.changeToken == token)
@@ -187,7 +182,7 @@ struct Device {
         try await tablet.context.refresh()
         try await tablet.context.refresh()
         #expect(tablet.provider.sentBatches.isEmpty)
-        #expect(try tablet.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try tablet.container.initialStorage.store.pendingChanges().isEmpty)
     }
 
     // MARK: Conflicts
@@ -401,7 +396,7 @@ struct Device {
         await phone.download()
         #expect(phone.context.status == .failed(.incompatibleRecord(type: "SyncRecipe", id: id)))
         #expect(try await phone.recipes().map(\.title) == ["Fine"])
-        let parked = try phone.container.defaultStorage.store.db.run("SELECT COUNT(*) AS n FROM \"_records_meta\" WHERE parked IS NOT NULL")
+        let parked = try phone.container.initialStorage.store.db.run("SELECT COUNT(*) AS n FROM \"_records_meta\" WHERE parked IS NOT NULL")
         #expect(parked.first?["n"] == .integer(2))
     }
 
@@ -568,7 +563,7 @@ struct Device {
 
     // MARK: Accounts and resets
 
-    @Test func signingOutKeepsLocalDataByDefault() async throws {
+    @Test func signingOutKeepsLocalData() async throws {
         let phone = try Device(server)
         phone.context.insert(SyncRecipe(title: "Mine"))
         try await phone.context.save()
@@ -589,11 +584,17 @@ struct Device {
         #expect(phone.context.status == .saved)
     }
 
-    @Test func signingOutCanDeleteLocalData() async throws {
-        let phone = try Device(server, onSignOut: .deleteLocalData)
-        phone.context.insert(SyncRecipe(title: "Mine"))
+    @Test func anotherAccountAfterASignOutReplacesTheRecords() async throws {
+        let phone = try Device(server)
+        phone.context.insert(SyncRecipe(title: "Alice's"))
         try await phone.context.save()
         server.withLock { server.account = nil }
+        try await phone.context.refresh()
+        phone.context.insert(SyncRecipe(title: "Unsent"))
+        try await phone.context.save()
+
+        // Bob never sees Alice's records, and none of them reach his account.
+        server.withLock { server.account = "bob" }
         try await phone.context.refresh()
         #expect(try await phone.recipes().isEmpty)
         #expect(server.count == 1)
@@ -620,7 +621,7 @@ struct Device {
         server.reset()
         try await phone.context.refresh()
         #expect(server.count == 2)
-        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
     }
 
     @Test func aFirstSignInUploadsExistingRecords() async throws {
@@ -663,12 +664,12 @@ struct Device {
             phone.context.insert(recipe)
             try await phone.context.save()
             #expect(server.count == 1)
-            #expect(try phone.container.defaultStorage.store.pendingChanges().count == 1)
+            #expect(try phone.container.initialStorage.store.pendingChanges().count == 1)
         }
         let relaunched = try Device(server, directory: directory)
         try await relaunched.context.refresh()
         #expect(relaunched.provider.sentBatches.first?.map(\.id) == [recipe.id])   // answered with a conflict, then merged
-        #expect(try relaunched.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try relaunched.container.initialStorage.store.pendingChanges().isEmpty)
         #expect(try await relaunched.recipes().map(\.title) == ["Unacknowledged"])
     }
 }
@@ -720,7 +721,7 @@ struct Device {
         try await phone.context.save()
         try await tablet.context.refresh()
         #expect(try await tablet.recipes().map(\.title) == ["Stew"])
-        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
     }
 
     @Test func aStaleChangeTagIsAConflict() async throws {
@@ -752,7 +753,7 @@ struct Device {
         #expect(server.value("SyncRecipe", recipe.id, "updated") == .date(Date(timeIntervalSince1970: 1_000.123)))
 
         try await phone.context.refresh()
-        #expect(try phone.container.defaultStorage.store.pendingChanges().isEmpty)
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
     }
 }
 
