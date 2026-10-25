@@ -12,9 +12,10 @@ import Foundation
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
 /// can't miss each other's changes. Deleting a zone's folder counts as a server reset.
 ///
-/// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder, an
-/// App Group folder is watched for its extensions' writes, and any other folder is checked every 10
-/// seconds. Application Support has no other writer, so it isn't watched. When iCloud keeps two versions of a
+/// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder, and
+/// App Group and other folders are watched for changes. A network drive may not report its changes, so
+/// they arrive with the refresh the container runs as the app becomes active, or a manual one.
+/// Application Support has no other writer, so it isn't watched. When iCloud keeps two versions of a
 /// record file because devices wrote it at once, `NSFileVersion` settles them: the copy with the later
 /// `synced` time stays, as a whole record.
 ///
@@ -59,9 +60,8 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         self.location = location
         watchMode = switch location {
         case .iCloud, .iCloudDrive: .metadata
-        case .appGroup: .folder
+        case .appGroup, .other: .folder
         case .applicationSupport: .none
-        case .other: .poll(.seconds(10))
         }
     }
 
@@ -236,9 +236,9 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     enum WatchMode: Equatable {
         /// An `NSMetadataQuery` reports iCloud's downloads.
         case metadata
-        /// The folder itself is watched, for an app and its extensions on one device.
+        /// The folder itself is watched, for an app and its extensions, or a shared or network folder.
         case folder
-        /// The folder is checked on a timer, for folders that don't report changes, such as network drives.
+        /// The folder is checked on a timer, for tests on platforms without folder watching.
         case poll(Duration)
         /// Nothing else writes the folder.
         case none
@@ -285,8 +285,6 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
             source.resume()
             // Pushes whatever changed before watching began.
             checkMarks()
-            #else
-            poll(every: .seconds(10))
             #endif
         case .poll(let interval):
             poll(every: interval)

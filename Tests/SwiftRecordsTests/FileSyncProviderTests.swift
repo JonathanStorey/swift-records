@@ -209,7 +209,7 @@ import Testing
         #expect(FileSyncProvider(location: .iCloud).watchMode == .metadata)
         #expect(FileSyncProvider(location: .appGroup("group.test")).watchMode == .folder)
         #expect(FileSyncProvider(location: .applicationSupport).watchMode == .none)
-        #expect(FileSyncProvider(location: .other(directory: folder)).watchMode == .poll(.seconds(10)))
+        #expect(FileSyncProvider(location: .other(directory: folder)).watchMode == .folder)
     }
 
     @Test func iCloudPathsMapToZones() {
