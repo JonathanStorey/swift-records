@@ -449,7 +449,7 @@ Inverses aren't sent. The container owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
-  item by item, so steps added on two devices both survive. Only a property both sides changed goes to
+  item by item, so steps added on two devices both survive, and so do steps moved on both. Only a property both sides changed goes to
   the latest edit, by the copies' `@Timestamp(.modified)` dates, which each device stamps as it saves. A
   type without one has no edit dates to compare, so the server's copy wins, the same answer on every
   device.
