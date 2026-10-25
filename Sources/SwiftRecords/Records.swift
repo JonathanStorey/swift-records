@@ -22,16 +22,14 @@ import SwiftUI
 /// ```
 ///
 /// The array's order isn't stored. An edit through the binding moves the record to where it sorts, and
-/// moving rows changes nothing.
+/// moving rows changes nothing. Changes animate with the default animation unless you pass another, or
+/// `nil` for none.
 ///
-/// It can also load records by ID, such as an inverse's owners or one record a view was handed:
+/// It can also load records by ID, such as an inverse's owners:
 ///
 /// ```swift
 /// @Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]
-/// @Records(id: recipeID) var recipe: Recipe?
 /// ```
-///
-/// Writing a record to `$recipe` saves it, and writing `nil` deletes it.
 ///
 /// It reads through the main context of the environment's container, or of a shared container on the
 /// default folder when the environment has none. Without a zone it follows the context's `zone`, so setting
@@ -39,7 +37,7 @@ import SwiftUI
 /// zone whatever the context's is, and `@Records(.default)` pins it to the default zone.
 @MainActor
 @propertyWrapper
-public struct Records<Value: Sendable>: DynamicProperty {
+public struct Records<R: Record>: DynamicProperty {
     @Environment(\.recordContainer) private var container
     @State private var cache = Cache()
 
@@ -47,26 +45,29 @@ public struct Records<Value: Sendable>: DynamicProperty {
     private let query: Query
     private let animation: Animation?
 
-    /// What a wrapper fetches and how it writes back, so lists and single records share one cache. Its
-    /// key is a `UUID` or a `Set<UUID>`, and its closures are main-actor isolated, so it is safe to send.
+    /// What a wrapper fetches and how it writes back. Its key is hashable values, and its closures are
+    /// main-actor isolated, so it is safe to send.
     struct Query: @unchecked Sendable {
         /// Identifies the query's arguments, such as the IDs, so changing them fetches again.
         let key: AnyHashable?
-        let empty: Value
-        let fetch: @MainActor (ZoneStorage) throws -> Value
-        /// Re-applies the filter to values the cache already holds, after a save of this view's own edits.
-        let refilter: (@MainActor (Value) -> Value)?
-        /// Writes a binding's new value to the context and returns what the view shows, which for a list is
-        /// the records in the query's order, since the array's order isn't stored.
-        let write: @MainActor (RecordContext, _ zone: Zone, _ new: Value, _ previous: Value, _ source: ObjectIdentifier) -> Value
-        /// Lays the context's unsaved changes over fetched values, so views show them before they commit.
-        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: Value) -> Value
+        let fetch: @MainActor (ZoneStorage) throws -> [R]
+        /// Re-applies the filter to records the cache already holds, after a save of this view's own edits.
+        let refilter: (@MainActor ([R]) -> [R])?
+        /// Writes a binding's new value to the context and returns what the view shows: the records in the
+        /// query's order, since the array's order isn't stored.
+        let write: @MainActor (RecordContext, _ zone: Zone, _ new: [R], _ previous: [R], _ source: ObjectIdentifier) -> [R]
+        /// Lays the context's unsaved changes over fetched records, so views show them before they commit.
+        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: [R]) -> [R]
     }
 
     /// Whether the wrapper follows the context's zone or stays in one.
     enum ZoneChoice {
         case following
         case fixed(Zone)
+
+        init(_ zone: Zone?) {
+            self = zone.map { .fixed($0) } ?? .following
+        }
 
         @MainActor
         func zone(in context: RecordContext) -> Zone {
@@ -77,79 +78,27 @@ public struct Records<Value: Sendable>: DynamicProperty {
         }
     }
 
-    private init(zone: ZoneChoice, query: Query, animation: Animation?) {
-        self.zone = zone
+    private init(zone: Zone?, query: Query, animation: Animation?) {
+        self.zone = ZoneChoice(zone)
         self.query = query
         self.animation = animation
     }
 
-    /// Records from the context's current zone, in the descriptors' order and then by ID. With an animation,
-    /// the view animates as records arrive, change and leave.
-    public init<R: Record>(
-        filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [], animation: Animation? = nil
-    ) where Value == [R] {
-        self.init(zone: .following, query: .list(RecordDescriptor(predicate: predicate, sortBy: sort)), animation: animation)
+    /// The records a descriptor matches, as `@Query` takes a `FetchDescriptor`. A zone pins the wrapper to it
+    /// whatever the context's is, and `nil` follows the context. With a `fetchLimit`, the view shows at most
+    /// that many, so `RecordDescriptor<Recipe>(fetchLimit: 20)` shows the first 20.
+    public init(_ zone: Zone?, _ descriptor: RecordDescriptor<R>, animation: Animation? = .default) {
+        self.init(zone: zone, query: .list(descriptor), animation: animation)
     }
 
-    /// Records from the context's current zone sorted by one property, as `@Query(sort: \.title)`.
-    public init<R: Record, Property: Comparable>(
-        filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property> & Sendable, order: SortOrder = .forward,
-        animation: Animation? = nil
-    ) where Value == [R] {
-        self.init(filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
-    }
-
-    /// Records from the context's current zone sorted by one optional property, with `nil` first in forward order.
-    public init<R: Record, Property: Comparable>(
-        filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property?> & Sendable, order: SortOrder = .forward,
-        animation: Animation? = nil
-    ) where Value == [R] {
-        self.init(filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
-    }
-
-    /// The records a descriptor matches, as `@Query` takes a `FetchDescriptor`. With a `fetchLimit`, the
-    /// view shows at most that many, so `RecordDescriptor<Recipe>(fetchLimit: 20)` shows the first 20.
-    public init<R: Record>(_ descriptor: RecordDescriptor<R>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .following, query: .list(descriptor), animation: animation)
-    }
-
-    /// The records a descriptor matches in one zone, whatever the context's is.
-    public init<R: Record>(_ zone: Zone, _ descriptor: RecordDescriptor<R>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .fixed(zone), query: .list(descriptor), animation: animation)
-    }
-
-    /// Every record of the element type, so `@Records var recipes: [Recipe]` needs no arguments and stays
-    /// out of the view's memberwise initializer.
-    public init() where Value: RecordArray {
-        self.init(zone: .following, query: Value.allRecordsQuery(), animation: nil)
-    }
-
-    /// Records from one zone whatever the context's is, such as `@Records("pantry")`. Pass `.default` for the default zone.
-    public init<R: Record>(
-        _ zone: Zone, filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [], animation: Animation? = nil
-    ) where Value == [R] {
-        self.init(zone: .fixed(zone), query: .list(RecordDescriptor(predicate: predicate, sortBy: sort)), animation: animation)
-    }
-
-    /// The records with these IDs, sorted by ID, such as an inverse's owners:
-    /// `@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]`.
-    public init<R: Record>(ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .following, query: .list(ids: ids), animation: animation)
-    }
-
-    /// The records with these IDs in a zone.
-    public init<R: Record>(_ zone: Zone, ids: Set<UUID>, animation: Animation? = nil) where Value == [R] {
-        self.init(zone: .fixed(zone), query: .list(ids: ids), animation: animation)
-    }
-
-    /// The record with this ID, or `nil` once it's deleted: `@Records(id: recipeID) var recipe: Recipe?`.
-    public init<R: Record>(id: UUID, animation: Animation? = nil) where Value == R? {
-        self.init(zone: .following, query: .single(id: id), animation: animation)
-    }
-
-    /// The record with this ID in a zone.
-    public init<R: Record>(_ zone: Zone, id: UUID, animation: Animation? = nil) where Value == R? {
-        self.init(zone: .fixed(zone), query: .single(id: id), animation: animation)
+    /// Records in the descriptors' order and then by ID. `@Records var recipes: [Recipe]` takes every record,
+    /// and `@Records("pantry")` pins the wrapper to a zone. It lives here rather than in an extension because
+    /// only an initializer in the type's body lets a bare `@Records` stay out of a memberwise initializer.
+    public init(
+        _ zone: Zone? = nil, filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [],
+        animation: Animation? = .default
+    ) {
+        self.init(zone, RecordDescriptor(predicate: predicate, sortBy: sort), animation: animation)
     }
 
     /// The main context of the environment's container, otherwise of the shared one.
@@ -165,12 +114,12 @@ public struct Records<Value: Sendable>: DynamicProperty {
         }
     }
 
-    public var wrappedValue: Value {
+    public var wrappedValue: [R] {
         cache.animation = animation
         return Self.value(context: resolvedContext, cache: cache, query: query, zone: zone)
     }
 
-    public var projectedValue: Binding<Value> {
+    public var projectedValue: Binding<[R]> {
         let context = resolvedContext
         let cache = cache
         let query = query
@@ -193,8 +142,8 @@ public struct Records<Value: Sendable>: DynamicProperty {
         )
     }
 
-    private static func value(context: RecordContext?, cache: Cache, query: Query, zone choice: ZoneChoice) -> Value {
-        guard let context else { return query.empty }
+    private static func value(context: RecordContext?, cache: Cache, query: Query, zone choice: ZoneChoice) -> [R] {
+        guard let context else { return [] }
         // Reading the cache's version registers the dependency. The context bumps it after each change,
         // inside the view's animation.
         _ = cache.version
@@ -223,7 +172,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
             // If the fetch fails, such as while another process holds the file, the view keeps what it
             // showed rather than go blank. A new query has nothing to keep, so it shows nothing.
             let previous = cache.key == key ? cache.stored : nil
-            let stored = (try? query.fetch(context.storage(for: zone))) ?? previous ?? query.empty
+            let stored = (try? query.fetch(context.storage(for: zone))) ?? previous ?? []
             cache.stored = stored
             cache.value = query.overlay(context, zone, stored)
             cache.changeCount = changeCount
@@ -236,7 +185,7 @@ public struct Records<Value: Sendable>: DynamicProperty {
             cache.value = query.overlay(context, zone, stored)
         }
         cache.sequence = context.sequence
-        return cache.value ?? query.empty
+        return cache.value ?? []
     }
 
     /// What the cached value was fetched for.
@@ -250,9 +199,9 @@ public struct Records<Value: Sendable>: DynamicProperty {
     final class Cache {
         var version = 0
         /// What the view shows: the fetched records with unsaved changes laid over them.
-        @ObservationIgnored var value: Value?
+        @ObservationIgnored var value: [R]?
         /// The records as fetched.
-        @ObservationIgnored var stored: Value?
+        @ObservationIgnored var stored: [R]?
         /// The context's last change number this cache has seen.
         @ObservationIgnored var sequence = 0
         @ObservationIgnored var key: CacheKey?
@@ -262,8 +211,37 @@ public struct Records<Value: Sendable>: DynamicProperty {
     }
 }
 
+extension Records {
+    /// The records with these IDs, sorted by ID, such as an inverse's owners:
+    /// `@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]`.
+    public init(_ zone: Zone? = nil, ids: Set<R.ID>, animation: Animation? = .default) {
+        self.init(zone: zone, query: .list(ids: ids), animation: animation)
+    }
+
+    /// The records a descriptor matches in the context's current zone.
+    public init(_ descriptor: RecordDescriptor<R>, animation: Animation? = .default) {
+        self.init(nil, descriptor, animation: animation)
+    }
+
+    /// Records sorted by one property, as `@Query(sort: \.title)`.
+    public init<Property: Comparable>(
+        _ zone: Zone? = nil, filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property> & Sendable,
+        order: SortOrder = .forward, animation: Animation? = .default
+    ) {
+        self.init(zone, filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
+    }
+
+    /// Records sorted by one optional property, with `nil` first in forward order.
+    public init<Property: Comparable>(
+        _ zone: Zone? = nil, filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property?> & Sendable,
+        order: SortOrder = .forward, animation: Animation? = .default
+    ) {
+        self.init(zone, filter: predicate, sort: [SortDescriptor(keyPath, order: order)], animation: animation)
+    }
+}
+
 extension Records.Query {
-    static func list<R: Record>(_ descriptor: RecordDescriptor<R>) -> Self where Value == [R] {
+    static func list(_ descriptor: RecordDescriptor<R>) -> Self {
         let predicate = descriptor.predicate
         let limit = descriptor.fetchLimit
         let order = RecordOrder(descriptor.sortBy)
@@ -277,7 +255,6 @@ extension Records.Query {
                 predicate.map(PredicateFingerprint.of), AnyHashable(descriptor.sortBy), descriptor.fetchLimit.map(AnyHashable.init),
                 AnyHashable(descriptor.fetchOffset),
             ]),
-            empty: [],
             fetch: { try $0.fetch(descriptor) },
             refilter: refilter,
             write: { context, zone, new, previous, source in
@@ -291,72 +268,15 @@ extension Records.Query {
         )
     }
 
-    static func list<R: Record>(ids: Set<UUID>) -> Self where Value == [R] {
+    static func list(ids: Set<R.ID>) -> Self {
         Self(
             key: AnyHashable(ids),
-            empty: [],
             fetch: { try $0.fetch(R.self, ids: ids) },
             refilter: { records in records.filter { ids.contains($0.id) } },
             write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
             overlay: { context, zone, stored in
                 context.overlay(stored, in: zone) { ids.contains($0.id) }
             }
-        )
-    }
-
-    static func single<R: Record>(id: UUID) -> Self where Value == R? {
-        Self(
-            key: AnyHashable(id),
-            empty: nil,
-            fetch: { try $0.fetch(R.self, id: id) },
-            refilter: nil,
-            write: { context, zone, new, previous, _ in
-                if let new {
-                    // The wrapper is bound to one ID, so a record with another one can only be a mistake.
-                    guard new.id == id else {
-                        assertionFailure("@Records(id:) is bound to \(id), so its record's id can't change to \(new.id)")
-                        return previous
-                    }
-                    context.insert(new, in: zone)
-                } else if let previous {
-                    context.delete(previous, in: zone)
-                }
-                return new
-            },
-            overlay: { context, zone, stored in context.overlay(stored, id: id, in: zone) }
-        )
-    }
-}
-
-/// An array of records, which `@Records` fills when it's declared without arguments, as in
-/// `@Records var recipes: [Recipe]`.
-public protocol RecordArray: Sendable {
-    associatedtype RecordElement: Record
-}
-
-extension Array: RecordArray where Element: Record {
-    public typealias RecordElement = Element
-}
-
-extension RecordArray {
-    /// Every record of the element type, typed as this array. Only `[R]` conforms, so the casts hold.
-    @MainActor
-    static func allRecordsQuery() -> Records<Self>.Query {
-        typealias R = RecordElement
-        let query = Records<[R]>.Query.list(RecordDescriptor<R>())
-        let fetch: @MainActor (ZoneStorage) throws -> Self = { try query.fetch($0) as! Self }
-        var refilter: (@MainActor (Self) -> Self)?
-        if let filter = query.refilter {
-            refilter = { filter($0 as! [R]) as! Self }
-        }
-        let write: @MainActor (RecordContext, Zone, Self, Self, ObjectIdentifier) -> Self = { context, zone, new, previous, source in
-            query.write(context, zone, new as! [R], previous as! [R], source) as! Self
-        }
-        let overlay: @MainActor (RecordContext, Zone, Self) -> Self = { context, zone, stored in
-            query.overlay(context, zone, stored as! [R]) as! Self
-        }
-        return Records<Self>.Query(
-            key: query.key, empty: query.empty as! Self, fetch: fetch, refilter: refilter, write: write, overlay: overlay
         )
     }
 }

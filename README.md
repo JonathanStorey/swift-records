@@ -590,19 +590,19 @@ Like `@Query`, `@Records` sorts by one property or by a list of descriptors:
 @Records(filter: #Predicate<ToDo> { !$0.done }, sort: [SortDescriptor(\.priority, order: .reverse)]) var open: [ToDo]
 ```
 
-`@Records(filter:sort:animation:)` animates the list's changes, including ones from a background import.
+A list's changes animate with the default animation, including ones from a background import. Pass
+`animation:` to choose another, or `nil` for none.
 
 `@Records` also loads records by ID, and keeps them current the same way:
 
 ```swift
 @Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // an inverse's owners, sorted by ID
-@Records(id: recipeID) var recipe: Recipe?                   // nil once the recipe is deleted
+@Records(ids: [recipeID]) var recipes: [Recipe]               // one record, empty once it's deleted
 ```
 
-Writing a record to `$recipe` saves it, and writing `nil` deletes it. The wrapper is bound to one ID, so
-writing a record with a different ID is a programmer error: it asserts in debug builds and is ignored in
-release builds. A list works differently. Assigning a different record at an index replaces the old one,
-which is deleted along with its cascades, while the new one brings only its own references.
+`@Records` always holds an array, `Records<Recipe>` wrapping `[Recipe]`. Assigning a different record at
+an index replaces the old one, which is deleted along with its cascades, while the new one brings only its
+own references.
 
 `@Records` reads and writes through the main context of the environment's container, or without one, the
 most recently opened container on the default folder. It follows `context.zone`, so setting the zone
