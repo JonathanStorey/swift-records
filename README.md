@@ -71,6 +71,19 @@ and saves its changes in one commit, or rolls back just that block's changes if 
 blocking while a background import holds the file. For fetches off the main
 actor, use a background context.
 
+Set `undoManager` to make each save one step to undo and redo, rather than each keystroke:
+
+```swift
+@Environment(\.undoManager) private var undoManager
+// ...
+.onAppear { context.undoManager = undoManager }
+```
+
+Undo puts back everything the latest save changed, including cascaded deletes, moved children and asset
+files, and commits that as a save of its own, so it syncs like any other change. Edits that haven't been
+saved aren't steps, and stay laid over what undo brings back. Without an undo manager, saves skip the
+bookkeeping.
+
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. If the save the context makes when the app stops being active fails, such as while a
 widget is writing at the same moment, it sets `lastSaveError` and its changes stay pending for the next

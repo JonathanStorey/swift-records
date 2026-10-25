@@ -48,6 +48,11 @@ final class RecordStore: @unchecked Sendable {
     /// Children whose `.deleteSelf` reference was cleared by the open transaction. Any still without a
     /// parent when it ends are deleted, since a `.deleteSelf` child can't outlive its parent.
     private var orphans: [(table: String, id: SQLiteValue, column: String)] = []
+    /// What the open journaled transaction has changed, for undo, or `nil` when nothing is journaling.
+    var journal: Journal?
+    /// Asset files a journaled transaction released, kept here rather than removed so undo can restore them.
+    lazy var releasedAssetsDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swift-records-undo-\(UUID().uuidString)", isDirectory: true)
 
     var structureVersion: Int { locked { structuralChanges } }
 
@@ -141,6 +146,7 @@ final class RecordStore: @unchecked Sendable {
         if url == nil {
             try? FileManager.default.removeItem(at: assetsDirectory)
         }
+        try? FileManager.default.removeItem(at: releasedAssetsDirectory)
     }
 
     // MARK: Transactions
@@ -238,6 +244,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     func save<R: Record>(_ records: [R]) throws {
+        try registerForJournal(R.self)
         try transaction {
             var visited: Set<RowKey> = []
             for record in records {
@@ -375,7 +382,7 @@ final class RecordStore: @unchecked Sendable {
             // A released name can be stored again later in the same transaction.
             let held = (try? db.run("SELECT 1 FROM \"_records_assets\" WHERE name = ?", [.text(name)]).isEmpty == false) ?? true
             if !held {
-                try? FileManager.default.removeItem(at: assetURL(named: name))
+                keepOrRemoveReleasedFile(named: name)
             }
         }
     }
@@ -398,7 +405,9 @@ final class RecordStore: @unchecked Sendable {
             return
         }
         if existing != nil {
-            try snapshotBeforeChange(table, id: id)
+            try beforeChange(table, id: id)
+        } else {
+            try journalBeforeChange(table, id: id)
         }
         let insertColumns = (["id"] + names).map(quoted).joined(separator: ", ")
         let placeholders = (["?"] + names.map { _ in "?" }).joined(separator: ", ")
@@ -436,7 +445,7 @@ final class RecordStore: @unchecked Sendable {
             }
         }
         guard current != targets else { return }
-        try snapshotBeforeChange(info.ownerTable, id: ownerID)
+        try beforeChange(info.ownerTable, id: ownerID)
         structuralChanges += 1
         // In a synced store the links belong to the owner, so changing them is a change to the owner.
         try logChange(info.ownerTable, id: ownerID)
@@ -535,7 +544,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// Sets a child's reference column, which is a change to the child.
     private func setReference(_ table: String, column: String, id: SQLiteValue, to value: SQLiteValue) throws {
-        try snapshotBeforeChange(table, id: id)
+        try beforeChange(table, id: id)
         structuralChanges += 1
         try db.run("UPDATE \(quoted(table)) SET \(quoted(column)) = ? WHERE id = ?", [value, id])
         try logChange(table, id: id)
@@ -553,7 +562,7 @@ final class RecordStore: @unchecked Sendable {
     private func noteLinkChange(_ info: RelationInfo, ownerID: SQLiteValue) throws {
         structuralChanges += 1
         guard try rowExists(info.ownerTable, id: ownerID) else { return }
-        try snapshotBeforeChange(info.ownerTable, id: ownerID)
+        try beforeChange(info.ownerTable, id: ownerID)
         try logChange(info.ownerTable, id: ownerID)
     }
 
@@ -575,12 +584,14 @@ final class RecordStore: @unchecked Sendable {
     }
 
     func delete<R: Record>(_ type: R.Type, id: R.ID) throws {
+        try registerForJournal(R.self)
         let id = try ValueCoding.encode(id)
         try transaction { try deleteRow(R.table, id: id) }
     }
 
     /// Deletes every record that matches the predicate, or every record of the type without one.
     func delete<R: Record>(_ type: R.Type, where predicate: Predicate<R>?) throws {
+        try registerForJournal(R.self)
         try transaction {
             guard tableExists(R.table) else { return }
             try prepare(R.self)
@@ -629,7 +640,7 @@ final class RecordStore: @unchecked Sendable {
         if case .incompatibleRecord(_, let bad)? = undecodable[table], (try? ValueCoding.encode(bad)) == id {
             setUndecodable(nil, in: table)
         }
-        try snapshotBeforeChange(table, id: id)
+        try beforeChange(table, id: id)
         structuralChanges += 1
         let owned = relations().filter { $0.ownerTable == table }
 
@@ -647,6 +658,7 @@ final class RecordStore: @unchecked Sendable {
         for info in relations() where info.targetTable == table {
             // Owners that still link here lose a link, which changes them.
             for row in try db.run("SELECT owner FROM \(quoted(info.table)) WHERE target = ?", [id]) {
+                try journalBeforeChange(info.ownerTable, id: row["owner"]!)
                 try logChange(info.ownerTable, id: row["owner"]!)
             }
             try db.run("DELETE FROM \(quoted(info.table)) WHERE target = ?", [id])
