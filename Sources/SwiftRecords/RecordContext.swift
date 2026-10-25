@@ -293,16 +293,16 @@ public final class RecordContext {
         insert(record, in: zone)
     }
 
-    func insert<R: Record>(_ record: R, in zone: Zone) {
-        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .saved(record)) { try $0.save(record) }
+    func insert<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier? = nil) {
+        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
     }
 
     public func delete<R: Record>(_ record: R) {
         delete(record, in: zone)
     }
 
-    func delete<R: Record>(_ record: R, in zone: Zone) {
-        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: nil, latest: .deleted) { try $0.delete(record) }
+    func delete<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier? = nil) {
+        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .deleted) { try $0.delete(record) }
     }
 
     /// Deletes every record of the type that matches the predicate when the context saves, applying each

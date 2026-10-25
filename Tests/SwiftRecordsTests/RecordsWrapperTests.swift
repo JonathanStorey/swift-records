@@ -35,6 +35,34 @@ private struct WrapperUses: View {
     }
 }
 
+/// `@Recordable` takes the record from the memberwise initializer, as `@Bindable` does.
+@MainActor
+private struct ToDoDetail: View {
+    @Recordable var todo: ToDo
+    @Recordable("pantry", animation: nil) var person: Person
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Toggle("Done", isOn: $todo.done)
+        Text(person.name)
+        Button("Rename") { todo.title = "Renamed" }
+        Button("Delete") { $todo.delete() }.disabled($todo.isDeleted)
+        Button("Save") { try? $todo.save() }.disabled(!$todo.hasChanges)
+        ToDoRow(todo: $todo.binding)
+    }
+}
+
+@MainActor
+private struct ToDoRow: View {
+    @Binding var todo: ToDo
+    var body: some View { Text(todo.title) }
+}
+
+@MainActor
+private func makeDetail(_ todo: ToDo, _ person: Person) -> ToDoDetail {
+    ToDoDetail(todo: todo, person: person)
+}
+
 /// A bare `@Records` stays out of the memberwise initializer, as `@Query` does.
 @MainActor
 private struct RecipeList {

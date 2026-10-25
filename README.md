@@ -646,6 +646,32 @@ to one. `appendNextPage()` instead appends the next page below the rows already 
 `$todos.hasChanges` says whether edits made through the list are still waiting to save, and
 `$todos.save()` saves now rather than when edits pause.
 
+A detail view binds to one record with `@Recordable`, which works like `@Bindable`: it takes the record
+the view was given and keeps it current.
+
+```swift
+struct ToDoDetail: View {
+    @Recordable var todo: ToDo                    // ToDoDetail(todo: todo)
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            TextField("Title", text: $todo.title)
+            Toggle("Done", isOn: $todo.done)
+            Button("Delete", role: .destructive) { $todo.delete() }
+        }
+        .onChange(of: $todo.isDeleted) { if $1 { dismiss() } }
+    }
+}
+```
+
+`$todo.title` is a `Binding<String>`, and `todo.title = "New"` writes too. Edits save through the main
+context like `@Records` edits, and changes from other views, background work or sync show at once. It reads
+the record by primary key only after a commit it didn't make, so its own typing costs no fetches. Once the
+record is deleted, `todo` keeps its last value, `$todo.isDeleted` turns true, and edits are ignored so a late
+keystroke can't bring it back. `$todo.hasChanges`, `$todo.save()` and `$todo.binding`, the whole record as
+a `Binding<ToDo>`, round it out. It follows `context.zone` unless you pin one: `@Recordable("pantry")`.
+
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.
