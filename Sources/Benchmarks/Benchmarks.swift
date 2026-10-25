@@ -83,7 +83,7 @@ struct Run {
     mutating func all(recipes count: Int, in folder: URL) async throws {
         let server = BenchmarkServer(name: "first")
         var phone: RecordContainer? = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: { _ in server }
+            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: server
         )
         let context = phone!.mainContext
         context.autosaveEnabled = false
@@ -191,7 +191,7 @@ struct Run {
         try expect(server.count == remaining * 6, "server has \(server.count) of \(remaining * 6) records")
 
         let tablet = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: { _ in server }
+            for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: server
         )
         let tabletContext = tablet.mainContext
         tabletContext.autosaveEnabled = false
@@ -218,7 +218,7 @@ struct Run {
         phone = nil
         let newServer = BenchmarkServer(name: "second")
         let moved = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: { _ in newServer }
+            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: newServer
         )
         let movedContext = moved.mainContext
         movedContext.autosaveEnabled = false

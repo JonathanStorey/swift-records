@@ -46,10 +46,23 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// is the provider's type name, so return something more specific when one type can reach several
     /// servers.
     var identifier: String { get }
+
+    /// Whether to sync a zone, asked once as it opens. Return `false` to keep a zone on this device, such as
+    /// drafts. `.inMemory` and `.localOnly` never sync and aren't asked. The default syncs every zone.
+    func syncs(_ zone: Zone) -> Bool
+
+    /// Whether a zone is one everyone shares, such as a public CloudKit database, asked once as it opens.
+    /// The server records who created each of its records and refuses changes from anyone else, signing out
+    /// or switching accounts never deletes them, and they download without an account. The default is `false`.
+    func isPublic(_ zone: Zone) -> Bool
 }
 
 extension SyncProvider {
     public func pushedChanges() -> AsyncStream<[Zone]>? { nil }
+
+    public func syncs(_ zone: Zone) -> Bool { true }
+
+    public func isPublic(_ zone: Zone) -> Bool { false }
 
     public var identifier: String { String(reflecting: Self.self) }
 }

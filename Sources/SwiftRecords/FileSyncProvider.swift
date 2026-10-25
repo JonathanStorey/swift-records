@@ -4,7 +4,7 @@ import Foundation
 /// between the person's devices. No server code is needed.
 ///
 /// ```swift
-/// let container = try RecordContainer(for: [Recipe.self], syncProvider: { _ in FileSyncProvider() })
+/// let container = try RecordContainer(for: [Recipe.self], syncProvider: FileSyncProvider())
 /// ```
 ///
 /// Each record is one readable JSON file, at `Records/<zone>/<type>/<id>.json`, and each asset is a plain
