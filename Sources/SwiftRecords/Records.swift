@@ -13,7 +13,8 @@ import SwiftUI
 /// }
 /// ```
 ///
-/// `$todos` is a real `Binding<[ToDo]>`. Writing to it inserts, updates and deletes records through the
+/// `todos` is a plain array, and `$todos` a `Binding<Records<ToDo>.Results>` that `List` and `ForEach`
+/// edit as they would an array's. Writing to it inserts, updates and deletes records through the
 /// container's `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
 ///
 /// ```swift
@@ -22,8 +23,9 @@ import SwiftUI
 /// ```
 ///
 /// The array's order isn't stored. An edit through the binding moves the record to where it sorts, and
-/// moving rows changes nothing. Changes animate with the default animation unless you pass another, or
-/// `nil` for none.
+/// moving rows changes nothing. With a `fetchLimit`, `$todos.page += 1` shows the next page and
+/// `$todos.appendNextPage()` grows the list, while `$todos.totalCount` counts every match. Changes
+/// animate with the default animation unless you pass another, or `nil` for none.
 ///
 /// It can also load records by ID, such as an inverse's owners:
 ///
@@ -41,6 +43,9 @@ public struct Records<R: Record>: DynamicProperty {
     @Environment(\.recordContainer) private var container
     @State private var cache = Cache()
 
+    /// What `$todos` binds to: the records with their place in the full result.
+    public typealias Results = RecordResults<R>
+
     private let zone: ZoneChoice
     private let query: Query
     private let animation: Animation?
@@ -50,14 +55,18 @@ public struct Records<R: Record>: DynamicProperty {
     struct Query: @unchecked Sendable {
         /// Identifies the query's arguments, such as the IDs, so changing them fetches again.
         let key: AnyHashable?
-        let fetch: @MainActor (ZoneStorage) throws -> [R]
+        /// The page the arguments ask for, which the view's paging can move.
+        let page: RecordPage
+        let fetch: @MainActor (ZoneStorage, RecordPage) throws -> [R]
+        /// Counts every match, for a paged list's `totalCount`.
+        let count: (@MainActor (ZoneStorage) throws -> Int)?
         /// Re-applies the filter to records the cache already holds, after a save of this view's own edits.
         let refilter: (@MainActor ([R]) -> [R])?
         /// Writes a binding's new value to the context and returns what the view shows: the records in the
         /// query's order, since the array's order isn't stored.
         let write: @MainActor (RecordContext, _ zone: Zone, _ new: [R], _ previous: [R], _ source: ObjectIdentifier) -> [R]
         /// Lays the context's unsaved changes over fetched records, so views show them before they commit.
-        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: [R]) -> [R]
+        let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: [R], RecordPage) -> [R]
     }
 
     /// Whether the wrapper follows the context's zone or stays in one.
@@ -119,7 +128,10 @@ public struct Records<R: Record>: DynamicProperty {
         return Self.value(context: resolvedContext, cache: cache, query: query, zone: zone)
     }
 
-    public var projectedValue: Binding<[R]> {
+    /// The records as `Results`, whose indices are positions in the full result. Writing to it
+    /// inserts, updates and deletes records, and `$todos.page`, `appendNextPage()` and `refresh()` move
+    /// through it.
+    public var projectedValue: Binding<Results> {
         let context = resolvedContext
         let cache = cache
         let query = query
@@ -127,7 +139,13 @@ public struct Records<R: Record>: DynamicProperty {
         return Binding(
             get: {
                 MainActor.assumeIsolated {
-                    Self.value(context: context, cache: cache, query: query, zone: choice)
+                    let elements = Self.value(context: context, cache: cache, query: query, zone: choice)
+                    let page = cache.key?.page ?? query.page
+                    return RecordResults(
+                        elements, page: page,
+                        totalCount: page.isPaged ? cache.totalCount : nil,
+                        hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false, pager: cache
+                    )
                 }
             },
             set: { newValue in
@@ -135,7 +153,7 @@ public struct Records<R: Record>: DynamicProperty {
                     guard let context else { return }
                     let previous = Self.value(context: context, cache: cache, query: query, zone: choice)
                     // Show the edit immediately. The context saves it once edits pause.
-                    cache.value = query.write(context, choice.zone(in: context), newValue, previous, ObjectIdentifier(cache))
+                    cache.value = query.write(context, choice.zone(in: context), newValue.elements, previous, ObjectIdentifier(cache))
                     cache.version += 1
                 }
             }
@@ -156,7 +174,8 @@ public struct Records<R: Record>: DynamicProperty {
         }
         let changeCount = context.changeCount
         let zone = choice.zone(in: context)
-        let key = CacheKey(query: query.key, zone: zone)
+        let page = cache.page(for: query)
+        let key = CacheKey(query: query.key, zone: zone, page: page)
         let source = ObjectIdentifier(cache)
         if var value = cache.value, cache.key == key, changeCount == cache.changeCount + 1,
            context.lastSaveSource == source {
@@ -168,13 +187,20 @@ public struct Records<R: Record>: DynamicProperty {
             cache.value = value
             cache.stored = value
             cache.changeCount = changeCount
+            if page.isPaged, let storage = try? context.storage(for: zone) {
+                cache.totalCount = (try? query.count?(storage)) ?? cache.totalCount
+            }
         } else if cache.changeCount != changeCount || cache.value == nil || cache.key != key {
             // If the fetch fails, such as while another process holds the file, the view keeps what it
             // showed rather than go blank. A new query has nothing to keep, so it shows nothing.
             let previous = cache.key == key ? cache.stored : nil
-            let stored = (try? query.fetch(context.storage(for: zone))) ?? previous ?? []
+            let storage = try? context.storage(for: zone)
+            let stored = (try? storage.map { try query.fetch($0, page) }) ?? previous ?? []
+            if page.isPaged, let storage {
+                cache.totalCount = (try? query.count?(storage)) ?? (cache.key == key ? cache.totalCount : nil)
+            }
             cache.stored = stored
-            cache.value = query.overlay(context, zone, stored)
+            cache.value = query.overlay(context, zone, stored, page)
             cache.changeCount = changeCount
             cache.key = key
         } else if context.sequence != cache.sequence,
@@ -182,7 +208,7 @@ public struct Records<R: Record>: DynamicProperty {
                   let stored = cache.stored {
             // Another view or code changed records without saving yet. This view's own edits are
             // already in the cache, so they need no work.
-            cache.value = query.overlay(context, zone, stored)
+            cache.value = query.overlay(context, zone, stored, page)
         }
         cache.sequence = context.sequence
         return cache.value ?? []
@@ -192,11 +218,12 @@ public struct Records<R: Record>: DynamicProperty {
     struct CacheKey: Hashable {
         let query: AnyHashable?
         let zone: Zone
+        let page: RecordPage
     }
 
     @MainActor
     @Observable
-    final class Cache {
+    final class Cache: RecordPager {
         var version = 0
         /// What the view shows: the fetched records with unsaved changes laid over them.
         @ObservationIgnored var value: [R]?
@@ -208,6 +235,30 @@ public struct Records<R: Record>: DynamicProperty {
         @ObservationIgnored var changeCount = -1
         @ObservationIgnored weak var context: RecordContext?
         @ObservationIgnored var animation: Animation?
+        /// Every match, read with each fetch of a paged list.
+        @ObservationIgnored var totalCount: Int?
+        /// The page the view moved to, for the query it moved in. A new query starts at its own page.
+        @ObservationIgnored var moved: (query: AnyHashable?, page: RecordPage)?
+
+        func page(for query: Query) -> RecordPage {
+            if let moved, moved.query == query.key {
+                return moved.page
+            }
+            return query.page
+        }
+
+        func move(to page: RecordPage) {
+            moved = (key?.query, page)
+            withAnimation(animation) { version += 1 }
+        }
+
+        func refresh() async throws {
+            try await context?.refresh()
+        }
+
+        func save() throws {
+            try context?.save()
+        }
     }
 }
 
@@ -243,27 +294,25 @@ extension Records {
 extension Records.Query {
     static func list(_ descriptor: RecordDescriptor<R>) -> Self {
         let predicate = descriptor.predicate
-        let limit = descriptor.fetchLimit
         let order = RecordOrder(descriptor.sortBy)
         var refilter: (@MainActor ([R]) -> [R])?
         if let predicate {
             refilter = { records in (try? records.filter { try predicate.evaluate($0) }) ?? records }
         }
         return Self(
-            // A new filter, sort or page fetches again.
-            key: AnyHashable([
-                predicate.map(PredicateFingerprint.of), AnyHashable(descriptor.sortBy), descriptor.fetchLimit.map(AnyHashable.init),
-                AnyHashable(descriptor.fetchOffset),
-            ]),
-            fetch: { try $0.fetch(descriptor) },
+            // A new filter or sort fetches again. The page is part of the cache's key.
+            key: AnyHashable([predicate.map(PredicateFingerprint.of), AnyHashable(descriptor.sortBy)]),
+            page: RecordPage(limit: descriptor.fetchLimit, offset: descriptor.fetchOffset ?? 0),
+            fetch: { storage, page in try storage.fetch(page.applied(to: descriptor)) },
+            count: { try $0.count(R.self, where: predicate) },
             refilter: refilter,
             write: { context, zone, new, previous, source in
                 context.apply(new, replacing: previous, in: zone, source: source, order: order)
             },
-            overlay: { context, zone, stored in
+            overlay: { context, zone, stored, page in
                 let records = context.overlay(stored, in: zone, order: order) { (try? predicate?.evaluate($0)) ?? true }
                 // A page still holds at most its limit with unsaved records added.
-                return limit.map { Array(records.prefix($0)) } ?? records
+                return page.readLimit.map { Array(records.prefix($0)) } ?? records
             }
         )
     }
@@ -271,13 +320,62 @@ extension Records.Query {
     static func list(ids: Set<R.ID>) -> Self {
         Self(
             key: AnyHashable(ids),
-            fetch: { try $0.fetch(R.self, ids: ids) },
+            page: RecordPage(),
+            fetch: { storage, _ in try storage.fetch(R.self, ids: ids) },
+            count: nil,
             refilter: { records in records.filter { ids.contains($0.id) } },
             write: { context, zone, new, previous, source in context.apply(new, replacing: previous, in: zone, source: source) },
-            overlay: { context, zone, stored in
+            overlay: { context, zone, stored, _ in
                 context.overlay(stored, in: zone) { ids.contains($0.id) }
             }
         )
+    }
+}
+
+/// Paging read naturally off `$todos`, such as `$todos.page += 1`.
+@MainActor
+extension Binding where Value: RecordResultsProtocol {
+    /// Every saved record the query matches, not only the page's.
+    public var totalCount: Int { wrappedValue.totalCount }
+    /// The page size the descriptor chose, or `nil` for no limit.
+    public var fetchLimit: Int? { wrappedValue.fetchLimit }
+    /// How many records come before the page.
+    public var fetchOffset: Int { wrappedValue.fetchOffset }
+    /// The page's number from 0. Setting it shows that page, up to the last.
+    public var page: Int {
+        get { wrappedValue.page }
+        nonmutating set { wrappedValue.show(page: newValue) }
+    }
+    /// How many pages the full result fills, at least 1.
+    public var pageCount: Int { wrappedValue.pageCount }
+    public var hasNextPage: Bool { wrappedValue.hasNextPage }
+    public var hasPreviousPage: Bool { wrappedValue.hasPreviousPage }
+    /// Whether edits made through this list are still waiting to save.
+    public var hasChanges: Bool { wrappedValue.hasChanges }
+
+    /// Shows the next page, if there is one.
+    public func nextPage() {
+        wrappedValue.nextPage()
+    }
+
+    /// Shows the previous page, if there is one.
+    public func previousPage() {
+        wrappedValue.previousPage()
+    }
+
+    /// Appends the next page, for an endless list's last row. `fetchLimit` stays the page size.
+    public func appendNextPage() {
+        wrappedValue.appendNextPage()
+    }
+
+    /// Saves, picks up other processes' changes, and syncs, for `.refreshable`.
+    public func refresh() async throws {
+        try await wrappedValue.refresh()
+    }
+
+    /// Saves the context's pending changes now rather than once edits pause.
+    public func save() throws {
+        try wrappedValue.save()
     }
 }
 
