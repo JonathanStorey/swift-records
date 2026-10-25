@@ -89,8 +89,8 @@ final class SilentProvider: SyncProvider {
         #expect(reason(registering: [ClashOwner.self])?.contains("both stored as \"Clash\"") == true)
         // Nothing was created.
         let container = try RecordContainer(inMemory: true)
-        #expect(throws: RecordsError.self) { try container.defaultStorage.store.register([ClashOwner.self]) }
-        #expect(!container.defaultStorage.store.tableExists("ClashOwner"))
+        #expect(throws: RecordsError.self) { try container.initialStorage.store.register([ClashOwner.self]) }
+        #expect(!container.initialStorage.store.tableExists("ClashOwner"))
     }
 
     @Test func inversesMustPointBack() {

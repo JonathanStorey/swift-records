@@ -42,7 +42,7 @@ private func makeLists() -> [RecipeList] {
         let second = ToDo(title: "Second")
         try container.save([second, first, ToDo(title: "Other")])
         let query = Records<[ToDo]>.Query.list(ids: [first.id, second.id])
-        #expect(try query.fetch(container.defaultStorage).map(\.title) == ["First", "Second"])
+        #expect(try query.fetch(container.initialStorage).map(\.title) == ["First", "Second"])
     }
 
     @Test func environmentContextIsTheContainersMainContext() {
@@ -56,16 +56,16 @@ private func makeLists() -> [RecipeList] {
         var todo = ToDo(title: "One")
         try container.save(todo)
         let query = Records<ToDo?>.Query.single(id: todo.id)
-        #expect(try query.fetch(container.defaultStorage)?.title == "One")
+        #expect(try query.fetch(container.initialStorage)?.title == "One")
 
         todo.title = "Edited"
         _ = query.write(context, .default, todo, nil, ObjectIdentifier(container))
         try context.save()
-        #expect(try query.fetch(container.defaultStorage)?.title == "Edited")
+        #expect(try query.fetch(container.initialStorage)?.title == "Edited")
 
         _ = query.write(context, .default, nil, todo, ObjectIdentifier(container))
         try context.save()
-        #expect(try query.fetch(container.defaultStorage) == nil)
+        #expect(try query.fetch(container.initialStorage) == nil)
     }
 
     @Test func sortedListsKeepTheirOrderThroughEdits() throws {
@@ -73,7 +73,7 @@ private func makeLists() -> [RecipeList] {
         context.autosaveEnabled = false
         try container.save([ToDo(title: "Low", priority: 1), ToDo(title: "High", priority: 9)])
         let query = Records<[ToDo]>.Query.list(RecordDescriptor(sortBy: [SortDescriptor(\ToDo.priority, order: .reverse)]))
-        let stored = try query.fetch(container.defaultStorage)
+        let stored = try query.fetch(container.initialStorage)
         #expect(stored.map(\.title) == ["High", "Low"])
 
         // Raising a priority through the binding moves the row up, and a new row lands in its place.
@@ -94,12 +94,12 @@ private func makeLists() -> [RecipeList] {
         try container.save((0..<4).map { ToDo(title: "T\($0)") })
 
         let page = Records<[ToDo]>.Query.list(RecordDescriptor(fetchLimit: 2, fetchOffset: 1))
-        let stored = try page.fetch(container.defaultStorage)
+        let stored = try page.fetch(container.initialStorage)
         #expect(stored.map(\.title) == ["T1", "T2"])
         context.insert(ToDo(title: "New"))
         #expect(page.overlay(context, .default, stored).map(\.title) == ["T1", "T2"])
         let first = Records<[ToDo]>.Query.list(RecordDescriptor(fetchLimit: 10))
-        #expect(first.overlay(context, .default, try first.fetch(container.defaultStorage)).count == 5)
+        #expect(first.overlay(context, .default, try first.fetch(container.initialStorage)).count == 5)
         #expect(page.key != first.key)
     }
 
@@ -119,15 +119,15 @@ private func makeLists() -> [RecipeList] {
         context.insert(todo)
 
         let all = Records<[ToDo]>.Query.list(RecordDescriptor())
-        #expect(all.overlay(context, .default, try all.fetch(container.defaultStorage)).map(\.title) == ["New"])
+        #expect(all.overlay(context, .default, try all.fetch(container.initialStorage)).map(\.title) == ["New"])
         let done = Records<[ToDo]>.Query.list(RecordDescriptor(predicate: #Predicate<ToDo> { $0.done }))
-        #expect(done.overlay(context, .default, try done.fetch(container.defaultStorage)).map(\.title) == ["New"])
+        #expect(done.overlay(context, .default, try done.fetch(container.initialStorage)).map(\.title) == ["New"])
         let ids = Records<[ToDo]>.Query.list(ids: [todo.id])
-        #expect(ids.overlay(context, .default, try ids.fetch(container.defaultStorage)).map(\.title) == ["New"])
+        #expect(ids.overlay(context, .default, try ids.fetch(container.initialStorage)).map(\.title) == ["New"])
         let one = Records<ToDo?>.Query.single(id: todo.id)
-        #expect(one.overlay(context, .default, try one.fetch(container.defaultStorage))?.title == "New")
+        #expect(one.overlay(context, .default, try one.fetch(container.initialStorage))?.title == "New")
         let bare = [ToDo].allRecordsQuery()
-        #expect(bare.overlay(context, .default, try bare.fetch(container.defaultStorage)).map(\.title) == ["New"])
+        #expect(bare.overlay(context, .default, try bare.fetch(container.initialStorage)).map(\.title) == ["New"])
     }
 }
 #endif

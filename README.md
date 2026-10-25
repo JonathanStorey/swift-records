@@ -135,6 +135,7 @@ context.zone = .default                   // back to the default zone
 try await container.performBackgroundTask(in: "drafts") { try $0.insert(imported) }
 context.zone = .inMemory                  // never written to disk, never synced
 context.zone = .localOnly                 // _local.sqlite, never synced
+let family = try RecordContainer(initialZone: "family")   // its main context starts in family.sqlite
 ```
 
 Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay

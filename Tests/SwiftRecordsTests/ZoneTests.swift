@@ -23,6 +23,19 @@ import Testing
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Main"])
     }
 
+    @Test func theInitialZoneIsWhereEverythingStarts() async throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let container = try RecordContainer(directory: directory, initialZone: "family")
+        let context = container.mainContext
+        #expect(context.zone == "family")
+        #expect(container.url() == directory.appendingPathComponent("family.sqlite"))
+        context.insert(ToDo(title: "Dinner"))
+        try await context.save()
+        #expect(try await container.performBackgroundTask { try $0.fetch(ToDo.self) }.map(\.title) == ["Dinner"])
+        // The default zone's file only appears once something uses it.
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("_default.sqlite").path))
+    }
+
     @Test func pendingChangesStayInTheirZone() throws {
         let context = try RecordContainer(inMemory: true).mainContext
         context.autosaveEnabled = false

@@ -13,7 +13,7 @@ import Testing
         context.autosaveEnabled = false
         context.insert(Person(name: "Ana"))
         try await context.save()
-        container.defaultStorage.store.db.setBusyTimeout(0)
+        container.initialStorage.store.db.setBusyTimeout(0)
 
         // A second connection stands in for a widget in the middle of a write.
         let other = try SQLiteDatabase(url: try #require(container.url))
@@ -40,7 +40,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let container = try RecordContainer(directory: directory)
         try container.save(Person(name: "Ana"))
-        let store = container.defaultStorage.store
+        let store = container.initialStorage.store
         let other = try SQLiteDatabase(url: try #require(container.url))
         other.setBusyTimeout(0)
 
@@ -56,7 +56,7 @@ import Testing
     @Test func referencesAreIndexed() throws {
         let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true)
         try container.save(SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")]))
-        let indexes = try container.defaultStorage.store.db.run(
+        let indexes = try container.initialStorage.store.db.run(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'SyncStep'"
         )
         #expect(indexes.contains { $0["name"] == .text("SyncStep.recipe.index") })
@@ -65,7 +65,7 @@ import Testing
     @Test func pendingChangesReadOnlyUnsentRows() throws {
         let container = try RecordContainer(inMemory: true)
         try container.save(Person(name: "Ana"))
-        let db = container.defaultStorage.store.db
+        let db = container.initialStorage.store.db
         for query in [
             "SELECT record_table FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked ORDER BY seq",
             "SELECT COUNT(*) FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked",
@@ -76,13 +76,13 @@ import Testing
             }
             #expect(plan.contains { $0.contains("_records_meta.pending") }, "\(plan)")
         }
-        #expect(try container.defaultStorage.store.pendingChangeCount() == 1)
+        #expect(try container.initialStorage.store.pendingChangeCount() == 1)
     }
 
     @Test func bookkeepingFitsInFewTables() throws {
         let container = try RecordContainer(inMemory: true)
         try container.save(Person(name: "Ana"))
-        let tables = try container.defaultStorage.store.db.run(
+        let tables = try container.initialStorage.store.db.run(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '\\_records\\_%' ESCAPE '\\'"
         ).compactMap { row -> String? in
             if case .text(let name)? = row["name"] { return name }
@@ -99,7 +99,7 @@ import Testing
         try await context.save()
 
         // Another thread holds the store, so the next save waits in flight.
-        let store = context.container.defaultStorage.store
+        let store = context.container.initialStorage.store
         let held = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
@@ -130,7 +130,7 @@ import Testing
         let bad = ToDo(title: "Bad")
         try container.save([ToDo(title: "A"), bad, ToDo(title: "B")])
         // As if a property changed type: the stored value no longer decodes.
-        try container.defaultStorage.store.db.run(
+        try container.initialStorage.store.db.run(
             "UPDATE \"ToDo\" SET priority = 'high' WHERE id = ?", [try ValueCoding.encode(bad.id)]
         )
 
@@ -153,9 +153,9 @@ import Testing
 
         let records: [ToDo] = try container.fetch(ToDo.self, where: mixed)
         #expect(records.map(\.priority) == [2, 4, 5])
-        let page = try container.defaultStorage.fetch(RecordDescriptor(predicate: mixed, fetchLimit: 2, fetchOffset: 1))
+        let page = try container.initialStorage.fetch(RecordDescriptor(predicate: mixed, fetchLimit: 2, fetchOffset: 1))
         #expect(page.map(\.priority) == [4, 5])
-        #expect(try container.defaultStorage.fetchCount(RecordDescriptor(predicate: mixed)) == 3)
+        #expect(try container.initialStorage.fetchCount(RecordDescriptor(predicate: mixed)) == 3)
     }
 
     @Test func aBindingWriteSavesOnlyWhatChanged() throws {

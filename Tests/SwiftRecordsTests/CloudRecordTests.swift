@@ -32,7 +32,7 @@ import Testing
             Issue.record("The photo isn't an asset")
             return
         }
-        #expect(try Data(contentsOf: phone.container.defaultStorage.store.assetURL(named: id)) == Data([1, 2, 3]))
+        #expect(try Data(contentsOf: phone.container.initialStorage.store.assetURL(named: id)) == Data([1, 2, 3]))
 
         let step = try #require(server.record("SyncStep", recipe.steps[0].id)?.fields)
         #expect(step["recipe"] == .reference(recipe.id, action: .deleteSelf))
@@ -48,7 +48,7 @@ import Testing
         )
         phone.context.insert(recipe)
         try await phone.context.save()
-        let store = phone.container.defaultStorage.store
+        let store = phone.container.initialStorage.store
 
         for (type, id) in [("SyncRecipe", recipe.id), ("SyncStep", recipe.steps[0].id)] {
             let original = try #require(server.record(type, id))
@@ -64,7 +64,7 @@ import Testing
             "title": .string("Soup"), "servings": .int(2), "rating": .double(4.5), "labels": .strings(["a", "b"]),
             "extra": .bytes(Data(#"{"x":1}"#.utf8)), "link": .reference(UUID(), action: .none),
         ])
-        let store = phone.container.defaultStorage.store
+        let store = phone.container.initialStorage.store
         let back = try store.change(for: store.syncRecord(from: change), zone: .default)
         #expect(back.fields?.filter { !["steps", "cook"].contains($0.key) } == change.fields)
     }
@@ -146,7 +146,7 @@ import CloudKit
         recipe.photo = Data([1, 2, 3])
         phone.context.insert(recipe)
         try await phone.context.save()
-        let store = phone.container.defaultStorage.store
+        let store = phone.container.initialStorage.store
 
         // The test server's tags aren't CloudKit's system fields, so these copies go as new records.
         var saved = try #require(server.record("SyncRecipe", recipe.id))

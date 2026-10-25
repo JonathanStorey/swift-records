@@ -45,7 +45,7 @@ struct Journal {
         let cutoff = Date.distantPast
         #expect(try container.fetch(Journal.self, where: #Predicate { $0.modified! > cutoff }).count == 1)
         #expect(try container.fetch(Journal.self, where: #Predicate { $0.synced == nil }).count == 1)
-        #expect(!container.defaultStorage.store.columns["Journal", default: []].contains("synced"))
+        #expect(!container.initialStorage.store.columns["Journal", default: []].contains("synced"))
     }
 
     @Test func encodesAsPlainDatesOutsideAContainer() throws {
