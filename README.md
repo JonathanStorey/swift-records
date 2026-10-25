@@ -681,12 +681,12 @@ struct NewToDo: View {
 
     var body: some View {
         TextField("Title", text: $todo.title)
-        Button("Add Another") { $todo.reset() }.disabled($todo.isNew)
+        Button("Add Another") { $todo.startNew() }.disabled($todo.isNew)
     }
 }
 ```
 
-`$todo.isNew` stays true until that first edit, and `$todo.reset()` starts another new record, leaving the
+`$todo.isNew` stays true until that first edit, and `$todo.startNew()` starts another new record, leaving the
 last one saved. The default value is made again each time the view's parent redraws, so the wrapper keeps
 the record it holds and switches only to a record the store already has. It follows `context.zone`. To pin a zone, set it in the view's initializer:
 `_todo = Recordable(wrappedValue: todo, "pantry")`.

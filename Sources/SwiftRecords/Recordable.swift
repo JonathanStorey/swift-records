@@ -21,7 +21,7 @@ import SwiftUI
 /// or sync show up at once.
 ///
 /// A record the store hasn't seen, such as `@Recordable var todo = ToDo()` in a form for a new one, is new
-/// until its first edit inserts it, and `$todo.reset()` starts another.
+/// until its first edit inserts it, and `$todo.startNew()` starts another.
 ///
 /// It follows the context's `zone`. To pin one, initialize the wrapper in the view's initializer:
 /// `_todo = Recordable(wrappedValue: todo, "pantry")`. Once the record is deleted, `todo` keeps its last
@@ -34,7 +34,7 @@ public struct Recordable<R: Record>: DynamicProperty {
     @State private var cache: Cache
 
     private let initial: R
-    /// Makes the default value again, for `reset()`.
+    /// Makes the default value again, for `startNew()`.
     private let makeInitial: @MainActor () -> R
     private let zone: ZoneChoice
     private let animation: Animation?
@@ -119,8 +119,8 @@ public struct Recordable<R: Record>: DynamicProperty {
 
     /// Starts over with a new record, the wrapper's default value made fresh, such as for "Add Another". The
     /// previous record stays as it was.
-    public func reset() {
-        cache.tracker.reset(to: makeInitial())
+    public func startNew() {
+        cache.tracker.startNew(makeInitial())
         withAnimation(animation) { cache.version += 1 }
     }
 

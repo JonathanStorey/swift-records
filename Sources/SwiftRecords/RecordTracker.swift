@@ -114,7 +114,7 @@ final class RecordTracker<R: Record> {
 
     /// Starts over with `record`, as a new record unless the store already holds it, leaving the previous
     /// record as it is.
-    func reset(to record: R) {
+    func startNew(_ record: R) {
         value = record
         original = record
         isNew = true

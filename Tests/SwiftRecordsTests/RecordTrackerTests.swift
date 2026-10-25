@@ -130,7 +130,7 @@ import Testing
         #expect(tracker.update(context: context, initial: stored, zone: .default) {}.title == "Stored")
     }
 
-    @Test func resetStartsAnotherNewRecord() throws {
+    @Test func startNewBeginsAnotherRecord() throws {
         context.autosaveEnabled = false
         let draft = ToDo(title: "")
         let tracker = RecordTracker(draft)
@@ -139,7 +139,7 @@ import Testing
         edited.title = "First"
         tracker.write(edited, context: context, zone: .default)
         let next = ToDo(title: "")
-        tracker.reset(to: next)
+        tracker.startNew(next)
         #expect(tracker.update(context: context, initial: draft, zone: .default) {}.id == next.id)
         #expect(tracker.isNew)
         try context.save()

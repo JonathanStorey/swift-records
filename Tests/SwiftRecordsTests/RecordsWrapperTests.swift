@@ -65,7 +65,7 @@ private struct NewToDo: View {
 
     var body: some View {
         TextField("Title", text: $todo.title)
-        Button("Another") { $todo.reset() }.disabled($todo.isNew)
+        Button("Another") { $todo.startNew() }.disabled($todo.isNew)
         Button("Undo") { $todo.rollback() }
     }
 }
