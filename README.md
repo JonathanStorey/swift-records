@@ -691,6 +691,22 @@ last one saved. The default value is made again each time the view's parent redr
 the record it holds and switches only to a record the store already has. It follows `context.zone`. To pin a zone, set it in the view's initializer:
 `_todo = Recordable(wrappedValue: todo, "pantry")`.
 
+`@RecordStorage` keeps one record as a setting, the way `@AppStorage` keeps a value, and syncs it:
+
+```swift
+@RecordStorage var preferences = Preferences()               // keyed by the type's table name
+@RecordStorage("favorite") var favorite = Recipe(title: "")
+
+Toggle("Metric", isOn: $preferences.metric)
+```
+
+Each key lives in a zone of its own, `Zone.settings("favorite")`, so settings never mix with each other or
+with app data, and switching `context.zone` leaves them alone. The setting reads as the default value until
+the first edit stores it, and `$preferences.restoreDefault()` deletes it again. If two devices each store a
+setting before they sync, every device shows the one with the lower ID, the older with `UUID.ordered()`,
+and the next edit deletes the other. Each key is a file and a server zone, which suits dozens of settings
+rather than hundreds.
+
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.

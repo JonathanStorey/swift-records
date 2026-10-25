@@ -26,6 +26,35 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     /// doesn't ask its sync provider about it.
     public static let localOnly = Zone(unchecked: "_local")
 
+    /// The zone `@RecordStorage` keeps one setting in, `_settings.favorite` for the key `"favorite"`, so
+    /// each setting syncs, resets and fails on its own. The key follows the rules for zone names.
+    public static func settings(_ key: String) -> Zone {
+        let key = key.lowercased()
+        precondition(isValid(key), "\"\(key)\" is not a valid settings key. Use 1 to 64 letters, digits, - or _, starting with a letter.")
+        return Zone(unchecked: settingsPrefix + key)
+    }
+
+    private static let settingsPrefix = "_settings."
+
+    /// A table name made into a valid settings key, with anything a zone name can't hold turned into `_`.
+    static func settingsKey(for table: String) -> String {
+        let key = String(table.lowercased().unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return letters.contains(key.unicodeScalars.first ?? "_") ? key : "s" + key
+    }
+
+    /// The zone a stored name refers to, such as a file's or a server zone's, reserved names included.
+    init?(stored name: String) {
+        if let zone = Zone.reserved.first(where: { $0.name == name }) {
+            self = zone
+        } else if name.hasPrefix(Zone.settingsPrefix), Zone.isValid(String(name.dropFirst(Zone.settingsPrefix.count))) {
+            self.init(unchecked: name)
+        } else if let zone = try? Zone(name) {
+            self = zone
+        } else {
+            return nil
+        }
+    }
+
     /// Throws `RecordsError.invalidZoneName` unless the name, once lowercased, is a valid zone name.
     public init(_ name: String) throws {
         let lowercased = name.lowercased()
@@ -47,7 +76,8 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
 
     public init(from decoder: any Decoder) throws {
         let name = try decoder.singleValueContainer().decode(String.self)
-        self = try Zone.reserved.first { $0.name == name } ?? Zone(name)
+        guard let zone = Zone(stored: name) else { throw RecordsError.invalidZoneName(name) }
+        self = zone
     }
 
     public func encode(to encoder: any Encoder) throws {
