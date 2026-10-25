@@ -69,24 +69,6 @@ public struct Records<R: Record>: DynamicProperty {
         let overlay: @MainActor (RecordContext, _ zone: Zone, _ stored: [R], RecordPage) -> [R]
     }
 
-    /// Whether the wrapper follows the context's zone or stays in one.
-    enum ZoneChoice {
-        case following
-        case fixed(Zone)
-
-        init(_ zone: Zone?) {
-            self = zone.map { .fixed($0) } ?? .following
-        }
-
-        @MainActor
-        func zone(in context: RecordContext) -> Zone {
-            switch self {
-            case .following: context.zone
-            case .fixed(let zone): zone
-            }
-        }
-    }
-
     private init(zone: Zone?, query: Query, animation: Animation?) {
         self.zone = ZoneChoice(zone)
         self.query = query
@@ -110,18 +92,7 @@ public struct Records<R: Record>: DynamicProperty {
         self.init(zone, RecordDescriptor(predicate: predicate, sortBy: sort), animation: animation)
     }
 
-    /// The main context of the environment's container, otherwise of the shared one.
-    private var resolvedContext: RecordContext? {
-        if let container {
-            return container.mainContext
-        }
-        do {
-            return try RecordContainer.shared().mainContext
-        } catch {
-            assertionFailure("@Records could not open the default folder: \(error)")
-            return nil
-        }
-    }
+    private var resolvedContext: RecordContext? { mainContext(of: container) }
 
     public var wrappedValue: [R] {
         cache.animation = animation
@@ -376,6 +347,38 @@ extension Binding where Value: RecordResultsProtocol {
     /// Saves the context's pending changes now rather than once edits pause.
     public func save() throws {
         try wrappedValue.save()
+    }
+}
+
+/// Whether a wrapper follows the context's zone or stays in one.
+enum ZoneChoice {
+    case following
+    case fixed(Zone)
+
+    init(_ zone: Zone?) {
+        self = zone.map { .fixed($0) } ?? .following
+    }
+
+    @MainActor
+    func zone(in context: RecordContext) -> Zone {
+        switch self {
+        case .following: context.zone
+        case .fixed(let zone): zone
+        }
+    }
+}
+
+/// The main context of the environment's container, otherwise of the shared one.
+@MainActor
+func mainContext(of container: RecordContainer?) -> RecordContext? {
+    if let container {
+        return container.mainContext
+    }
+    do {
+        return try RecordContainer.shared().mainContext
+    } catch {
+        assertionFailure("SwiftRecords could not open the default folder: \(error)")
+        return nil
     }
 }
 

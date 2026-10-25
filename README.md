@@ -646,6 +646,51 @@ to one. `appendNextPage()` instead appends the next page below the rows already 
 `$todos.hasChanges` says whether edits made through the list are still waiting to save, and
 `$todos.save()` saves now rather than when edits pause.
 
+A detail view binds to one record with `@Recordable`, which works like `@Bindable`: it takes the record
+the view was given and keeps it current.
+
+```swift
+struct ToDoDetail: View {
+    @Recordable var todo: ToDo                    // ToDoDetail(todo: todo)
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            TextField("Title", text: $todo.title)
+            Toggle("Done", isOn: $todo.done)
+            Button("Delete", role: .destructive) { $todo.delete() }
+        }
+        .onChange(of: $todo.isDeleted) { if $1 { dismiss() } }
+    }
+}
+```
+
+`$todo.title` is a `Binding<String>`, and `todo.title = "New"` writes too. Edits save through the main
+context like `@Records` edits, and changes from other views, background work or sync show at once. It reads
+the record by primary key only after a commit it didn't make, so its own typing costs no fetches. Once the
+record is deleted, `todo` keeps its last value, `$todo.isDeleted` turns true, and edits are ignored so a late
+keystroke can't bring it back. `$todo.hasChanges`, `$todo.save()`, `$todo.rollback()`, which drops only this
+wrapper's unsaved edits, and `$todo.binding`, the whole record as a `Binding<ToDo>`, round it out.
+
+A form for a new record gives the wrapper a default value. The record is new until its first edit inserts
+it, and from then on it shows live in every `@Records`:
+
+```swift
+struct NewToDo: View {
+    @Recordable var todo = ToDo(title: "")
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Button("Add Another") { $todo.startNew() }.disabled($todo.isNew)
+    }
+}
+```
+
+`$todo.isNew` stays true until that first edit, and `$todo.startNew()` starts another new record, leaving the
+last one saved. The default value is made again each time the view's parent redraws, so the wrapper keeps
+the record it holds and switches only to a record the store already has. It follows `context.zone`. To pin a zone, set it in the view's initializer:
+`_todo = Recordable(wrappedValue: todo, "pantry")`.
+
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.

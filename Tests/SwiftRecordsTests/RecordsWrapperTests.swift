@@ -35,6 +35,52 @@ private struct WrapperUses: View {
     }
 }
 
+/// `@Recordable` takes the record from the memberwise initializer, as `@Bindable` does.
+@MainActor
+private struct ToDoDetail: View {
+    @Recordable var todo: ToDo
+    @Recordable var person: Person
+
+    /// A zone or animation goes through the wrapper's initializer, as attribute arguments would need a default.
+    init(todo: ToDo, person: Person) {
+        _todo = Recordable(wrappedValue: todo)
+        _person = Recordable(wrappedValue: person, "pantry", animation: nil)
+    }
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Toggle("Done", isOn: $todo.done)
+        Text(person.name)
+        Button("Rename") { todo.title = "Renamed" }
+        Button("Delete") { $todo.delete() }.disabled($todo.isDeleted)
+        Button("Save") { try? $todo.save() }.disabled(!$todo.hasChanges)
+        ToDoRow(todo: $todo.binding)
+    }
+}
+
+/// A default value makes a new record, which its first edit inserts.
+@MainActor
+private struct NewToDo: View {
+    @Recordable var todo = ToDo(title: "")
+
+    var body: some View {
+        TextField("Title", text: $todo.title)
+        Button("Another") { $todo.startNew() }.disabled($todo.isNew)
+        Button("Undo") { $todo.rollback() }
+    }
+}
+
+@MainActor
+private struct ToDoRow: View {
+    @Binding var todo: ToDo
+    var body: some View { Text(todo.title) }
+}
+
+@MainActor
+private func makeDetail(_ todo: ToDo, _ person: Person) -> ToDoDetail {
+    ToDoDetail(todo: todo, person: person)
+}
+
 /// A bare `@Records` stays out of the memberwise initializer, as `@Query` does.
 @MainActor
 private struct RecipeList {
