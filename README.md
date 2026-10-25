@@ -61,7 +61,7 @@ shows them at once, so the interface is live before anything saves, but widgets,
 other devices see them only after a save. The one save the context makes on its own is when the app stops
 being active, such as when the user switches apps or the app quits, so nothing entered is lost. Until a
 save, `rollback()` discards changes, and `unsavedChanges` counts them. Every fetch
-saves first, so results include your own edits. Records come back in a descriptor's `sortBy` order, and
+lays unsaved changes over what's stored, so results include your own edits without saving them. Records come back in a descriptor's `sortBy` order, and
 by ID where that leaves a tie or when there's none. ID order is stable but carries no meaning. A
 `@Timestamp(.created)` property gives you creation order, and a property of your own can hold a manual
 order. `transaction { }` runs a block

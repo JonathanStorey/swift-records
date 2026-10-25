@@ -511,30 +511,48 @@ public final class RecordContext {
 
     // MARK: Fetching
 
-    /// Saves pending changes, then fetches the records the descriptor matches in its order, so results
-    /// always include your own edits.
+    /// Fetches the records the descriptor matches in its order, with this context's unsaved changes laid
+    /// over them, so results include your own edits without saving them.
     public func fetch<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [R] {
-        try save()
-        return try storage(for: zone).fetch(descriptor)
+        let storage = try storage(for: zone)
+        guard hasUnsavedChanges(to: R.table, in: zone) else { return try storage.fetch(descriptor) }
+        // Unsaved records can move a page's bounds, so the page is cut after laying them over every match.
+        var all = descriptor
+        all.fetchLimit = nil
+        all.fetchOffset = nil
+        let predicate = descriptor.predicate
+        let records = overlay(try storage.fetch(all), in: zone, order: RecordOrder(descriptor.sortBy)) {
+            (try? predicate?.evaluate($0)) ?? true
+        }
+        return Array(records.dropFirst(descriptor.fetchOffset ?? 0).prefix(descriptor.fetchLimit ?? .max))
     }
 
-    /// Saves pending changes, then fetches every record of the type, sorted by ID.
+    /// Fetches every record of the type, sorted by ID, with unsaved changes laid over them.
     public func fetch<R: Record>(_ type: R.Type) throws -> [R] {
         try fetch(RecordDescriptor<R>())
     }
 
-    /// Saves pending changes, then counts the records the descriptor matches, in SQL when the predicate
-    /// translates.
+    /// Counts the records the descriptor matches, unsaved changes included, in SQL when the predicate
+    /// translates and nothing of the type is unsaved.
     public func fetchCount<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> Int {
-        try save()
-        return try storage(for: zone).fetchCount(descriptor)
+        guard hasUnsavedChanges(to: R.table, in: zone) else { return try storage(for: zone).fetchCount(descriptor) }
+        return try fetch(descriptor).count
     }
 
-    /// Saves pending changes, then returns the IDs of the records the descriptor matches in its order,
-    /// without loading the records when the predicate and sort translate to SQL.
+    /// Returns the IDs of the records the descriptor matches in its order, unsaved changes included,
+    /// without loading the records when the predicate and sort translate to SQL and nothing of the type
+    /// is unsaved.
     public func fetchIdentifiers<R: Record>(_ descriptor: RecordDescriptor<R>) throws -> [UUID] {
-        try save()
-        return try storage(for: zone).fetchIdentifiers(descriptor)
+        guard hasUnsavedChanges(to: R.table, in: zone) else {
+            return try storage(for: zone).fetchIdentifiers(descriptor)
+        }
+        return try fetch(descriptor).map(\.id)
+    }
+
+    /// Whether changes to the table in the zone are waiting to save or saving now.
+    private func hasUnsavedChanges(to table: String, in zone: Zone) -> Bool {
+        let matches = { (change: Change) in change.zone == zone && (change.table == table || change.table == nil) }
+        return pending.values.contains(where: matches) || inFlight.values.contains(where: matches)
     }
 
     /// The record with this ID as this context holds it, with any unsaved change, or `nil` if there's
@@ -575,11 +593,10 @@ public final class RecordContext {
         return try storage(for: zone).changes(since: token)
     }
 
-    /// Saves pending changes, then returns a record's version, modification time and tag, or `nil` when
-    /// the record doesn't exist.
+    /// The saved record's version, modification time and tag, or `nil` when the store doesn't hold it.
+    /// Unsaved changes have no metadata until they're saved.
     public func metadata<R: Record>(_ type: R.Type, id: R.ID) throws -> RecordMetadata? {
-        try save()
-        return try storage(for: zone).metadata(type, id: id)
+        try storage(for: zone).metadata(type, id: id)
     }
 
     // MARK: Unsaved changes in views

@@ -80,9 +80,25 @@ import Testing
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Earlier", "Kept"])
     }
 
-    @Test func fetchIncludesPendingChanges() throws {
-        context.insert(ToDo(title: "Pending"))
-        #expect(try context.fetch(ToDo.self).map(\.title) == ["Pending"])
+    @Test func fetchIncludesPendingChangesWithoutSaving() throws {
+        let saved = ToDo(title: "Saved", priority: 2)
+        try context.container.save(saved)
+        context.insert(ToDo(title: "Pending", priority: 1))
+        var edited = saved
+        edited.priority = 0
+        context.insert(edited)
+        let byPriority = RecordDescriptor<ToDo>(sortBy: [SortDescriptor(\.priority)])
+        #expect(try context.fetch(byPriority).map(\.title) == ["Saved", "Pending"])
+        var page = byPriority
+        page.fetchOffset = 1
+        page.fetchLimit = 1
+        #expect(try context.fetch(page).map(\.title) == ["Pending"])
+        #expect(try context.fetchCount(RecordDescriptor<ToDo>()) == 2)
+        #expect(try context.fetchIdentifiers(byPriority).count == 2)
+        #expect(context.hasChanges)
+        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Saved"])
+        context.delete(record: ToDo.self, where: #Predicate { $0.priority == 1 })
+        #expect(try context.fetch(ToDo.self).map(\.title) == ["Saved"])
     }
 
 
