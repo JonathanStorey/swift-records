@@ -817,3 +817,32 @@ private actor Seen {
         values.append(value)
     }
 }
+
+@MainActor
+@Suite struct ResumeTests {
+    let server = TestServer()
+
+    @Test func resumingSyncsOnlyAfterABreakAndNeverSaves() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        try await tablet.context.refresh()
+        phone.context.insert(SyncRecipe(title: "Soup"))
+        try await phone.context.save()
+        tablet.context.insert(SyncRecipe(title: "Draft"))
+
+        let left = Date()
+        tablet.context.leftAt = left
+        tablet.context.resume(now: left.addingTimeInterval(60))
+        await tablet.settle()
+        #expect(try await tablet.recipes().map(\.title) == ["Draft"])
+
+        tablet.context.resume(now: left.addingTimeInterval(300))
+        for _ in 0..<200 where try await tablet.recipes().count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(try await tablet.recipes().map(\.title).sorted() == ["Draft", "Soup"])
+        // The draft stays unsaved, and nothing went up.
+        #expect(tablet.context.hasChanges)
+        #expect(server.count == 1)
+    }
+}

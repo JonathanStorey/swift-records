@@ -112,7 +112,56 @@ public final class RecordContext {
         /// Each zone's commit count just before this batch committed to it.
         let bases: [Zone: Int]
         let changedStructure: Bool
+        /// What undoes the commit, when the context journals for undo and the commit changed something.
+        var undo: SaveStep? = nil
     }
+
+    /// What one save changed in each zone, which `undo(_:)` puts back.
+    struct SaveStep: Sendable {
+        let journals: [(zone: Zone, journal: RecordStore.Journal)]
+    }
+
+    /// How long the app must be away before becoming active again syncs, five minutes by default. A
+    /// shorter absence only picks up changes other processes wrote. Pushes from the server sync
+    /// whenever they arrive.
+    @ObservationIgnored public var resumeSyncInterval: TimeInterval = 300
+    /// When the app last stopped being active.
+    @ObservationIgnored var leftAt: Date?
+
+    /// Hears what undoes each save, which turns on journaling. `undoManager` sets it.
+    @ObservationIgnored var registerUndo: ((SaveStep) -> Void)?
+
+    #if canImport(Darwin)
+    /// Makes each save one step to undo and redo, rather than each edit. Undo puts back what the latest
+    /// save changed, cascades included, and commits that as a save of its own, which syncs. Edits that
+    /// haven't saved aren't steps, and stay laid over what undo brings back. `nil`, the default, turns
+    /// undo off, and saves then skip the bookkeeping.
+    ///
+    /// ```swift
+    /// @Environment(\.undoManager) private var undoManager
+    /// .onAppear { context.undoManager = undoManager }
+    /// ```
+    @ObservationIgnored public var undoManager: UndoManager? {
+        didSet {
+            registerUndo = undoManager.map { manager in
+                { [weak self, weak manager] step in
+                    guard let self, let manager else { return }
+                    self.register(step, with: manager)
+                }
+            }
+        }
+    }
+
+    private func register(_ step: SaveStep, with manager: UndoManager) {
+        // Without event grouping, an action needs a group of its own.
+        let opensGroup = !manager.groupsByEvent && manager.groupingLevel == 0
+        if opensGroup { manager.beginUndoGrouping() }
+        manager.registerUndo(withTarget: self) { context in
+            MainActor.assumeIsolated { try? context.undo(step) }
+        }
+        if opensGroup { manager.endUndoGrouping() }
+    }
+    #endif
 
     private struct ChangeHandler {
         weak var owner: AnyObject?
@@ -145,14 +194,11 @@ public final class RecordContext {
         self.container = container
         zone = container.initialZone
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
-            self?.saveBeforeLeaving()
-        }, becomeActive: { [weak self] in
             guard let self else { return }
-            if observed.values.allSatisfy({ $0.storage.sync == nil }) {
-                refresh()
-            } else {
-                Task { try? await self.refresh() }
-            }
+            saveBeforeLeaving()
+            leftAt = Date()
+        }, becomeActive: { [weak self] in
+            self?.resume()
         })
         observe(container.initialStorage)
         updateStatus()
@@ -335,7 +381,8 @@ public final class RecordContext {
             return
         }
         let container = container
-        let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
+        let journaling = registerUndo != nil
+        let result = writer.sync { Result { try Self.commit(batch.changes, in: container, journaling: journaling) } }
         try finish(batch, result, keepingFailures: { _ in true })
     }
 
@@ -413,6 +460,24 @@ public final class RecordContext {
         }
     }
 
+    /// Picks up other processes' changes as the app becomes active, and after a long enough absence syncs
+    /// with the server. It never saves: leaving already did.
+    func resume(now: Date = Date()) {
+        refresh()
+        guard let leftAt, now.timeIntervalSince(leftAt) >= resumeSyncInterval else { return }
+        self.leftAt = nil
+        let storages = observed.values.map(\.storage).filter { $0.sync != nil }
+        guard !storages.isEmpty else { return }
+        Task {
+            for storage in storages {
+                try? await storage.sync?.refresh()
+            }
+            for storage in storages {
+                zoneDidCommit(storage.zone)
+            }
+        }
+    }
+
     /// Blocks until async saves already started have committed.
     func waitForSaves() {
         writer.sync {}
@@ -431,9 +496,10 @@ public final class RecordContext {
         savesInFlight += 1
         let container = container
         let changes = batch.changes
+        let journaling = registerUndo != nil
         let result = await withCheckedContinuation { continuation in
             writer.async {
-                continuation.resume(returning: Result { try Self.commit(changes, in: container) })
+                continuation.resume(returning: Result { try Self.commit(changes, in: container, journaling: journaling) })
             }
         }
         savesInFlight -= 1
@@ -441,7 +507,7 @@ public final class RecordContext {
     }
 
     /// Commits each zone's changes in a transaction of its own, zone by zone in the order they were first made.
-    private nonisolated static func commit(_ changes: [Change], in container: RecordContainer) throws -> Commit {
+    private nonisolated static func commit(_ changes: [Change], in container: RecordContainer, journaling: Bool) throws -> Commit {
         var zones: [Zone] = []
         var byZone: [Zone: [Change]] = [:]
         for change in changes {
@@ -452,18 +518,64 @@ public final class RecordContext {
         }
         var bases: [Zone: Int] = [:]
         var changedStructure = false
+        var journals: [(zone: Zone, journal: RecordStore.Journal)] = []
         for zone in zones {
             let storage = try container.storage(for: zone)
             let structure = storage.structureVersion
-            try storage.transaction {
-                bases[zone] = storage.commitCount
-                for change in byZone[zone]! {
-                    try change.run(storage)
+            let journal = try journaled(journaling, storage) {
+                try storage.transaction {
+                    bases[zone] = storage.commitCount
+                    for change in byZone[zone]! {
+                        try change.run(storage)
+                    }
                 }
             }
+            journals += journal.map { [(zone, $0)] } ?? []
             changedStructure = changedStructure || storage.structureVersion != structure
         }
-        return Commit(bases: bases, changedStructure: changedStructure)
+        return Commit(bases: bases, changedStructure: changedStructure, undo: journals.isEmpty ? nil : SaveStep(journals: journals))
+    }
+
+    /// Runs `body`, journaling what it changes when asked. Returns the journal unless it's empty.
+    private nonisolated static func journaled(
+        _ journaling: Bool, _ storage: ZoneStorage, _ body: () throws -> Void
+    ) throws -> RecordStore.Journal? {
+        guard journaling else {
+            try body()
+            return nil
+        }
+        let journal = try storage.store.journaling(body).journal
+        return journal.isEmpty ? nil : journal
+    }
+
+    /// Puts back what a save changed, in one commit for each zone, and registers what redoes it. Unsaved
+    /// changes stay pending, laid over the result.
+    func undo(_ step: SaveStep) throws {
+        waitForSaves()
+        let container = container
+        let journaling = registerUndo != nil
+        let result = writer.sync {
+            Result {
+                var bases: [Zone: Int] = [:]
+                var changedStructure = false
+                var journals: [(zone: Zone, journal: RecordStore.Journal)] = []
+                // The last zone saved is the first put back.
+                for (zone, journal) in step.journals.reversed() {
+                    let storage = try container.storage(for: zone)
+                    let structure = storage.structureVersion
+                    let inverse = try Self.journaled(journaling, storage) {
+                        try storage.transaction {
+                            bases[zone] = storage.commitCount
+                            try storage.store.restore(journal)
+                        }
+                    }
+                    journals += inverse.map { [(zone, $0)] } ?? []
+                    changedStructure = changedStructure || storage.structureVersion != structure
+                }
+                return Commit(bases: bases, changedStructure: changedStructure, undo: journals.isEmpty ? nil : SaveStep(journals: journals))
+            }
+        }
+        try finish(Batch(taken: [:], changes: []), result, keepingFailures: { _ in false })
     }
 
     private func finish(_ batch: Batch, _ result: Result<Commit, Error>, keepingFailures: (Error) -> Bool) throws {
@@ -497,6 +609,9 @@ public final class RecordContext {
         let sources = Set(batch.changes.map(\.source))
         lastSaveSource = !outside && sources.count == 1 && !commit.changedStructure ? sources.first! : nil
         didChange()
+        if let step = commit.undo {
+            registerUndo?(step)
+        }
     }
 
     /// Runs `body` with the current zone's storage after every save already started, off the main actor.
@@ -709,7 +824,8 @@ public final class RecordContext {
     func saveBeforeLeaving() {
         guard let batch = takePending() else { return }
         let container = container
-        let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
+        let journaling = registerUndo != nil
+        let result = writer.sync { Result { try Self.commit(batch.changes, in: container, journaling: journaling) } }
         do {
             try finish(batch, result, keepingFailures: { _ in true })
             lastSaveError = nil
