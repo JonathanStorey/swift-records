@@ -10,9 +10,10 @@ import AppKit
 /// `RecordContainer.mainContext`, which every view and caller shares. Its `zone` picks which of the
 /// container's zones it reads and writes.
 ///
-/// Inserts, updates and deletes are collected and committed together in one transaction, either when
-/// you call `save()` or automatically once edits pause for `autosaveDelay`. Only the latest pending
-/// change to each record is kept, so rapid edits such as typing cost one write. Views using `@Records`
+/// Inserts, updates and deletes are collected and committed together in one transaction when you call
+/// `save()` or `transaction(_:)`, and when the app stops being active, so nothing entered is lost. Until
+/// then every view on the context shows them. Only the latest pending change to each record is kept, so
+/// rapid edits such as typing cost one write. Views using `@Records`
 /// refresh after each save, and after changes written to the zone some other way, such as by a
 /// background import, a sync engine or an app extension.
 ///
@@ -42,17 +43,8 @@ public final class RecordContext {
     /// of each change through `onChange(for:_:)`.
     @ObservationIgnored private(set) var changeCount = 0
 
-    /// When true (the default), pending changes are saved automatically after `autosaveDelay`.
-    public var autosaveEnabled = true
-
-    /// How long edits must pause before an autosave. Each new change restarts the wait. The default is
-    /// half a second; `.zero` saves on the next turn of the main actor. Pending changes are also saved
-    /// by `save()`, by every fetch, and when the app moves to the background.
-    public var autosaveDelay: Duration = .milliseconds(500)
-
-    /// The error from the most recent autosave, if it failed. A failed autosave discards its changes, unless
-    /// the failure can pass, such as a full disk or another process holding the file. Then they stay pending
-    /// and the context tries again after a second, waiting twice as long each time up to a minute.
+    /// The error from the most recent save the context made on its own, when the app stopped being active,
+    /// if it failed. Its changes stay pending for the next `save()`.
     public private(set) var lastSaveError: Error?
 
     /// Where this context's changes stand, locally and, with a sync provider, on the server.
@@ -133,7 +125,6 @@ public final class RecordContext {
     @ObservationIgnored private(set) var sequence = 0
     /// Changes an async save took from `pending` and is committing now. Views keep showing them until it finishes.
     @ObservationIgnored private var inFlight: [String: Change] = [:]
-    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var lifecycle: LifecycleObserver?
     /// The single source of every change in the most recent save, when there was one and the save changed
     /// nothing structural. `@Records` uses it to skip fetching again after its own edits.
@@ -154,7 +145,7 @@ public final class RecordContext {
         self.container = container
         zone = container.initialZone
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
-            self?.autosave()
+            self?.saveBeforeLeaving()
         }, becomeActive: { [weak self] in
             guard let self else { return }
             if observed.values.allSatisfy({ $0.storage.sync == nil }) {
@@ -351,8 +342,8 @@ public final class RecordContext {
     /// Commits every pending change off the main actor, so the interface keeps running
     /// while it waits for the file. If the save fails, the changes stay pending, as with `save()`.
     ///
-    /// With a sync provider, this also sends what the server doesn't have yet. Autosave does too. The
-    /// synchronous `save()` only commits, for moments that can't wait, and its changes go with the next send.
+    /// With a sync provider, this also sends what the server doesn't have yet. The synchronous `save()` only
+    /// commits, for moments that can't wait, and its changes go with the next send.
     public func save() async throws {
         if let batch = takePending() {
             try await commit(batch, keepingFailures: { _ in true })
@@ -372,8 +363,6 @@ public final class RecordContext {
     /// Drops pending changes that have not been saved. Views refresh, so edits made through a `@Records`
     /// binding disappear with them.
     public func rollback() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
         guard !pending.isEmpty else { return }
         pending = [:]
         lastSaveSource = nil
@@ -385,10 +374,6 @@ public final class RecordContext {
         let count = pending.count
         pending = pending.filter { $0.value.source != source }
         guard pending.count != count else { return }
-        if pending.isEmpty {
-            autosaveTask?.cancel()
-            autosaveTask = nil
-        }
         lastSaveSource = nil
         didChange()
     }
@@ -434,8 +419,6 @@ public final class RecordContext {
     }
 
     private func takePending() -> Batch? {
-        autosaveTask?.cancel()
-        autosaveTask = nil
         guard !pending.isEmpty else { return nil }
         let taken = pending
         pending = [:]
@@ -694,30 +677,7 @@ public final class RecordContext {
         )
         // Views show unsaved changes at once.
         notifyHandlers()
-        scheduleAutosave(after: autosaveDelay)
     }
-
-    private func scheduleAutosave(after delay: Duration) {
-        guard autosaveEnabled else { return }
-        autosaveTask?.cancel()
-        autosaveTask = Task { @MainActor [weak self] in
-            if delay > .zero {
-                try? await Task.sleep(for: delay)
-            } else {
-                await Task.yield()
-            }
-            guard !Task.isCancelled else { return }
-            await self?.autosaveInBackground()
-        }
-    }
-
-    // Nobody can fix an autosave, and a change that always fails would block every later save, so a
-    // failed autosave discards its changes and views show what is stored. A failure that can pass, such
-    // as a full disk or another process holding the file, keeps them and tries again later instead.
-
-    /// How long until an autosave that failed for a passing reason tries again. It doubles with each
-    /// failure, up to a minute, and resets once a save succeeds.
-    @ObservationIgnored private var autosaveRetryDelay: Duration = .zero
 
     /// Whether a save that failed this way may succeed later without anything changing.
     static func isTransient(_ error: Error) -> Bool {
@@ -726,44 +686,23 @@ public final class RecordContext {
         return [5, 6, 8, 10, 13, 14].contains(code & 0xFF)
     }
 
-    private func autosaveSucceeded() {
-        lastSaveError = nil
-        autosaveRetryDelay = .zero
-    }
-
-    private func autosaveFailed(_ error: Error) {
-        lastSaveError = error
-        guard Self.isTransient(error) else { return }
-        autosaveRetryDelay = min(max(autosaveRetryDelay * 2, .seconds(1)), .seconds(60))
-        scheduleAutosave(after: autosaveRetryDelay)
-    }
-
-    /// Saves before the app leaves the foreground, which can't wait for an async save.
-    private func autosave() {
-        guard autosaveEnabled, let batch = takePending() else { return }
+    /// Saves everything pending when the app stops being active, such as when the user switches apps, so
+    /// nothing entered is lost. It can't wait for an async save. A failure keeps the changes pending for
+    /// the next `save()` and sets `lastSaveError`.
+    func saveBeforeLeaving() {
+        guard let batch = takePending() else { return }
         let container = container
         let result = writer.sync { Result { try Self.commit(batch.changes, in: container) } }
         do {
-            try finish(batch, result, keepingFailures: Self.isTransient)
-            autosaveSucceeded()
+            try finish(batch, result, keepingFailures: { _ in true })
+            lastSaveError = nil
         } catch {
-            autosaveFailed(error)
+            lastSaveError = error
         }
-    }
-
-    private func autosaveInBackground() async {
-        guard autosaveEnabled, let batch = takePending() else { return }
-        do {
-            try await commit(batch, keepingFailures: Self.isTransient)
-            autosaveSucceeded()
-        } catch {
-            autosaveFailed(error)
-        }
-        await send()
     }
 }
 
-/// Saves pending changes when the app stops being active, so a delayed autosave is never lost.
+/// Saves pending changes when the app stops being active, so nothing entered is lost.
 private final class LifecycleObserver {
     private var tokens: [NSObjectProtocol] = []
 

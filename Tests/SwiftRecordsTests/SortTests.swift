@@ -80,7 +80,6 @@ struct Dish {
 
     @Test func unsavedEditsTakeTheirSortedPlace() throws {
         let context = container.mainContext
-        context.autosaveEnabled = false
         let order = RecordOrder([SortDescriptor(\Dish.servings)])
         let small = Dish(name: "Small", servings: 1)
         var large = Dish(name: "Large", servings: 8)

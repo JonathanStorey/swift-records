@@ -64,7 +64,6 @@ struct Journal {
     private func device() throws -> (TestProvider, RecordContext) {
         let provider = TestProvider(server: server)
         let context = try RecordContainer(for: [Journal.self], inMemory: true, syncProvider: provider).mainContext
-        context.autosaveEnabled = false
         return (provider, context)
     }
 

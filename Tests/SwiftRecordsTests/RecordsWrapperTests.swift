@@ -128,7 +128,6 @@ private func makeLists() -> [RecipeList] {
 
     @Test func unsavedAppendsShowInEveryForm() throws {
         let context = container.mainContext
-        context.autosaveEnabled = false
         let todo = ToDo(title: "New", done: true)
         context.insert(todo)
 

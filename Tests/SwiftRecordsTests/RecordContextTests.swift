@@ -7,7 +7,6 @@ import Testing
     let context = try! RecordContainer(inMemory: true).mainContext
 
     @Test func batchesChangesUntilSave() throws {
-        context.autosaveEnabled = false
         context.insert(ToDo(title: "One"))
         context.insert(ToDo(title: "Two"))
         #expect(context.hasChanges)
@@ -20,7 +19,6 @@ import Testing
     }
 
     @Test func insertAddsAtTheEndOrReplacesInPlace() throws {
-        context.autosaveEnabled = false
         var first = ToDo(title: "First")
         context.insert(first)
         context.insert(ToDo(title: "Second"))
@@ -41,7 +39,6 @@ import Testing
     }
 
     @Test func recordShowsUnsavedChangesWithoutSaving() throws {
-        context.autosaveEnabled = false
         let todo = ToDo(title: "Draft")
         context.insert(todo)
         let found: ToDo? = try context.record(for: todo.id)
@@ -53,7 +50,6 @@ import Testing
     }
 
     @Test func descriptorsPageCountAndListIDs() throws {
-        context.autosaveEnabled = false
         let todos = (0..<5).map { ToDo(title: "T\($0)", priority: $0) }
         context.apply(todos, replacing: [])
         let odd = #Predicate<ToDo> { $0.priority % 2 == 1 }
@@ -67,7 +63,6 @@ import Testing
     }
 
     @Test func transactionSavesOrRollsBackItsOwnChanges() throws {
-        context.autosaveEnabled = false
         context.insert(ToDo(title: "Earlier"))
         struct Stop: Error {}
         #expect(throws: Stop.self) {
@@ -86,24 +81,12 @@ import Testing
     }
 
     @Test func fetchIncludesPendingChanges() throws {
-        context.autosaveEnabled = false
         context.insert(ToDo(title: "Pending"))
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Pending"])
     }
 
-    @Test func autosavesOnNextTurn() async throws {
-        context.autosaveDelay = .zero
-        context.insert(ToDo(title: "Auto"))
-        #expect(context.changeCount == 0)
-        for _ in 0..<100 where context.changeCount == 0 {
-            await Task.yield()
-        }
-        #expect(context.changeCount == 1)
-        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Auto"])
-    }
 
     @Test func applyInsertsUpdatesAndDeletes() throws {
-        context.autosaveEnabled = false
         var todos = [ToDo(title: "A"), ToDo(title: "B"), ToDo(title: "C")]
         context.apply(todos, replacing: [])
         try context.save()
@@ -120,7 +103,6 @@ import Testing
     }
 
     @Test func failedSaveRollsBackEverything() throws {
-        context.autosaveEnabled = false
         let folder = Folder(name: "Kept", items: [Subtask(title: "Item")])
         try context.container.save(folder)
 
@@ -137,7 +119,6 @@ import Testing
     }
 
     @Test func keepsOnlyTheLatestChangeToEachRecord() throws {
-        context.autosaveEnabled = false
         var todo = ToDo(title: "T")
         let other = ToDo(title: "Other")
         context.insert(todo)
@@ -155,23 +136,5 @@ import Testing
         context.delete(other)
         try context.save()
         #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Typed"])
-    }
-
-    @Test func autosaveWaitsForEditsToPause() async throws {
-        context.autosaveDelay = .milliseconds(200)
-        var todo = ToDo(title: "")
-        for letter in "Hello" {
-            todo.title.append(letter)
-            context.insert(todo)
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(context.changeCount == 0)
-        #expect(context.hasChanges)
-
-        for _ in 0..<100 where context.changeCount == 0 {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(context.changeCount == 1)
-        #expect(try context.container.fetch(ToDo.self).map(\.title) == ["Hello"])
     }
 }

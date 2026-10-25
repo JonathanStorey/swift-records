@@ -15,7 +15,7 @@ import SwiftUI
 /// Each key has its own zone, `Zone.settings("favorite")`, so settings never mix with each other or with
 /// app data, and switching `context.zone` doesn't move them. Until the first edit stores the record, it reads
 /// as the default value. Edits go through the container's `mainContext` and show in every view at once,
-/// including views on other devices once they sync.
+/// and on other devices once a save commits them and they sync.
 ///
 /// If two devices each store the setting before they sync, the zone briefly holds two records. Every device
 /// shows the one with the lower ID, the older with `UUID.ordered()`, and the next edit deletes the other.

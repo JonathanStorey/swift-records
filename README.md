@@ -49,15 +49,18 @@ let open = try context.fetch(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.
 let todo: ToDo? = try context.record(for: id)        // or record(ToDo.self, for: id)
 context.delete(todo)
 context.delete(record: ToDo.self, where: #Predicate { $0.done })
-try context.save()                                   // or let autosave commit once edits pause
+try context.save()                                   // nothing commits until you save
 ```
 
 The names follow `ModelContext`. `insert(_:)` adds a record, or replaces the one with the same ID, as
 SwiftData does for a unique ID. `record(for:)` returns a
 record with any unsaved change and never saves, so a view can call it while it updates.
 
-Changes live in memory until `save()` commits them to disk, which autosave does once edits pause for
-`autosaveDelay`. Until then `rollback()` discards them, and `unsavedChanges` counts them. Every fetch
+Changes live in memory until `save()` or `transaction { }` commits them to disk. Every view on the context
+shows them at once, so the interface is live before anything saves, but widgets, background contexts and
+other devices see them only after a save. The one save the context makes on its own is when the app stops
+being active, such as when the user switches apps or the app quits, so nothing entered is lost. Until a
+save, `rollback()` discards changes, and `unsavedChanges` counts them. Every fetch
 saves first, so results include your own edits. Records come back in a descriptor's `sortBy` order, and
 by ID where that leaves a tie or when there's none. ID order is stable but carries no meaning. A
 `@Timestamp(.created)` property gives you creation order, and a property of your own can hold a manual
@@ -65,13 +68,13 @@ order. `transaction { }` runs a block
 and saves its changes in one commit, or rolls back just that block's changes if it throws.
 
 `save()` also comes in an `async` version, which commits off the main actor and suspends instead of
-blocking while a background import holds the file. Autosave always uses it. For fetches off the main
+blocking while a background import holds the file. For fetches off the main
 actor, use a background context.
 
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
-with `rollback()`. A failed autosave sets `lastSaveError`. If the failure can pass, such as a full disk
-or a widget writing at the same moment, its changes stay pending and autosave tries again after a
-second, then two, up to a minute. Otherwise it rolls back, since retrying would fail the same way.
+with `rollback()`. If the save the context makes when the app stops being active fails, such as while a
+widget is writing at the same moment, it sets `lastSaveError` and its changes stay pending for the next
+`save()`.
 Every error the library throws is a `RecordsError`, such as `.invalidValue(type:property:)` for a NaN.
 A stored record that no longer decodes, such as after a property changed type, is left out of fetches
 rather than failing them, and `status` shows `.failed(.incompatibleRecord(type:id:))` until it decodes
@@ -364,7 +367,7 @@ try await context.save()       // commits, then sends what the server doesn't ha
 try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
 ```
 
-The async `save()` and autosave send. The synchronous `save()` only commits, and its changes go with
+The async `save()` sends. The synchronous `save()` only commits, and its changes go with
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
 errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
 the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
@@ -616,9 +619,9 @@ Unsaved new records still count toward it, so the view never shows more than the
 
 `todos` is a plain `[ToDo]`, and `$todos` is a `Binding<Records<ToDo>.Results>`. `Results` is a
 random-access, mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
-they do on an array's binding. Writes insert, update and delete through the main context,
-which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
-default). Every view reading the same records shows the change at once, before it saves, and so do changes
+they do on an array's binding. Writes insert, update and delete through the main context, and commit
+with its next `save()`, or `$todos.save()`. Every view reading the same records shows the change at
+once, before it saves, and so do changes
 made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new or edited record
 takes its place in the list's sort, a filtered list drops records its filter rejects, and a rollback takes
 them back out. Deletes by predicate hide their matches at once too. The array's order isn't stored, so a
@@ -644,7 +647,7 @@ List($todos, editActions: .delete) { $todo in TextField("Title", text: $todo.tit
 to one. `appendNextPage()` instead appends the next page below the rows already shown, for an endless list.
 `fetchLimit` and `fetchOffset` report the descriptor's page, and `totalCount` counts every saved match.
 `$todos.hasChanges` says whether edits made through the list are still waiting to save, and
-`$todos.save()` saves now rather than when edits pause.
+`$todos.save()` commits them.
 
 A detail view binds to one record with `@Recordable`, which works like `@Bindable`: it takes the record
 the view was given and keeps it current.

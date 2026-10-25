@@ -123,7 +123,7 @@ public struct Records<R: Record>: DynamicProperty {
                 MainActor.assumeIsolated {
                     guard let context else { return }
                     let previous = Self.value(context: context, cache: cache, query: query, zone: choice)
-                    // Show the edit immediately. The context saves it once edits pause.
+                    // Show the edit immediately. It commits with the context's next save.
                     cache.value = query.write(context, choice.zone(in: context), newValue.elements, previous, ObjectIdentifier(cache))
                     cache.version += 1
                 }
@@ -344,7 +344,7 @@ extension Binding where Value: RecordResultsProtocol {
         try await wrappedValue.refresh()
     }
 
-    /// Saves the context's pending changes now rather than once edits pause.
+    /// Saves the context's pending changes.
     public func save() throws {
         try wrappedValue.save()
     }

@@ -38,7 +38,6 @@ import Testing
 
     @Test func pendingChangesStayInTheirZone() throws {
         let context = try RecordContainer(inMemory: true).mainContext
-        context.autosaveEnabled = false
         context.insert(ToDo(title: "Main"))
         context.zone = "archive"
         context.insert(ToDo(title: "Old"))

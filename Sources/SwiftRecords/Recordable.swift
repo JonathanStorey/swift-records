@@ -17,7 +17,7 @@ import SwiftUI
 /// ```
 ///
 /// `$todo.title` is a `Binding<String>`, and `todo.title = "New"` writes as well. Edits go through the
-/// container's `mainContext`, which saves them once edits pause. Changes from other views, background work
+/// container's `mainContext` and commit with its next save. Changes from other views, background work
 /// or sync show up at once.
 ///
 /// A record the store hasn't seen, such as `@Recordable var todo = ToDo()` in a form for a new one, is new
@@ -124,7 +124,7 @@ public struct Recordable<R: Record>: DynamicProperty {
         withAnimation(animation) { cache.version += 1 }
     }
 
-    /// Saves the context's pending changes now rather than once edits pause.
+    /// Saves the context's pending changes.
     public func save() throws {
         try context?.save()
     }

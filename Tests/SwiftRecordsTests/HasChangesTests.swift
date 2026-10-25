@@ -26,10 +26,6 @@ struct DraftStep {
         container.mainContext
     }
 
-    init() {
-        container.mainContext.autosaveEnabled = false
-    }
-
     @Test func followsEditsAndSaves() throws {
         var draft = Draft(title: "Soup")
         #expect(context.hasChanges(draft))
