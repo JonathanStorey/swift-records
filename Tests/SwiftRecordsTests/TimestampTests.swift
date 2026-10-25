@@ -6,9 +6,9 @@ import Testing
 struct Journal {
     var id = UUID.ordered()
     var text: String
-    @Timestamp(.created) var created: Date?
-    @Timestamp(.modified) var modified: Date?
-    @Timestamp(.synced) var synced: Date?
+    @Timestamped(.created) var created: Date?
+    @Timestamped(.modified) var modified: Date?
+    @Timestamped(.synced) var synced: Date?
 }
 
 @Suite struct TimestampTests {

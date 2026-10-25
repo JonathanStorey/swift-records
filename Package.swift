@@ -8,6 +8,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
+        .library(name: "SwiftRecordsFileSync", targets: ["SwiftRecordsFileSync"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.0"..<"603.0.0"),
@@ -32,6 +33,11 @@ let package = Package(
                 .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ]
         ),
+        // Syncs through a shared folder, such as iCloud Drive, using only the public `SyncProvider` API.
+        .target(
+            name: "SwiftRecordsFileSync",
+            dependencies: ["SwiftRecords"]
+        ),
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
@@ -39,7 +45,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftRecordsTests",
-            dependencies: ["SwiftRecords"]
+            dependencies: ["SwiftRecords", "SwiftRecordsFileSync"]
         ),
         .testTarget(
             name: "SwiftRecordsMacrosTests",

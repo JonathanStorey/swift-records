@@ -10,7 +10,7 @@ extension RecordContext {
     /// ```
     ///
     /// Related records count, so editing a step makes its recipe changed. Values the container sets
-    /// itself, `@Timestamp` properties and inverse relationships, don't. It never saves, so a view can call
+    /// itself, `@Timestamped` properties and inverse relationships, don't. It never saves, so a view can call
     /// it while it updates, and it costs one read by ID each call.
     public func hasChanges<R: Record>(_ record: R) -> Bool {
         guard case .saved(let current)? = try? current(R.self, id: record.id, in: zone), let current = current as? R else {

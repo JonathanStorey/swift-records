@@ -138,7 +138,7 @@ extension CKRecord {
 /// relationship such as `var steps: [Step]` is a list of the steps' record names in order, and each step is
 /// its own `CKRecord`, so encode it separately. A child's `@Reference(to:action:)` is a `CKRecord.Reference`
 /// with that action. Lists of strings, numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any
-/// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamp(.synced)` aren't stored.
+/// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamped(.synced)` aren't stored.
 public struct CKRecordEncoder {
     public init() {}
 

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftRecords
 
 /// Syncs through a folder of files, such as the app's iCloud container, which the system then copies
 /// between the person's devices. No server code is needed.

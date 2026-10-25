@@ -6,7 +6,7 @@ import SwiftSyntaxMacros
 
 /// `@Record` adds `Record` conformance and generates `static var schema`, which maps every stored
 /// property to its key path so predicates, sort descriptors, references and inverses can be
-/// resolved without an instance. It also gives each `@Timestamp` and `@Reference(from:)` property its
+/// resolved without an instance. It also gives each `@Timestamped` and `@Reference(from:)` property its
 /// read-only storage wrapper.
 public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
     public static func expansion(
@@ -93,7 +93,7 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
             // Another attribute may be a property wrapper, whose initial value isn't the stored value.
             let wrapped = variable.attributes.contains { element in
                 guard let name = element.as(AttributeSyntax.self)?.attributeName.trimmedDescription else { return false }
-                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset", "Timestamp", "SwiftRecords.Timestamp"].contains(name)
+                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset", "Timestamped", "SwiftRecords.Timestamped"].contains(name)
             }
             for binding in variable.bindings {
                 guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription else {
@@ -125,7 +125,7 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                 if let kind = timestampKind(variable.attributes) {
                     guard isOptionalDate(binding) else {
                         context.diagnose(Diagnostic(node: binding, message: MacroError.message(
-                            "A @Timestamp property must be declared as 'Date?'"
+                            "A @Timestamped property must be declared as 'Date?'"
                         )))
                         continue
                     }
@@ -266,11 +266,11 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         return modifiers
     }
 
-    /// The kind in a property's `@Timestamp` attribute, such as `.created`, or nil when it has none.
+    /// The kind in a property's `@Timestamped` attribute, such as `.created`, or nil when it has none.
     private static func timestampKind(_ attributes: AttributeListSyntax) -> String? {
         for element in attributes {
             guard let attribute = element.as(AttributeSyntax.self),
-                  ["Timestamp", "SwiftRecords.Timestamp"].contains(attribute.attributeName.trimmedDescription) else { continue }
+                  ["Timestamped", "SwiftRecords.Timestamped"].contains(attribute.attributeName.trimmedDescription) else { continue }
             if case .argumentList(let arguments) = attribute.arguments, let kind = arguments.first?.expression.trimmedDescription {
                 return kind.hasPrefix(".") ? kind : "." + (kind.split(separator: ".").last.map(String.init) ?? kind)
             }
@@ -325,7 +325,7 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
     }
 }
 
-/// `@Renamed`, `@Indexed` and `@Timestamp` are markers read by `@Record`. They generate no code
+/// `@Renamed`, `@Indexed` and `@Timestamped` are markers read by `@Record`. They generate no code
 /// themselves, and warn when they're used outside a `@Record` struct, where nothing reads them.
 public struct MarkerMacro: PeerMacro {
     public static func expansion(

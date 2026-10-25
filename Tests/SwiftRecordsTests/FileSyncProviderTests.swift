@@ -1,5 +1,6 @@
 import Foundation
 @testable import SwiftRecords
+@testable import SwiftRecordsFileSync
 import Testing
 
 /// Devices that sync through one shared folder, as iCloud would copy it between them.

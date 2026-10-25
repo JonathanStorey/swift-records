@@ -43,7 +43,7 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     }
 
     /// The zone a stored name refers to, such as a file's or a server zone's, reserved names included.
-    init?(stored name: String) {
+    package init?(stored name: String) {
         if let zone = Zone.reserved.first(where: { $0.name == name }) {
             self = zone
         } else if name.hasPrefix(Zone.settingsPrefix), Zone.isValid(String(name.dropFirst(Zone.settingsPrefix.count))) {
