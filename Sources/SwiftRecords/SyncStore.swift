@@ -541,7 +541,7 @@ extension RecordStore {
 
     /// Applies changes from the server, merging any that have unsent local edits. Returns the ones this
     /// version of the app can't store, which are kept to try again after an update.
-    func applyReceived(_ changes: [RecordChangeData], policy: MergePolicy) throws -> [RecordChangeData] {
+    func applyReceived(_ changes: [RecordChangeData]) throws -> [RecordChangeData] {
         var incompatible: [RecordChangeData] = []
         // The page's bookkeeping, read in one query per type. A deletion can cascade to other records'
         // rows, so after one the rest of the page reads its own.
@@ -557,7 +557,7 @@ extension RecordStore {
             if change.isDeletion { rows = nil }
             do {
                 let record = try syncRecord(from: change)
-                try transaction { try applyReceived(record, sync: sync, policy: policy) }
+                try transaction { try applyReceived(record, sync: sync) }
             } catch RecordsError.incompatibleRecord {
                 incompatible.append(change)
                 try park(change)
@@ -591,22 +591,13 @@ extension RecordStore {
         return !isPending(sync)
     }
 
-    private func applyReceived(_ record: SyncRecord, sync: [String: SQLiteValue]?, policy: MergePolicy) throws {
+    private func applyReceived(_ record: SyncRecord, sync: [String: SQLiteValue]?) throws {
         let table = record.type
         let id = try ValueCoding.encode(record.id)
         let entry = Self.logEntry(sync)
         let pending = Self.isPending(sync)
-        // A delete has no properties to merge, so it settles by the policy for clashes.
-        let deletePolicy = policy.clashPolicy
-
         guard let values = record.fields else {
-            // A server delete beats a local edit, unless local changes always win.
-            if pending, entry?.kind == .save, deletePolicy == .localWins {
-                try updateSyncRow(table, id: id, ["acked": .integer(0), "known": .integer(0), "snapshot": .null, "tag": .null])
-                // The edit goes back based on the deletion, so a server that keeps it as a tombstone accepts it.
-                try storeTag(of: record, id: id)
-                return
-            }
+            // A server delete beats a local edit.
             try applyingSyncedChanges { try deleteRow(table, id: id) }
             try dropBookkeeping(table, id: id)
             return
@@ -617,33 +608,29 @@ extension RecordStore {
         let server = Self.normalizingReferences(of: type, in: values)
 
         if pending, let entry {
-            if entry.kind == .delete, deletePolicy != .serverWins {
+            if entry.kind == .delete {
                 // A local delete beats a server edit. It goes with the server's latest tag.
                 try updateSyncRow(table, id: id, ["known": .integer(1)])
                 try storeTag(of: record, id: id)
                 return
             }
-            if entry.kind == .save {
-                let local = try syncFields(table: table, id: id) ?? [:]
-                let localIsLater = Self.isLocalLater(type, local: local, server: server)
-                let merged = SyncMerge.merge(
-                    local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), policy: policy, localIsLater: localIsLater
-                )
-                // The server's copy is the ancestor of whatever is sent next.
-                try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
-                try applySyncFields(table: table, id: record.id, fields: merged)
-                try storeTag(of: record, id: id)
-                if merged == server {
-                    let version = try logEntry(table, id: id)?.version ?? 0
-                    try updateSyncRow(table, id: id, [
-                        "acked": .integer(Int64(version)), "snapshot": .null,
-                        "synced_at": .real((record.synced ?? Date()).timeIntervalSince1970),
-                    ])
-                }
-                return
+            let local = try syncFields(table: table, id: id) ?? [:]
+            let localIsLater = Self.isLocalLater(type, local: local, server: server)
+            let merged = SyncMerge.merge(
+                local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), localIsLater: localIsLater
+            )
+            // The server's copy is the ancestor of whatever is sent next.
+            try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
+            try applySyncFields(table: table, id: record.id, fields: merged)
+            try storeTag(of: record, id: id)
+            if merged == server {
+                let version = try logEntry(table, id: id)?.version ?? 0
+                try updateSyncRow(table, id: id, [
+                    "acked": .integer(Int64(version)), "snapshot": .null,
+                    "synced_at": .real((record.synced ?? Date()).timeIntervalSince1970),
+                ])
             }
-            // A server edit undoes the local delete.
-            try dropLogEntry(table, id: id)
+            return
         }
 
         try applyingSyncedChanges { try applySyncFields(table: table, id: record.id, fields: server) }
@@ -658,7 +645,7 @@ extension RecordStore {
         )
     }
 
-    /// Whether the local copy's edit is later than the server copy's, for a clash under `.latestEdit`, by the
+    /// Whether the local copy's edit is later than the server copy's, for a clash, by the
     /// type's `@Timestamp(.modified)` property. Without one, or without a date on both sides, the server's
     /// copy is kept.
     private static func isLocalLater<R: Record>(_ type: R.Type, local: SyncFields, server: SyncFields) -> Bool {
@@ -675,7 +662,7 @@ extension RecordStore {
     }
 
     /// Tries changes kept back by an earlier version of the app again. Returns the ones still incompatible.
-    func retryParked(policy: MergePolicy) throws -> [RecordChangeData] {
+    func retryParked() throws -> [RecordChangeData] {
         try transaction {
             let changes = try db.run("SELECT parked FROM \"_records_meta\" WHERE parked IS NOT NULL").compactMap { row -> RecordChangeData? in
                 guard case .blob(let data)? = row["parked"] else { return nil }
@@ -683,7 +670,7 @@ extension RecordStore {
             }
             try db.run("UPDATE \"_records_meta\" SET parked = NULL WHERE parked IS NOT NULL")
             guard !changes.isEmpty else { return [] }
-            return try applyReceived(changes, policy: policy)
+            return try applyReceived(changes)
         }
     }
 

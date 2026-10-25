@@ -449,13 +449,11 @@ Inverses aren't sent. The container owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
   changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
-  item by item, so steps added on two devices both survive. Only a property both sides changed falls
-  to `mergePolicy`, which defaults to the latest edit. `.latestEdit` compares the copies'
-  `@Timestamp(.modified)` dates, which each device stamps as it saves. A type without one has no edit
-  dates to compare, so the server's copy wins. `.serverWins`, `.localWins` and `.latestEdit` settle whole
-  records instead.
-- **A delete beats an edit made elsewhere**, unless the policy is `.localWins` or `.serverWins`. Under
-  `.mergeProperties(otherwise:)`, its `otherwise` policy decides.
+  item by item, so steps added on two devices both survive. Only a property both sides changed goes to
+  the latest edit, by the copies' `@Timestamp(.modified)` dates, which each device stamps as it saves. A
+  type without one has no edit dates to compare, so the server's copy wins, the same answer on every
+  device.
+- **A delete beats an edit made elsewhere**, whichever side made it.
 - **Arrival order doesn't matter.** A record can arrive before the records it links to, and its links
   appear when they do.
 - **A child's reference decides where it belongs.** If a parent's list and a child's reference

@@ -1,39 +1,16 @@
 import Foundation
 
-extension MergePolicy {
-    /// What settles a clash: the policy itself, or the one `mergeProperties` falls back to.
-    var clashPolicy: MergePolicy {
-        if case .mergeProperties(let otherwise) = self { otherwise.clashPolicy } else { self }
-    }
-}
-
 /// Settles a conflict between a record's unsent local edit and the server's copy.
 enum SyncMerge {
     /// Merges two copies of a record's fields. With `base`, the values both last synced from, a property
-    /// only one side changed keeps that change. Without it, any difference is a clash.
-    static func merge(local: SyncFields, server: SyncFields, base: SyncFields?, policy: MergePolicy, localIsLater: Bool) -> SyncFields {
-        switch policy {
-        case .serverWins: return server
-        case .localWins: return local
-        case .latestEdit: return localIsLater ? local : server
-        case .mergeProperties(let otherwise):
-            let preferLocal = prefersLocal(otherwise, localIsLater: localIsLater)
-            var merged: SyncFields = [:]
-            for key in Set(local.keys).union(server.keys) {
-                merged[key] = mergeValue(local[key], server[key], base: base, key: key, preferLocal: preferLocal)
-            }
-            return merged
+    /// only one side changed keeps that change. Without it, any difference is a clash. A clash goes to the
+    /// later edit, which is the server's copy unless `localIsLater`.
+    static func merge(local: SyncFields, server: SyncFields, base: SyncFields?, localIsLater: Bool) -> SyncFields {
+        var merged: SyncFields = [:]
+        for key in Set(local.keys).union(server.keys) {
+            merged[key] = mergeValue(local[key], server[key], base: base, key: key, preferLocal: localIsLater)
         }
-    }
-
-    /// Whether a clash goes to the local copy under a policy.
-    private static func prefersLocal(_ policy: MergePolicy, localIsLater: Bool) -> Bool {
-        switch policy {
-        case .serverWins: false
-        case .localWins: true
-        case .latestEdit: localIsLater
-        case .mergeProperties(let otherwise): prefersLocal(otherwise, localIsLater: localIsLater)
-        }
+        return merged
     }
 
     private static func mergeValue(_ local: SyncValue?, _ server: SyncValue?, base: SyncFields?, key: String, preferLocal: Bool) -> SyncValue? {

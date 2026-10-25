@@ -208,23 +208,6 @@ public enum SyncError: Error, Sendable, Hashable {
     case serverReset
 }
 
-/// How a conflict between an unsent local edit and the server's copy of a record is settled.
-public indirect enum MergePolicy: Sendable, Hashable {
-    /// The server's copy replaces the local edit.
-    case serverWins
-    /// The local edit replaces the server's copy.
-    case localWins
-    /// The copy edited most recently wins, by the records' own `@Timestamp(.modified)` dates, which every
-    /// device stamps as it saves. A type without one has no edit dates to compare, so the server's copy wins.
-    case latestEdit
-    /// Each property, and each item of a relationship, keeps the change whichever side made it. Only a
-    /// property both sides changed to different values falls to `otherwise`.
-    case mergeProperties(otherwise: MergePolicy)
-
-    /// Properties merge, and true clashes go to the latest edit.
-    public static let `default` = MergePolicy.mergeProperties(otherwise: .latestEdit)
-}
-
 /// What happens to the records on this device when its account signs out, switches or loses its server data.
 public enum AccountPolicy: Sendable, Hashable {
     /// Keep them, and upload them when an account is next available.

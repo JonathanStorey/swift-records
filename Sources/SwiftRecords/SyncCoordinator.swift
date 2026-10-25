@@ -21,7 +21,6 @@ actor SyncCoordinator {
     }
 
     struct Policies: Sendable {
-        var merge: MergePolicy
         var onSignOut: AccountPolicy
         var onAccountSwitch: AccountPolicy
         var onServerReset: AccountPolicy
@@ -132,7 +131,7 @@ actor SyncCoordinator {
         guard !opened else { return }
         opened = true
         // Records an earlier version of the app couldn't store may fit now.
-        if let parked = (try? store.retryParked(policy: policies.merge))?.first {
+        if let parked = (try? store.retryParked())?.first {
             phase = .failed(.incompatibleRecord(type: parked.type, id: parked.id))
         }
     }
@@ -278,7 +277,7 @@ actor SyncCoordinator {
     /// Applies the changes, and the cursor with them. Their asset files follow in the background.
     private func receive(_ changes: [RecordChangeData], cursor: Data? = nil) async throws {
         let incompatible = try store.transaction {
-            let incompatible = try store.applyReceived(changes, policy: policies.merge)
+            let incompatible = try store.applyReceived(changes)
             if let cursor {
                 try store.setSyncValue(cursor, forKey: Self.cursorKey)
             }

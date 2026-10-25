@@ -24,8 +24,6 @@ public final class RecordContainer: @unchecked Sendable {
     /// Whether every zone lives only as long as the container, as for tests and previews.
     public var isStoredInMemoryOnly: Bool { directory == nil }
 
-    /// How a server's copy and an unsent local edit of the same record are merged.
-    public let mergePolicy: MergePolicy
     /// What happens to this device's records when the sync account signs out.
     public let onSignOut: AccountPolicy
     /// What happens to this device's records when a different sync account signs in.
@@ -66,7 +64,6 @@ public final class RecordContainer: @unchecked Sendable {
         inMemory: Bool = false,
         syncProvider: (@Sendable (Zone) -> (any SyncProvider)?)? = nil,
         publicZones: Set<Zone> = [],
-        mergePolicy: MergePolicy = .default,
         onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData,
         onServerReset: AccountPolicy = .keepLocalData
@@ -76,14 +73,13 @@ public final class RecordContainer: @unchecked Sendable {
             try RecordContainer.prepare(directory)
         }
         let policies = SyncCoordinator.Policies(
-            merge: mergePolicy, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
+            onSignOut: onSignOut, onAccountSwitch: onAccountSwitch, onServerReset: onServerReset
         )
         self.directory = directory
         self.types = types
         self.syncProvider = syncProvider
         self.publicZones = publicZones
         self.policies = policies
-        self.mergePolicy = mergePolicy
         self.onSignOut = onSignOut
         self.onAccountSwitch = onAccountSwitch
         self.onServerReset = onServerReset

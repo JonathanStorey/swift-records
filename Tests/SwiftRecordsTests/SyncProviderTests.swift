@@ -39,14 +39,14 @@ struct Device {
 
     init(
         _ server: TestServer, directory: URL? = nil, account: String?? = nil, publicZones: Set<Zone> = [],
-        mergePolicy: MergePolicy = .default, onSignOut: AccountPolicy = .keepLocalData,
+        onSignOut: AccountPolicy = .keepLocalData,
         onAccountSwitch: AccountPolicy = .deleteLocalData
     ) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
             for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: { _ in provider },
-            publicZones: publicZones, mergePolicy: mergePolicy, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
+            publicZones: publicZones, onSignOut: onSignOut, onAccountSwitch: onAccountSwitch
         )
         container.mainContext.autosaveEnabled = false
     }
@@ -239,28 +239,6 @@ struct Device {
         #expect(try await tablet.recipes().map(\.title) == ["Lemon cake"])
     }
 
-    @Test func serverWinsDiscardsTheLocalEdit() async throws {
-        let phone = try Device(server)
-        let tablet = try Device(server, mergePolicy: .serverWins)
-        var recipe = SyncRecipe(title: "Salad")
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-
-        recipe.servings = 3
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        recipe.servings = 1
-        recipe.title = "Green salad"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-
-        let result = try #require(try await tablet.recipes().first)
-        #expect(result.title == "Salad")
-        #expect(result.servings == 3)
-        #expect(try tablet.container.defaultStorage.store.pendingChanges().isEmpty)
-    }
-
     @Test func listsMergeItemByItem() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
@@ -334,34 +312,6 @@ struct Device {
         try await tablet.context.save()
         try await phone.context.refresh()
         #expect(try await phone.recipes().isEmpty)
-    }
-
-    @Test func deletesFollowTheMergePolicysChoiceForClashes() async throws {
-        // Under `.mergeProperties(otherwise: .localWins)` a local edit outlives a server delete.
-        let phone = try Device(server)
-        let tablet = try Device(server, mergePolicy: .mergeProperties(otherwise: .localWins))
-        var recipe = SyncRecipe(title: "Pie")
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        phone.context.delete(recipe)
-        try await phone.context.save()
-        recipe.title = "Pear pie"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-        #expect(try await tablet.recipes().map(\.title) == ["Pear pie"])
-        #expect(server.count == 1)
-
-        // Under `.mergeProperties(otherwise: .serverWins)` a server edit undoes a local delete.
-        let laptop = try Device(server, mergePolicy: .mergeProperties(otherwise: .serverWins))
-        try await laptop.context.refresh()
-        laptop.context.delete(recipe)
-        try laptop.commit()
-        recipe.title = "Pear and fig pie"
-        tablet.context.insert(recipe)
-        try await tablet.context.save()
-        await laptop.download()
-        #expect(try await laptop.recipes().map(\.title) == ["Pear and fig pie"])
     }
 
     // MARK: Arrival order and newer versions

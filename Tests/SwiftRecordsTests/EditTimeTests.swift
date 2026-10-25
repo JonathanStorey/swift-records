@@ -16,7 +16,7 @@ struct SyncNote {
     private func device(_ types: [any Record.Type]) throws -> RecordContainer {
         let provider = TestProvider(server: server)
         let container = try RecordContainer(
-            for: types, inMemory: true, syncProvider: { _ in provider }, mergePolicy: .latestEdit
+            for: types, inMemory: true, syncProvider: { _ in provider }
         )
         container.mainContext.autosaveEnabled = false
         return container
