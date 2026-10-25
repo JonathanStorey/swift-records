@@ -12,8 +12,10 @@ import Foundation
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
 /// can't miss each other's changes. Deleting a zone's folder counts as a server reset.
 ///
-/// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder,
-/// and anywhere else the folder is checked every `watchInterval`. When iCloud keeps two versions of a
+/// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder, and
+/// App Group and other folders are watched for changes. A network drive may not report its changes, so
+/// they arrive with the refresh the container runs as the app becomes active, or a manual one.
+/// Application Support has no other writer, so it isn't watched. When iCloud keeps two versions of a
 /// record file because devices wrote it at once, `NSFileVersion` settles them: the copy with the later
 /// `synced` time stays, as a whole record.
 ///
@@ -37,28 +39,37 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     public let location: Location
     private let lock = NSLock()
-    /// How often a folder outside iCloud is checked for other devices' changes, or `nil` to check only
-    /// on refresh. iCloud folders are watched as they change.
-    public let watchInterval: Duration?
+    /// How this provider hears of other writers' changes, chosen by location. Tests change it.
+    var watchMode: WatchMode
     private var resolved: URL??
     private var pushes: [UUID: AsyncStream<[Zone]>.Continuation] = [:]
     private var watching = false
     private var poller: Task<Void, Never>?
+    /// Each zone's mark as of the last check, to tell new ones apart.
+    private var lastMarks: [Zone: String] = [:]
+    #if canImport(Darwin)
+    private var folderSource: DispatchSourceFileSystemObject?
+    #endif
     /// Change marks this provider wrote, which its own watcher ignores.
     private var ownMarks: Set<String> = []
     #if canImport(Darwin)
     private var query: MetadataWatcher?
     #endif
 
-    public init(location: Location = .iCloud, watchInterval: Duration? = .seconds(10)) {
+    public init(location: Location = .iCloud) {
         self.location = location
-        self.watchInterval = watchInterval
+        watchMode = switch location {
+        case .iCloud, .iCloudDrive: .metadata
+        case .appGroup, .other: .folder
+        case .applicationSupport: .none
+        }
     }
 
     deinit {
         poller?.cancel()
         #if canImport(Darwin)
         query?.stop()
+        folderSource?.cancel()
         #endif
     }
 
@@ -217,6 +228,21 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     // MARK: Watching
 
     private static let markFile = "_changed"
+    /// A mark beside the zone folders, rewritten with every zone's, so one folder watch hears them all. Its
+    /// leading dot keeps it from reading as a zone.
+    private static let rootMarkFile = ".changed"
+
+    /// How a provider hears of changes other writers make to its folder.
+    enum WatchMode: Equatable {
+        /// An `NSMetadataQuery` reports iCloud's downloads.
+        case metadata
+        /// The folder itself is watched, for an app and its extensions, or a shared or network folder.
+        case folder
+        /// The folder is checked on a timer, for tests on platforms without folder watching.
+        case poll(Duration)
+        /// Nothing else writes the folder.
+        case none
+    }
 
     private func removePushes(_ id: UUID) {
         lock.withLock { pushes[id] = nil }
@@ -236,7 +262,8 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
             return !watching
         }
         guard start else { return }
-        if location.isICloud {
+        switch watchMode {
+        case .metadata:
             #if canImport(Darwin)
             let scope = location == .iCloudDrive ? NSMetadataQueryUbiquitousDocumentsScope : NSMetadataQueryUbiquitousDataScope
             let watcher = MetadataWatcher(scope: scope) { [weak self] paths in
@@ -245,22 +272,46 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
             }
             lock.withLock { query = watcher }
             #endif
-        } else if let interval = watchInterval {
-            let task = Task { [weak self] in
-                // The first check also pushes whatever changed before watching began.
-                var last: [Zone: String] = [:]
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: interval)
-                    guard let self else { return }
-                    let now = self.marks()
-                    let own = self.lock.withLock { self.ownMarks }
-                    let changed = now.filter { last[$0.key] != $0.value && !own.contains($0.value) }
-                    last = now
-                    self.send(Set(changed.keys))
-                }
-            }
-            lock.withLock { poller = task }
+        case .folder:
+            #if canImport(Darwin)
+            guard let root = directory else { return }
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let descriptor = open(root.path, O_EVTONLY)
+            guard descriptor >= 0 else { return }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: .global())
+            source.setEventHandler { [weak self] in self?.checkMarks() }
+            source.setCancelHandler { close(descriptor) }
+            lock.withLock { folderSource = source }
+            source.resume()
+            // Pushes whatever changed before watching began.
+            checkMarks()
+            #endif
+        case .poll(let interval):
+            poll(every: interval)
+        case .none:
+            break
         }
+    }
+
+    private func poll(every interval: Duration) {
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard let self else { return }
+                self.checkMarks()
+            }
+        }
+        lock.withLock { poller = task }
+    }
+
+    /// Pushes the zones whose marks changed since the last check, other than this provider's own.
+    private func checkMarks() {
+        let now = marks()
+        let changed = lock.withLock {
+            defer { lastMarks = now }
+            return now.filter { lastMarks[$0.key] != $0.value && !ownMarks.contains($0.value) }
+        }
+        send(Set(changed.keys))
     }
 
     /// Leaves a fresh mark in each zone written to, which other devices' watchers notice.
@@ -274,6 +325,8 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
                 try Data(token.utf8).write(to: url, options: .atomic)
             }
         }
+        guard !zones.isEmpty else { return }
+        try? Data(UUID().uuidString.utf8).write(to: root.appendingPathComponent(Self.rootMarkFile), options: .atomic)
     }
 
     /// Each zone folder's latest mark.

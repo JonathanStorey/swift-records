@@ -544,10 +544,12 @@ capability with iCloud Documents on, and while the person is signed out, `status
 For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder shows in Files.
 
 Other devices' changes arrive on their own through `pushedChanges()`. In iCloud an `NSMetadataQuery`
-watches the folder, including when another device's file finishes downloading. Other folders are
-checked every `watchInterval` (10 seconds by default, `nil` to turn it off). When two devices write a
-record file at once, iCloud keeps both versions, and `NSFileVersion` settles them by keeping the copy
-with the later `modified` date as a whole record.
+watches the folder, including when another device's file finishes downloading. App Group and other
+folders are watched directly, so an extension's saves reach the app at once. A network drive may not
+report its changes, so they arrive with the refresh the container runs as the app becomes active, or a
+pull to refresh. Application Support isn't watched, since nothing else writes it.
+When two devices write a record file at once, iCloud keeps both versions, and `NSFileVersion` settles
+them by keeping the copy with the later save time as a whole record.
 
 ## SwiftUI
 

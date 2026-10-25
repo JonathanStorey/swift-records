@@ -7,8 +7,9 @@ import Testing
 @Suite struct FileSyncProviderTests {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FileSync-\(UUID().uuidString)")
 
-    private func device(watchInterval: Duration? = nil) throws -> RecordContainer {
-        let provider = FileSyncProvider(location: .other(directory: folder), watchInterval: watchInterval)
+    private func device(watching mode: FileSyncProvider.WatchMode = .none) throws -> RecordContainer {
+        let provider = FileSyncProvider(location: .other(directory: folder))
+        provider.watchMode = mode
         let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider)
         container.mainContext.autosaveEnabled = false
         return container
@@ -151,7 +152,7 @@ import Testing
     // MARK: Pushed changes
 
     @Test func changesArriveWithoutARefresh() async throws {
-        let tablet = try device(watchInterval: .milliseconds(20))
+        let tablet = try device(watching: .poll(.milliseconds(20)))
         let phone = try device()
         phone.mainContext.insert(SyncRecipe(title: "Soup"))
         try await phone.mainContext.save()
@@ -165,8 +166,10 @@ import Testing
     }
 
     @Test func ownChangesArentPushed() async throws {
-        let provider = FileSyncProvider(location: .other(directory: folder), watchInterval: .milliseconds(10))
-        let other = FileSyncProvider(location: .other(directory: folder), watchInterval: nil)
+        let provider = FileSyncProvider(location: .other(directory: folder))
+        provider.watchMode = .poll(.milliseconds(10))
+        let other = FileSyncProvider(location: .other(directory: folder))
+        other.watchMode = .none
         let pushes = try #require(provider.pushedChanges())
         let heard = Heard()
         let listener = Task {
@@ -185,6 +188,28 @@ import Testing
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(await heard.zones == [["notes"]])
+    }
+
+    #if canImport(Darwin)
+    @Test func aWatchedFolderPushesChangesAsTheyLand() async throws {
+        let tablet = try device(watching: .folder)
+        let phone = try device()
+        phone.mainContext.insert(SyncRecipe(title: "Stew"))
+        try await phone.mainContext.save()
+        var titles: [String] = []
+        for _ in 0..<250 where titles.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+            titles = try await recipes(tablet).map(\.title)
+        }
+        #expect(titles == ["Stew"])
+    }
+    #endif
+
+    @Test func eachLocationWatchesItsOwnWay() {
+        #expect(FileSyncProvider(location: .iCloud).watchMode == .metadata)
+        #expect(FileSyncProvider(location: .appGroup("group.test")).watchMode == .folder)
+        #expect(FileSyncProvider(location: .applicationSupport).watchMode == .none)
+        #expect(FileSyncProvider(location: .other(directory: folder)).watchMode == .folder)
     }
 
     @Test func iCloudPathsMapToZones() {
