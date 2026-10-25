@@ -22,11 +22,11 @@ private final class Pages: RecordPager {
 }
 
 @MainActor
-@Suite struct RecordListTests {
+@Suite struct RecordResultsTests {
     let todos = (0..<10).map { ToDo(title: "\($0)") }
 
     @Test func indicesArePositionsInTheFullResult() {
-        let list = RecordList(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10)
+        let list = RecordResults(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10)
         #expect(list.startIndex == 4)
         #expect(list.endIndex == 8)
         #expect(list[5].title == "5")
@@ -38,7 +38,7 @@ private final class Pages: RecordPager {
     }
 
     @Test func editsKeepTheOffset() {
-        var list = RecordList(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10)
+        var list = RecordResults(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10)
         list[6].title = "Six"
         list.remove(at: 4)
         list.append(ToDo(title: "New"))
@@ -48,7 +48,7 @@ private final class Pages: RecordPager {
 
     @Test func pagingMovesThroughThePager() {
         let pages = Pages()
-        let list = RecordList(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10, pager: pages)
+        let list = RecordResults(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10, pager: pages)
         list.nextPage()
         list.previousPage()
         list.show(page: 9)
@@ -62,7 +62,7 @@ private final class Pages: RecordPager {
 
     @Test func appendNextPageKeepsThePageSize() {
         let pages = Pages()
-        let list = RecordList(Array(todos[0..<8]), page: RecordPage(limit: 4, pages: 2), totalCount: 10, pager: pages)
+        let list = RecordResults(Array(todos[0..<8]), page: RecordPage(limit: 4, pages: 2), totalCount: 10, pager: pages)
         #expect(list.fetchLimit == 4)
         #expect(list.hasNextPage)
         list.appendNextPage()
@@ -76,11 +76,11 @@ private final class Pages: RecordPager {
 
     @Test func pagingStopsAtTheEnds() {
         let pages = Pages()
-        let last = RecordList(Array(todos[8...]), page: RecordPage(limit: 4, offset: 8), totalCount: 10, pager: pages)
+        let last = RecordResults(Array(todos[8...]), page: RecordPage(limit: 4, offset: 8), totalCount: 10, pager: pages)
         last.nextPage()
         last.appendNextPage()
         #expect(!last.hasNextPage)
-        let unlimited = RecordList(todos, pager: pages)
+        let unlimited = RecordResults(todos, pager: pages)
         unlimited.nextPage()
         unlimited.appendNextPage()
         #expect(unlimited.pageCount == 1)
@@ -90,7 +90,7 @@ private final class Pages: RecordPager {
 
     @Test func refreshAndSaveReachThePager() async throws {
         let pages = Pages()
-        let list = RecordList(todos, pager: pages)
+        let list = RecordResults(todos, pager: pages)
         try await list.refresh()
         try list.save()
         #expect(pages.refreshes == 1)

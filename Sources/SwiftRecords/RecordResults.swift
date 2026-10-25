@@ -1,14 +1,14 @@
 import Foundation
 
-/// The records `$todos` binds to: the pages of a `@Records` query the view holds, with their place in the
-/// full result.
+/// The records `$todos` binds to, also named `Records<R>.Results`: the pages of a `@Records` query the
+/// view holds, with their place in the full result.
 ///
 /// Its indices are positions in the full result, so a page that skips 40 records runs from 40 up to
 /// `fetchOffset + count`, as an array slice keeps its base's indices. `ForEach($todos)` and
 /// `List($todos, editActions: .delete)` work as they do on an array. Inserts, edits and deletes write
 /// through the main context. The order comes from the query's sort, so moving or swapping records changes
 /// nothing.
-public struct RecordList<R: Record>: RandomAccessCollection, MutableCollection, RangeReplaceableCollection, Sendable {
+public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollection, RangeReplaceableCollection, Sendable {
     public typealias Index = Int
 
     /// The records the view holds, in the query's order.
@@ -121,9 +121,9 @@ public struct RecordList<R: Record>: RandomAccessCollection, MutableCollection, 
     }
 }
 
-/// What lets `Binding<RecordList<R>>` page through records, since an extension's properties can't be
+/// What lets `Binding<RecordResults<R>>` page through records, since an extension's properties can't be
 /// generic over `R`.
-public protocol RecordListProtocol {
+public protocol RecordResultsProtocol {
     var totalCount: Int { get }
     var fetchLimit: Int? { get }
     var fetchOffset: Int { get }
@@ -140,7 +140,7 @@ public protocol RecordListProtocol {
     @MainActor func save() throws
 }
 
-extension RecordList: RecordListProtocol {}
+extension RecordResults: RecordResultsProtocol {}
 
 /// Moves a `@Records` view's page and refreshes its context.
 @MainActor

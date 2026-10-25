@@ -614,8 +614,8 @@ Like `@Query`, `@Records` also takes a descriptor, which can limit how many reco
 Unsaved new records still count toward it, so the view never shows more than the limit. Pass a zone first,
 `@Records("pantry", descriptor)`, to pin it.
 
-`todos` is a plain `[ToDo]`, and `$todos` is a `Binding<RecordList<ToDo>>`. `RecordList` is a random-access,
-mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
+`todos` is a plain `[ToDo]`, and `$todos` is a `Binding<Records<ToDo>.Results>`. `Results` is a
+random-access, mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
 they do on an array's binding. Writes insert, update and delete through the main context,
 which batches them into one transaction once edits pause for `autosaveDelay` (half a second by
 default). Every view reading the same records shows the change at once, before it saves, and so do changes

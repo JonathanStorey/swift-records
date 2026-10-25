@@ -13,9 +13,9 @@ import SwiftUI
 /// }
 /// ```
 ///
-/// `todos` is a plain array, and `$todos` a `Binding<RecordList<ToDo>>` that `List` and `ForEach` edit as
-/// they would an array's. Writing to it inserts, updates and deletes records through the container's
-/// `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
+/// `todos` is a plain array, and `$todos` a `Binding<Records<ToDo>.Results>` that `List` and `ForEach`
+/// edit as they would an array's. Writing to it inserts, updates and deletes records through the
+/// container's `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
 ///
 /// ```swift
 /// @Records(sort: \.servings, order: .reverse) var recipes: [Recipe]
@@ -42,6 +42,9 @@ import SwiftUI
 public struct Records<R: Record>: DynamicProperty {
     @Environment(\.recordContainer) private var container
     @State private var cache = Cache()
+
+    /// What `$todos` binds to: the records with their place in the full result.
+    public typealias Results = RecordResults<R>
 
     private let zone: ZoneChoice
     private let query: Query
@@ -125,10 +128,10 @@ public struct Records<R: Record>: DynamicProperty {
         return Self.value(context: resolvedContext, cache: cache, query: query, zone: zone)
     }
 
-    /// The records as a `RecordList`, whose indices are positions in the full result. Writing to it
+    /// The records as `Results`, whose indices are positions in the full result. Writing to it
     /// inserts, updates and deletes records, and `$todos.page`, `appendNextPage()` and `refresh()` move
     /// through it.
-    public var projectedValue: Binding<RecordList<R>> {
+    public var projectedValue: Binding<Results> {
         let context = resolvedContext
         let cache = cache
         let query = query
@@ -138,7 +141,7 @@ public struct Records<R: Record>: DynamicProperty {
                 MainActor.assumeIsolated {
                     let elements = Self.value(context: context, cache: cache, query: query, zone: choice)
                     let page = cache.key?.page ?? query.page
-                    return RecordList(
+                    return RecordResults(
                         elements, page: page,
                         totalCount: page.isPaged ? cache.totalCount : nil,
                         hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false, pager: cache
@@ -331,7 +334,7 @@ extension Records.Query {
 
 /// Paging read naturally off `$todos`, such as `$todos.page += 1`.
 @MainActor
-extension Binding where Value: RecordListProtocol {
+extension Binding where Value: RecordResultsProtocol {
     /// Every saved record the query matches, not only the page's.
     public var totalCount: Int { wrappedValue.totalCount }
     /// The page size the descriptor chose, or `nil` for no limit.
