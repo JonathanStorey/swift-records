@@ -81,19 +81,6 @@ import Testing
         #expect(try shown(predicate).map(\.title) == ["Salad"])
     }
 
-    @Test func singleRecordsShowBeforeSaving() throws {
-        var soup = Draft(title: "Soup")
-        context.insert(soup)
-        try context.save()
-        let fetched = try context.storage(for: .default).fetch(Draft.self, id: soup.id)
-
-        soup.title = "Broth"
-        context.insert(soup)
-        #expect(context.overlay(fetched, id: soup.id, in: .default)?.title == "Broth")
-        context.delete(soup)
-        #expect(context.overlay(fetched, id: soup.id, in: .default) == nil)
-    }
-
     @Test func otherZonesStayOut() throws {
         context.zone = "pantry"
         context.insert(Draft(title: "Flour"))

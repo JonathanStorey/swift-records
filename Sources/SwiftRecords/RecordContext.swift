@@ -632,16 +632,6 @@ public final class RecordContext {
         return records
     }
 
-    /// The record as views should show it: an unsaved save or delete if there is one, otherwise `stored`.
-    func overlay<R: Record>(_ stored: R?, id: UUID, in zone: Zone) -> R? {
-        let key = Self.key(R.self, id: id, in: zone)
-        switch (pending[key] ?? inFlight[key])?.latest {
-        case .saved(let any)?: return (any as? R) ?? stored
-        case .deleted?: return nil
-        case nil: return stored
-        }
-    }
-
     // MARK: Arrays
 
     /// Applies an edited array of records: new IDs are inserted, missing IDs are deleted, and the ones
