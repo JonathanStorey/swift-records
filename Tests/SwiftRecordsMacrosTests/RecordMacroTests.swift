@@ -16,7 +16,7 @@ final class RecordMacroTests: XCTestCase {
             public struct ToDo {
                 var id = UUID()
                 var title: String
-                var notes: [Note] = []
+                var labels: [String] = []
                 var isEmpty: Bool { title.isEmpty }
                 static var sample = 1
             }
@@ -25,9 +25,11 @@ final class RecordMacroTests: XCTestCase {
             public struct ToDo {
                 var id = UUID()
                 var title: String
-                var notes: [Note] = []
+                var labels: [String] = []
                 var isEmpty: Bool { title.isEmpty }
                 static var sample = 1
+
+                public typealias ID = UUID
             }
 
             extension ToDo: Record {
@@ -35,7 +37,7 @@ final class RecordMacroTests: XCTestCase {
                     RecordSchema(table: "ToDo", fields: [
                         .field("id", \\ToDo.id),
                         .field("title", \\ToDo.title),
-                        .field("notes", \\ToDo.notes).defaulting(([]) as [Note])
+                        .field("labels", \\ToDo.labels).defaulting(([]) as [String])
                     ])
                 }
             }
@@ -50,13 +52,15 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Note {
                 let id: UUID
-                @Reference(from: \\ToDo.notes) var todos: Set<ToDo.ID>
+                @Reference(to: \\ToDo.notes) var todos: Set<ToDo.ID>
             }
             """,
             expandedSource: """
             struct Note {
                 let id: UUID
                 @SwiftRecords.InverseStorage var todos: Set<ToDo.ID>
+
+                typealias ID = UUID
             }
 
             extension Note: Record {
@@ -78,8 +82,8 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Note {
                 var id = UUID()
-                @Reference(to: \\ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?
-                @Reference(to: \\Folder.notes) var folder: Folder.ID? = nil
+                @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
+                @Reference(from: Folder.self) var folder: Folder.ID? = nil
             }
             """,
             expandedSource: """
@@ -87,14 +91,16 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 var todo: ToDo.ID?
                 var folder: Folder.ID? = nil
+
+                typealias ID = UUID
             }
 
             extension Note: Record {
                 static var schema: RecordSchema<Note> {
                     RecordSchema(table: "Note", fields: [
                         .field("id", \\Note.id),
-                        .reference("todo", \\Note.todo, to: \\ToDo.notes, action: .deleteSelf),
-                        .reference("folder", \\Note.folder, to: \\Folder.notes)
+                        .reference("todo", \\Note.todo, from: ToDo.self, action: .deleteSelf),
+                        .reference("folder", \\Note.folder, from: Folder.self)
                     ])
                 }
             }
@@ -109,13 +115,15 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Note {
                 var id = UUID()
-                @Reference(to: \\ToDo.notes) var todo: ToDo.ID
+                @Reference(from: ToDo.self) var todo: ToDo.ID
             }
             """,
             expandedSource: """
             struct Note {
                 var id = UUID()
                 var todo: ToDo.ID
+
+                typealias ID = UUID
             }
 
             extension Note: Record {
@@ -128,7 +136,7 @@ final class RecordMacroTests: XCTestCase {
             """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: "A reference holds its parent's ID, or nil while it has none. Declare it as 'Parent.ID?'",
+                    message: "A @Reference(from:) property holds its parent's ID, or nil while it has none. Declare it as 'ToDo.ID?'",
                     line: 4, column: 37
                 ),
             ],
@@ -167,6 +175,8 @@ final class RecordMacroTests: XCTestCase {
             struct Counter {
                 var id: Int
                 var count = 0
+
+                typealias ID = UUID
             }
 
             extension Counter: Record {
@@ -196,6 +206,8 @@ final class RecordMacroTests: XCTestCase {
             struct Tag {
                 let id = UUID()
                 let name: String
+
+                typealias ID = UUID
             }
 
             extension Tag: Record {
@@ -236,6 +248,8 @@ final class RecordMacroTests: XCTestCase {
                 var name = ""
                 var due: Date? = nil
                 var status: Status = .draft
+
+                typealias ID = UUID
             }
 
             extension Dish: Record {
@@ -267,6 +281,8 @@ final class RecordMacroTests: XCTestCase {
             struct Box<T: Codable & Sendable> {
                 var id = UUID()
                 var value: T
+
+                typealias ID = UUID
             }
             """,
             diagnostics: [DiagnosticSpec(
@@ -292,6 +308,8 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 @Asset(fileExtension: "jpg") var image: Data?
                 @Asset var raw: Data?
+
+                typealias ID = UUID
             }
 
             extension Photo: Record {
@@ -327,6 +345,8 @@ final class RecordMacroTests: XCTestCase {
                 @SwiftRecords.TimestampStorage var modified: Date?
                 @SwiftRecords.TimestampStorage var synced: Date?
                 var wrong: Date
+
+                typealias ID = UUID
             }
 
             extension Entry: Record {
@@ -353,8 +373,8 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Note {
                 var id = UUID()
-                @Reference(from: \\ToDo.notes) var todos: [ToDo.ID] = []
-                @Reference(from: \\ToDo.tags) var tagged: Set<ToDo.ID> = []
+                @Reference(to: \\ToDo.notes) var todos: [ToDo.ID] = []
+                @Reference(to: \\ToDo.tags) var tagged: Set<ToDo.ID> = []
             }
             """,
             expandedSource: """
@@ -362,6 +382,8 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 var todos: [ToDo.ID] = []
                 var tagged: Set<ToDo.ID> = []
+
+                typealias ID = UUID
             }
 
             extension Note: Record {
@@ -374,13 +396,102 @@ final class RecordMacroTests: XCTestCase {
             """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: "An inverse holds the IDs of the records that link here, in no order. Declare it as 'Set<Owner.ID>'",
-                    line: 4, column: 39
+                    message: "@Reference(to:) holds the records that point here: '[ToDo]' for many or 'ToDo?' for one. The other side of a many-to-many is 'Set<ToDo.ID>'",
+                    line: 4, column: 37
                 ),
                 DiagnosticSpec(
-                    message: "An inverse is read-only and filled by the container, so it takes no initial value. Remove '= []'",
-                    line: 5, column: 59
+                    message: "This side of a many-to-many is read-only and filled by the container, so it takes no initial value. Remove '= []'",
+                    line: 5, column: 57
                 ),
+            ],
+            macros: macros
+        )
+    }
+
+    func testGeneratesChildrenAndLinks() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Recipe {
+                var id = UUID()
+                @Reference(to: \\Step.recipe, sort: \\.position) var steps: [Step] = []
+                @Reference(to: \\Photo.recipe) var cover: Photo? = nil
+                @Reference(to: Tag.self) var tags: [Tag] = []
+                @Reference(to: Cook.self, sort: [SortDescriptor(\\Cook.name)]) var cooks: [Cook] = []
+            }
+            """,
+            expandedSource: """
+            struct Recipe {
+                var id = UUID()
+                @SwiftRecords.RelationshipStorage var steps: [Step] = []
+                @SwiftRecords.RelationshipStorage var cover: Photo? = nil
+                @SwiftRecords.RelationshipStorage var tags: [Tag] = []
+                @SwiftRecords.RelationshipStorage var cooks: [Cook] = []
+
+                typealias ID = UUID
+            }
+
+            extension Recipe: Record {
+                static var schema: RecordSchema<Recipe> {
+                    RecordSchema(table: "Recipe", fields: [
+                        .field("id", \\Recipe.id),
+                        .children("steps", \\Recipe.steps, to: \\Step.recipe, sortBy: [SortDescriptor(\\Step.position)]),
+                        .children("cover", \\Recipe.cover, to: \\Photo.recipe),
+                        .links("tags", \\Recipe.tags, to: Tag.self),
+                        .links("cooks", \\Recipe.cooks, to: Cook.self, sortBy: [SortDescriptor(\\Cook.name)])
+                    ])
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func testRejectsMisspelledRelationships() {
+        assertMacroExpansion(
+            """
+            @Record
+            struct Recipe {
+                var id = UUID()
+                @Reference(from: \\Book.recipes) var book: Book.ID?
+                @Reference(to: Tag.self) var tags: Set<Tag> = []
+                @Reference(to: \\Step.recipe) var steps: Set<Step.ID>
+                @Reference(to: \\Note.recipe) var note: Note
+                @Reference(to: \\Cook.recipes, sort: \\.name) var cooks: Set<Cook.ID>
+                @Reference var owner: Person.ID?
+            }
+            """,
+            expandedSource: """
+            struct Recipe {
+                var id = UUID()
+                var book: Book.ID?
+                var tags: Set<Tag> = []
+                @SwiftRecords.InverseStorage var steps: Set<Step.ID>
+                var note: Note
+                @SwiftRecords.InverseStorage var cooks: Set<Cook.ID>
+                var owner: Person.ID?
+
+                typealias ID = UUID
+            }
+
+            extension Recipe: Record {
+                static var schema: RecordSchema<Recipe> {
+                    RecordSchema(table: "Recipe", fields: [
+                        .field("id", \\Recipe.id),
+                        .inverse("steps", \\Recipe.steps, of: \\Step.recipe)
+                    ])
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(message: "@Reference(from:) names the type this record comes from, such as 'Recipe.self'", line: 4, column: 22),
+                DiagnosticSpec(message: "A many-to-many relationship holds the records it links to. Declare it as '[Tag]'", line: 5, column: 34),
+                DiagnosticSpec(
+                    message: "@Reference(to:) holds the records that point here: '[Note]' for many or 'Note?' for one. The other side of a many-to-many is 'Set<Note.ID>'",
+                    line: 7, column: 38
+                ),
+                DiagnosticSpec(message: "A set of IDs has no order, so it takes no 'sort:'", line: 8, column: 41),
+                DiagnosticSpec(message: "@Reference needs 'from:' or 'to:'", line: 9, column: 5),
             ],
             macros: macros
         )
@@ -392,7 +503,7 @@ final class RecordMacroTests: XCTestCase {
             struct Settings {
                 @Indexed var name = ""
                 @Timestamped var updated: Date?
-                @Reference(to: \\Folder.items) var folder: Folder.ID?
+                @Reference(from: Folder.self) var folder: Folder.ID?
             }
             """,
             expandedSource: """
@@ -426,6 +537,8 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 @Asset var image: Data
                 @Asset var name: String?
+
+                typealias ID = UUID
             }
 
             extension Photo: Record {
@@ -458,6 +571,8 @@ final class RecordMacroTests: XCTestCase {
                 var id = UUID()
                 var oid = 1
                 var rowid = 0
+
+                typealias ID = UUID
             }
 
             extension Draft: Record {
@@ -488,6 +603,8 @@ final class RecordMacroTests: XCTestCase {
                 expandedSource: """
                 struct Dish {
                     var id = UUID()
+
+                    typealias ID = UUID
                 }
                 """,
                 diagnostics: [DiagnosticSpec(
@@ -513,6 +630,8 @@ final class RecordMacroTests: XCTestCase {
             enum Pantry {
                 struct Item {
                     var id = UUID()
+
+                    typealias ID = UUID
                 }
             }
             """,
@@ -535,6 +654,8 @@ final class RecordMacroTests: XCTestCase {
             enum Pantry {
                 struct Item {
                     var id = UUID()
+
+                    typealias ID = UUID
                 }
             }
 

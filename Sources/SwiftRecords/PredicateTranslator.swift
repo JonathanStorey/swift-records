@@ -4,15 +4,16 @@ import Foundation
 ///
 /// Supported: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, comparisons with `nil`,
 /// `String.contains` (iOS 18 and macOS 15), `localizedStandardContains`, and `[values].contains(\.property)` on a record's own
-/// stored properties, plus `$0.relationship.contains { ... }` over a to-many relationship and
-/// `$0.inverse.contains(owner.id)` over an inverse, which become `EXISTS` subqueries. `RecordContainer` evaluates anything else in memory.
+/// stored properties, plus `$0.relationship.contains { ... }` over a `@Reference(to:)` array and
+/// `$0.inverse.contains(owner.id)` over the read-only side of a many-to-many, which become `EXISTS`
+/// subqueries. `RecordContainer` evaluates anything else in memory.
 enum PredicateTranslator {
     struct Clause {
         var sql: String
         var bindings: [SQLiteValue]
         /// Columns the clause reads, by table, so the container can add any that do not exist yet.
         var columns: [(table: String, column: String)]
-        /// Join tables the clause reads. If one does not exist, the container filters in memory instead.
+        /// Tables of related records the clause reads. If one does not exist, the container filters in memory instead.
         var relations: [String]
     }
 
@@ -57,21 +58,26 @@ struct SQLBuilder {
         let alias: String
         let table: String
         let fieldName: (AnyKeyPath) -> String?
-        /// The join table behind an inverse property, such as `Cookbook.recipes` for `\Recipe.cookbookIDs`.
-        let inverseRelation: (AnyKeyPath) -> String?
+        /// Where a `@Reference(to:)` property's records come from, with the names a many-to-many's links
+        /// are stored under.
+        let relationship: (AnyKeyPath) -> (relationship: Relationship, names: [String])?
+        /// The names the links behind an inverse property are stored under, such as `Recipe.tags` for
+        /// `\Tag.recipes`.
+        let inverseNames: (AnyKeyPath) -> [String]?
 
         init<R: Record>(_ type: R.Type, alias: String) {
             self.alias = alias
             table = R.table
             fieldName = { keyPath in
-                guard let field = R.cachedSchema.field(for: keyPath), field.inverse == nil else { return nil }
+                guard let field = R.cachedSchema.field(for: keyPath), field.isStored else { return nil }
                 return field.name
             }
-            inverseRelation = { keyPath in
-                guard let inverse = R.cachedSchema.field(for: keyPath)?.inverse,
-                      let owner = Swift.type(of: inverse).rootType as? any Record.Type,
-                      let field = owner.fieldName(for: inverse) else { return nil }
-                return owner.table + "." + field
+            relationship = { keyPath in
+                guard let field = R.cachedSchema.field(for: keyPath), let relationship = field.relationship else { return nil }
+                return (relationship, RecordStore.relationNames(R.self, field: field))
+            }
+            inverseNames = { keyPath in
+                R.cachedSchema.field(for: keyPath)?.inverse.flatMap(RecordStore.relationNames)
             }
         }
     }
@@ -145,25 +151,37 @@ extension PredicateExpressions.KeyPath: SQLExpressible {
     }
 }
 
-// `$0.notes.contains { $0.text == "x" }` becomes an EXISTS subquery over the `ToDo.notes` join table.
+// `$0.steps.contains { $0.text == "x" }` becomes an EXISTS subquery over the steps that point here, and
+// over a many-to-many, over its links joined to the records they link to.
 extension PredicateExpressions.SequenceContainsWhere: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
-        guard let path = sequence as? any KeyPathExpression,
-              let targetType = LHS.Output.Element.self as? any Record.Type else {
+        guard let path = sequence as? any KeyPathExpression, let outer = builder.scopes[try path.variableKey],
+              let (relationship, names) = outer.relationship(path.anyKeyPath) else {
             throw PredicateTranslator.Unsupported()
         }
-        let (outer, field) = try builder.field(path)
-        let relation = outer.table + "." + field
         let n = builder.nextAlias()
-        let join = quoted("j\(n)")
-        let target = SQLBuilder.Scope(targetType, alias: "t\(n)")
-        builder.relations.append(relation)
+        let target = SQLBuilder.Scope(relationship.target, alias: "t\(n)")
+        let alias = quoted(target.alias)
+        builder.relations.append(target.table)
         builder.columns.append((target.table, "id"))
-        builder.scopes[variable.key] = target
-        let test = try builder.expression(test)
-        return "EXISTS (SELECT 1 FROM \(quoted(relation)) AS \(join) "
-            + "JOIN \(quoted(target.table)) AS \(quoted(target.alias)) ON \(quoted(target.alias)).\"id\" = \(join).target "
-            + "WHERE \(join).owner = \(quoted(outer.alias)).\"id\" AND \(test))"
+        switch relationship {
+        case .children(let type, let pointer):
+            guard let column = type.fieldName(for: pointer) else { throw PredicateTranslator.Unsupported() }
+            builder.columns.append((target.table, column))
+            builder.scopes[variable.key] = target
+            let test = try builder.expression(test)
+            return "EXISTS (SELECT 1 FROM \(quoted(target.table)) AS \(alias) "
+                + "WHERE \(alias).\(quoted(column)) = \(quoted(outer.alias)).\"id\" AND \(test))"
+        case .links:
+            let join = quoted("j\(n)")
+            builder.relations.append(_RecordLink.table)
+            let relations = try names.map { try builder.bind($0) }.joined(separator: ", ")
+            builder.scopes[variable.key] = target
+            let test = try builder.expression(test)
+            return "EXISTS (SELECT 1 FROM \(quoted(_RecordLink.table)) AS \(join) "
+                + "JOIN \(quoted(target.table)) AS \(alias) ON \(alias).\"id\" = \(join).\"to\" "
+                + "WHERE \(join).relation IN (\(relations)) AND \(join).\"from\" = \(quoted(outer.alias)).\"id\" AND \(test))"
+        }
     }
 }
 
@@ -231,18 +249,19 @@ extension PredicateExpressions.Negation: SQLExpressible {
     }
 }
 
-// `[a, b].contains($0.property)` becomes `property IN (?, ?)`, and `$0.cookbookIDs.contains(id)` on an
-// inverse becomes an EXISTS subquery over the owner's join table.
+// `[a, b].contains($0.property)` becomes `property IN (?, ?)`, and `$0.recipes.contains(id)` on the
+// read-only side of a many-to-many becomes an EXISTS subquery over its links.
 extension PredicateExpressions.SequenceContains: SQLExpressible {
     func sql(_ builder: inout SQLBuilder) throws -> String {
         if let path = sequence as? any KeyPathExpression {
             guard let scope = builder.scopes[try path.variableKey],
-                  let relation = scope.inverseRelation(path.anyKeyPath) else { throw PredicateTranslator.Unsupported() }
+                  let names = scope.inverseNames(path.anyKeyPath) else { throw PredicateTranslator.Unsupported() }
             let join = quoted("j\(builder.nextAlias())")
-            builder.relations.append(relation)
+            builder.relations.append(_RecordLink.table)
+            let relations = try names.map { try builder.bind($0) }.joined(separator: ", ")
             let owner = try builder.expression(element)
-            return "EXISTS (SELECT 1 FROM \(quoted(relation)) AS \(join) "
-                + "WHERE \(join).target = \(quoted(scope.alias)).\"id\" AND \(join).owner = \(owner))"
+            return "EXISTS (SELECT 1 FROM \(quoted(_RecordLink.table)) AS \(join) WHERE \(join).relation IN (\(relations)) "
+                + "AND \(join).\"to\" = \(quoted(scope.alias)).\"id\" AND \(join).\"from\" = \(owner))"
         }
         guard let values = (sequence as? any ValueSequence)?.elements else { throw PredicateTranslator.Unsupported() }
         let element = try builder.expression(element)

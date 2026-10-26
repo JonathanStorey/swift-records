@@ -6,9 +6,26 @@ import SwiftSyntaxMacros
 
 /// `@Record` adds `Record` conformance and generates `static var schema`, which maps every stored
 /// property to its key path so predicates, sort descriptors, references and inverses can be
-/// resolved without an instance. It also gives each `@Timestamped` and `@Reference(from:)` property its
+/// resolved without an instance. It also gives each `@Timestamped` property, and each `Set` of IDs with `@Reference(to:)`, its
 /// read-only storage wrapper.
-public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
+public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
+    /// Declares `ID` on the struct itself, so another type can name `Recipe.ID` while the compiler is still
+    /// working out `Recipe`'s conformances, such as when two types' relationships name each other.
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingMembersOf declaration: some DeclGroupSyntax,
+        conformingTo protocols: [TypeSyntax],
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        guard declaration.is(StructDeclSyntax.self) else { return [] }
+        let declaresID = declaration.memberBlock.members.contains { member in
+            member.decl.as(TypeAliasDeclSyntax.self)?.name.text == "ID"
+        }
+        guard !declaresID else { return [] }
+        let access = declaration.modifiers.contains { ["public", "open", "package"].contains($0.name.text) } ? "public " : ""
+        return ["\(raw: access)typealias ID = UUID"]
+    }
+
     public static func expansion(
         of node: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -20,8 +37,13 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         if timestampKind(variable.attributes) != nil, isOptionalDate(binding) {
             return ["@SwiftRecords.TimestampStorage"]
         }
-        if referenceArguments(variable.attributes)?.from != nil, isSet(binding), binding.initializer == nil {
-            return ["@SwiftRecords.InverseStorage"]
+        if let reference = referenceArguments(variable.attributes) {
+            if reference.isInverse(binding), binding.initializer == nil {
+                return ["@SwiftRecords.InverseStorage"]
+            }
+            if reference.isRelationship(binding), variable.bindingSpecifier.tokenKind == .keyword(.var), binding.accessorBlock == nil {
+                return ["@SwiftRecords.RelationshipStorage"]
+            }
         }
         return []
     }
@@ -132,31 +154,10 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
                     fields.append(".timestamp(\"\(name)\", \(keyPath), \(kind))" + modifiers)
                     continue
                 }
-                if let inverse = reference?.from {
-                    guard isSet(binding) else {
-                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
-                            "An inverse holds the IDs of the records that link here, in no order. Declare it as 'Set<Owner.ID>'"
-                        )))
-                        continue
+                if let reference {
+                    if let field = referenceField(reference, name: name, keyPath: keyPath, binding: binding, in: context) {
+                        fields.append(field + modifiers)
                     }
-                    if let initializer = binding.initializer {
-                        context.diagnose(Diagnostic(node: initializer, message: MacroError.message(
-                            "An inverse is read-only and filled by the container, so it takes no initial value. Remove '\(initializer.trimmedDescription)'"
-                        )))
-                        continue
-                    }
-                    fields.append(".inverse(\"\(name)\", \(keyPath), of: \(inverse))" + modifiers)
-                    continue
-                }
-                if let parent = reference?.to {
-                    guard isOptional(binding) else {
-                        context.diagnose(Diagnostic(node: binding, message: MacroError.message(
-                            "A reference holds its parent's ID, or nil while it has none. Declare it as 'Parent.ID?'"
-                        )))
-                        continue
-                    }
-                    let action = reference?.action.map { ", action: \($0)" } ?? ""
-                    fields.append(".reference(\"\(name)\", \(keyPath), to: \(parent)\(action))" + modifiers)
                     continue
                 }
                 var field = ".field(\"\(name)\", \(keyPath))"
@@ -285,7 +286,7 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         return ["Date?", "Foundation.Date?", "Optional<Date>", "Optional<Foundation.Date>"].contains(text)
     }
 
-    private static func isSet(_ binding: PatternBindingSyntax) -> Bool {
+    fileprivate static func isSet(_ binding: PatternBindingSyntax) -> Bool {
         guard let type = binding.typeAnnotation?.type else { return false }
         let text = type.trimmedDescription.filter { !$0.isWhitespace }
         return text.hasPrefix("Set<") || text.hasPrefix("Swift.Set<")
@@ -297,31 +298,141 @@ public struct RecordMacro: ExtensionMacro, MemberAttributeMacro {
         return ["Data?", "Foundation.Data?", "Optional<Data>", "Optional<Foundation.Data>"].contains(text)
     }
 
-    private static func isOptional(_ binding: PatternBindingSyntax) -> Bool {
+    fileprivate static func isOptional(_ binding: PatternBindingSyntax) -> Bool {
         guard let type = binding.typeAnnotation?.type else { return false }
         return type.is(OptionalTypeSyntax.self) || type.trimmedDescription.hasPrefix("Optional<")
     }
 
-    private static func referenceArguments(_ attributes: AttributeListSyntax) -> (to: String?, action: String?, from: String?)? {
+    /// The arguments of a property's `@Reference` attribute.
+    struct ReferenceAttribute {
+        var from: ExprSyntax?
+        var to: ExprSyntax?
+        var action: String?
+        var sort: ExprSyntax?
+        var node: AttributeSyntax
+
+        /// The type `to:` names, such as `Tag` for `Tag.self`, or nil for a key path.
+        var toType: String? {
+            guard let to, to.as(KeyPathExprSyntax.self) == nil else { return nil }
+            return RecordMacro.typeName(to)
+        }
+
+        /// True for `@Reference(to: \Owner.links)` on a `Set` of IDs: the read-only side of a many-to-many.
+        func isInverse(_ binding: PatternBindingSyntax) -> Bool {
+            to?.as(KeyPathExprSyntax.self) != nil && RecordMacro.isSet(binding)
+        }
+
+        /// True for a `@Reference(to:)` that holds records: children as `[Child]` or `Child?`, or a
+        /// many-to-many as `[Target]`.
+        func isRelationship(_ binding: PatternBindingSyntax) -> Bool {
+            guard from == nil, let to, !RecordMacro.holdsIDs(binding) else { return false }
+            if to.as(KeyPathExprSyntax.self) != nil {
+                return RecordMacro.isArray(binding) || RecordMacro.isOptional(binding)
+            }
+            return toType != nil && RecordMacro.isArray(binding)
+        }
+    }
+
+    private static func referenceArguments(_ attributes: AttributeListSyntax) -> ReferenceAttribute? {
         for element in attributes {
             guard let attribute = element.as(AttributeSyntax.self),
-                  attribute.attributeName.trimmedDescription == "Reference" else { continue }
-            var to: String?
-            var action: String?
-            var from: String?
+                  ["Reference", "SwiftRecords.Reference"].contains(attribute.attributeName.trimmedDescription) else { continue }
+            var reference = ReferenceAttribute(node: attribute)
             if case .argumentList(let arguments) = attribute.arguments {
                 for argument in arguments {
                     switch argument.label?.text {
-                    case "to": to = argument.expression.trimmedDescription
-                    case "action": action = argument.expression.trimmedDescription
-                    case "from": from = argument.expression.trimmedDescription
+                    case "from": reference.from = argument.expression
+                    case "to": reference.to = argument.expression
+                    case "action": reference.action = argument.expression.trimmedDescription
+                    case "sort": reference.sort = argument.expression
                     default: break
                     }
                 }
             }
-            return (to, action, from)
+            return reference
         }
         return nil
+    }
+
+    /// The schema entry for a `@Reference` property, or nil after diagnosing a mistake.
+    private static func referenceField(
+        _ reference: ReferenceAttribute, name: String, keyPath: String, binding: PatternBindingSyntax,
+        in context: some MacroExpansionContext
+    ) -> String? {
+        func diagnose(_ message: String, at node: some SyntaxProtocol) -> String? {
+            context.diagnose(Diagnostic(node: node, message: MacroError.message(message)))
+            return nil
+        }
+        if let from = reference.from {
+            guard let parent = typeName(from) else {
+                return diagnose("@Reference(from:) names the type this record comes from, such as 'Recipe.self'", at: from)
+            }
+            guard isOptional(binding) else {
+                return diagnose("A @Reference(from:) property holds its parent's ID, or nil while it has none. Declare it as '\(parent).ID?'", at: binding)
+            }
+            let action = reference.action.map { ", action: \($0)" } ?? ""
+            return ".reference(\"\(name)\", \(keyPath), from: \(parent).self\(action))"
+        }
+        guard let to = reference.to else {
+            return diagnose("@Reference needs 'from:' or 'to:'", at: reference.node)
+        }
+        if let target = reference.toType {
+            guard isArray(binding) else {
+                return diagnose("A many-to-many relationship holds the records it links to. Declare it as '[\(target)]'", at: binding)
+            }
+            return ".links(\"\(name)\", \(keyPath), to: \(target).self\(sortArgument(reference.sort, root: target)))"
+        }
+        guard let path = to.as(KeyPathExprSyntax.self), let root = path.root?.trimmedDescription else {
+            return diagnose("@Reference(to:) takes a key path with its type, such as '\\Step.recipe', or a type, such as 'Tag.self'", at: to)
+        }
+        if reference.isInverse(binding) {
+            if reference.sort != nil {
+                return diagnose("A set of IDs has no order, so it takes no 'sort:'", at: reference.sort!)
+            }
+            if let initializer = binding.initializer {
+                return diagnose(
+                    "This side of a many-to-many is read-only and filled by the container, so it takes no initial value. Remove '\(initializer.trimmedDescription)'",
+                    at: initializer
+                )
+            }
+            return ".inverse(\"\(name)\", \(keyPath), of: \(to.trimmedDescription))"
+        }
+        guard isArray(binding) || isOptional(binding), !holdsIDs(binding) else {
+            return diagnose(
+                "@Reference(to:) holds the records that point here: '[\(root)]' for many or '\(root)?' for one. The other side of a many-to-many is 'Set<\(root).ID>'",
+                at: binding
+            )
+        }
+        return ".children(\"\(name)\", \(keyPath), to: \(to.trimmedDescription)\(sortArgument(reference.sort, root: root)))"
+    }
+
+    /// The `sortBy:` argument for a `sort:`, with a key path's root filled in so it type-checks on its own.
+    private static func sortArgument(_ sort: ExprSyntax?, root: String) -> String {
+        guard let sort else { return "" }
+        if let path = sort.as(KeyPathExprSyntax.self) {
+            let keyPath = path.root == nil ? "\\\(root)" + path.components.trimmedDescription : path.trimmedDescription
+            return ", sortBy: [SortDescriptor(\(keyPath))]"
+        }
+        return ", sortBy: \(sort.trimmedDescription)"
+    }
+
+    /// The type an expression such as `Recipe.self` names, or nil for any other expression.
+    fileprivate static func typeName(_ expression: ExprSyntax) -> String? {
+        guard let member = expression.as(MemberAccessExprSyntax.self), member.declName.baseName.text == "self",
+              let base = member.base else { return nil }
+        return base.trimmedDescription
+    }
+
+    /// True for a type such as `[Step.ID]` or `Step.ID?`, which names IDs where records belong.
+    fileprivate static func holdsIDs(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type.trimmedDescription else { return false }
+        let element = type.split(whereSeparator: { "[]?<>".contains($0) }).last.map(String.init) ?? type
+        return element == "UUID" || element.hasSuffix(".ID")
+    }
+
+    fileprivate static func isArray(_ binding: PatternBindingSyntax) -> Bool {
+        guard let type = binding.typeAnnotation?.type else { return false }
+        return type.is(ArrayTypeSyntax.self) || type.trimmedDescription.hasPrefix("Array<")
     }
 }
 

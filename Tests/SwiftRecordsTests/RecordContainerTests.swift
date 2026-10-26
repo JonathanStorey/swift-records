@@ -6,7 +6,7 @@ import Testing
 struct Person {
     var id = UUID.ordered()
     var name: String
-    @Reference(from: \ToDo.owner) var todoIDs: Set<ToDo.ID>
+    @Reference(to: \ToDo.owner) var todos: [ToDo] = []
 }
 
 @Record
@@ -16,9 +16,9 @@ struct ToDo {
     var done = false
     var priority = 0
     var due: Date?
-    var owner: Person?
-    var notes: [Note] = []
-    var subtasks: [Subtask] = []
+    @Reference(from: Person.self) var owner: Person.ID?
+    @Reference(to: Note.self) var notes: [Note] = []
+    @Reference(to: \Subtask.todo) var subtasks: [Subtask] = []
     var tags: [String] = []
 }
 
@@ -26,22 +26,22 @@ struct ToDo {
 struct Note {
     var id = UUID.ordered()
     var text: String
-    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
+    @Reference(to: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct Subtask {
     var id = UUID.ordered()
     var title: String
-    @Reference(to: \ToDo.subtasks, action: .deleteSelf) var todo: ToDo.ID?
-    @Reference(to: \Folder.items, action: .deleteSelf) var folder: Folder.ID?
+    @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
+    @Reference(from: Folder.self, action: .deleteSelf) var folder: Folder.ID?
 }
 
 @Record
 struct Folder {
     var id = UUID.ordered()
     var name: String
-    var items: [Subtask] = []
+    @Reference(to: \Subtask.folder) var items: [Subtask] = []
 }
 
 @Suite struct RecordContainerTests {
@@ -61,8 +61,11 @@ struct Folder {
     }
 
     @Test func clearsOptionalsSetToNil() throws {
-        var todo = ToDo(title: "A", due: .now, owner: Person(name: "Sam"))
+        let sam = Person(name: "Sam")
+        try store.save(sam)
+        var todo = ToDo(title: "A", due: .now, owner: sam.id)
         try store.save(todo)
+        #expect(try store.fetch(Person.self, id: sam.id)?.todos.map(\.title) == ["A"])
         todo.due = nil
         todo.owner = nil
         try store.save(todo)
@@ -70,17 +73,17 @@ struct Folder {
         let fetched = try #require(try store.fetch(ToDo.self, id: todo.id))
         #expect(fetched.due == nil)
         #expect(fetched.owner == nil)
-        // A person can own many to-dos, so unlinking keeps them.
+        // Clearing a pointer keeps the record it named.
         #expect(try store.fetch(Person.self).map(\.name) == ["Sam"])
+        #expect(try store.fetch(Person.self, id: sam.id)?.todos.isEmpty == true)
     }
 
     @Test func savesNestedRecordsInOrder() throws {
         let notes = (1...5).map { Note(text: "Note \($0)") }
-        let todo = ToDo(title: "Groceries", owner: Person(name: "Sam"), notes: notes.reversed())
+        let todo = ToDo(title: "Groceries", notes: notes.reversed())
         try store.save(todo)
 
         let fetched = try #require(try store.fetch(ToDo.self, id: todo.id))
-        #expect(fetched.owner?.name == "Sam")
         #expect(fetched.notes.map(\.text) == notes.reversed().map(\.text))
         #expect(try store.fetch(Note.self).count == 5)
     }
@@ -110,7 +113,7 @@ struct Folder {
         try store.save([first, second])
 
         try store.delete(first)
-        // "Only mine" is gone; "Shared" survives because the second ToDo still holds it.
+        // "Only mine" is gone; "Shared" survives because it moved to the second ToDo, which saved it last.
         #expect(try store.fetch(Subtask.self).map(\.title) == ["Shared"])
 
         try store.delete(second)
@@ -214,7 +217,7 @@ struct Folder {
         let reopened = try RecordContainer(directory: directory)
         let fetched = try #require(try reopened.fetch(ToDo.self, id: todo.id))
         #expect(fetched.notes.map(\.text) == ["On disk"])
-        // Delete rules survive a relaunch because they are stored with the schema.
+        // Pointers survive a relaunch because they are stored with the schema.
         try reopened.delete(todo)
         #expect(try reopened.fetch(Note.self).count == 1)
     }

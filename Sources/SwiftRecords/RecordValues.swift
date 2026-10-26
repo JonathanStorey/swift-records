@@ -1,8 +1,8 @@
 import Foundation
 
 // A record's fields as they cross to a server, as `RecordValue`s shaped like a `CKRecord`'s, and back. A
-// relationship is its records' IDs in order, never forward references, and a child's `@Reference(to:)` is
-// the only reference a record holds. Empty lists are left out, as CloudKit leaves them out.
+// record carries only its own values: a `@Reference(from:)` pointer is a reference, and the arrays pointers
+// and links fill are left out, since they're other records. Empty lists are left out, as CloudKit leaves them out.
 
 extension RecordStore {
     // MARK: Fields to values
@@ -18,8 +18,6 @@ extension RecordStore {
             }
             let valueType = Swift.type(of: field.keyPath).valueType
             switch value {
-            case .ids(let ids):
-                if !ids.isEmpty { values[key] = .strings(ids.map(\.uuidString)) }
             case .url(let url) where field.isAsset:
                 values[key] = .asset(url.lastPathComponent)
             case .data(let json) where !isData(valueType):
@@ -42,7 +40,6 @@ extension RecordStore {
         case .data(let value): .bytes(value)
         case .uuid(let value): .string(value.uuidString)
         case .url(let value): .string(value.absoluteString)
-        case .ids(let ids): .strings(ids.map(\.uuidString))
         case .reference(let id, let action): .reference(id, action: action)
         case .unknown(let value): value
         }
@@ -76,19 +73,16 @@ extension RecordStore {
     }
 
     /// The values a struct crosses as, from the struct alone: no container, no stored row and no sync
-    /// history. Each field maps as a stored record's does. A child's reference is whatever the struct holds,
-    /// since only saving it through its parent sets it, and an asset that isn't a file yet is written to a
+    /// history. Each field maps as a stored record's does. A pointer is whatever the struct holds, since
+    /// only saving it through its parent sets it, and an asset that isn't a file yet is written to a
     /// temporary one. `files` holds each asset's file by its ID.
     static func recordValues<R: Record>(of record: R) throws -> (values: [String: RecordValue], files: [String: URL]) {
         let encoded = try RecordEncoder.encode(record)
         let columns = Dictionary(encoded.columns, uniquingKeysWith: { _, last in last })
-        let relations = Dictionary(encoded.relations.map { ($0.name, $0.targets) }, uniquingKeysWith: { first, _ in first })
         var fields: SyncFields = [:]
         var files: [String: URL] = [:]
-        for field in R.cachedSchema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
-            if relationTarget(field) != nil {
-                fields[field.name] = .ids(relations[field.name]?.map { $0.id } ?? [])
-            } else if field.isAsset {
+        for field in R.cachedSchema.fields where field.name != "id" && field.isStored && field.timestamp != .synced {
+            if field.isAsset {
                 if let storage = encoded.assets[field.name]?.storage {
                     let file = try file(of: storage)
                     files[file.lastPathComponent] = file
@@ -100,7 +94,7 @@ extension RecordStore {
                     fields[field.name] = try SyncValue(property: date)
                 }
             } else if let value = columns[field.name], value != .null {
-                fields[field.name] = field.parent != nil
+                fields[field.name] = field.isPointer
                     ? .reference(try ValueCoding.decode(UUID.self, from: value), action: field.action)
                     : try syncValue(of: value, as: Swift.type(of: field.keyPath).valueType)
             }
@@ -140,18 +134,12 @@ extension RecordStore {
                 fields[key] = .unknown(value)
                 continue
             }
-            if field.inverse != nil || field.timestamp == .synced {
+            if !field.isStored || field.timestamp == .synced {
                 continue
-            } else if Self.relationTarget(field) != nil {
-                guard case .strings(let names) = value else { throw mismatch() }
-                fields[key] = .ids(try names.map { name in
-                    guard let id = UUID(uuidString: name) else { throw mismatch() }
-                    return id
-                })
             } else if field.isAsset {
                 guard case .asset(let id) = value else { throw mismatch() }
                 fields[key] = .url(assetURL(named: id))
-            } else if field.parent != nil {
+            } else if field.isPointer {
                 switch value {
                 case .reference(let id, _): fields[key] = .reference(id, action: field.action)
                 case .string(let text):
@@ -161,12 +149,6 @@ extension RecordStore {
                 }
             } else {
                 fields[key] = try Self.syncValue(value, as: Swift.type(of: field.keyPath).valueType)
-            }
-        }
-        // Empty lists aren't sent, so a relationship missing from the values is empty.
-        for field in R.cachedSchema.fields where Self.relationTarget(field) != nil {
-            if !([field.name] + field.previousNames).contains(where: { fields[$0] != nil }) {
-                fields[field.name] = .ids([])
             }
         }
         return fields

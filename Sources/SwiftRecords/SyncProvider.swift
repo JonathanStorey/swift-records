@@ -142,7 +142,7 @@ extension RecordValue: Codable {
         case .doubles: self = .doubles(try container.decode([Double].self, forKey: key))
         case .dates: self = .dates(try container.decode([Date].self, forKey: key))
         case .reference:
-            let action = try container.decodeIfPresent(ReferenceAction.self, forKey: .action) ?? .none
+            let action = try container.decodeIfPresent(ReferenceAction.self, forKey: .action) ?? .nullify
             self = .reference(try container.decode(UUID.self, forKey: key), action: action)
         case .asset: self = .asset(try container.decode(String.self, forKey: key))
         case .action: preconditionFailure("Excluded above")
@@ -163,7 +163,7 @@ extension RecordValue: Codable {
         case .dates(let value): try container.encode(value, forKey: .dates)
         case .reference(let id, let action):
             try container.encode(id, forKey: .reference)
-            if action != .none { try container.encode(action, forKey: .action) }
+            if action != .nullify { try container.encode(action, forKey: .action) }
         case .asset(let id): try container.encode(id, forKey: .asset)
         }
     }

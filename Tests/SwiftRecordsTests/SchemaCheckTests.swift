@@ -17,20 +17,20 @@ struct ClashB {
 @Record
 struct ClashOwner {
     var id = UUID.ordered()
-    var a: [ClashA] = []
-    var b: [ClashB] = []
+    @Reference(to: ClashA.self) var a: [ClashA] = []
+    @Reference(to: ClashB.self) var b: [ClashB] = []
 }
 
 @Record
 struct WrongInverse {
     var id = UUID.ordered()
-    @Reference(from: \ToDo.tags) var todos: Set<ToDo.ID>
+    @Reference(to: \ToDo.tags) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct InverseOfAnotherType {
     var id = UUID.ordered()
-    @Reference(from: \ToDo.notes) var todos: Set<ToDo.ID>
+    @Reference(to: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
@@ -94,8 +94,8 @@ final class SilentProvider: SyncProvider {
     }
 
     @Test func inversesMustPointBack() {
-        #expect(reason(registering: [WrongInverse.self])?.contains("isn't a relationship to WrongInverse") == true)
-        #expect(reason(registering: [InverseOfAnotherType.self])?.contains("isn't a relationship to InverseOfAnotherType") == true)
+        #expect(reason(registering: [WrongInverse.self])?.contains("isn't a many-to-many relationship to WrongInverse") == true)
+        #expect(reason(registering: [InverseOfAnotherType.self])?.contains("isn't a many-to-many relationship to InverseOfAnotherType") == true)
     }
 
     @Test func renamesMustNotCollide() {

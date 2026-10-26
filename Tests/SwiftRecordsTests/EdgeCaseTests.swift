@@ -22,8 +22,8 @@ struct Measurement {
 struct TreeFolder: Equatable {
     var id = UUID.ordered()
     var name: String
-    var subfolders: [TreeFolder] = []
-    @Reference(to: \TreeFolder.subfolders, action: .deleteSelf) var parent: TreeFolder.ID?
+    @Reference(to: \TreeFolder.parent) var subfolders: [TreeFolder] = []
+    @Reference(from: TreeFolder.self, action: .deleteSelf) var parent: TreeFolder.ID?
 }
 
 @Record("Dish")
@@ -106,10 +106,10 @@ struct DishV3 {
         let child = TreeFolder(name: "Child")
         let parent = TreeFolder(name: "Parent", subfolders: [child])
         try container.save(parent)
-        // Point the child back at its parent through the link table, which no value type can express.
+        // Make the parent the child's child, which no value type can express.
         try container.initialStorage.store.transaction {
             try container.initialStorage.store.db.run(
-                "INSERT INTO \"TreeFolder.subfolders\" (owner, target, position) VALUES (?, ?, 0)",
+                "UPDATE \"TreeFolder\" SET parent = ? WHERE id = ?",
                 [try ValueCoding.encode(child.id), try ValueCoding.encode(parent.id)]
             )
         }
@@ -242,7 +242,7 @@ struct DishV3 {
 
     @Test func deleteAllDataStartsOver() throws {
         let container = context.container
-        try container.save(ToDo(title: "Old", owner: Person(name: "Sam")))
+        try container.save(ToDo(title: "Old", notes: [Note(text: "Sam")]))
         context.insert(ToDo(title: "Pending"))
         let token = try container.changeToken
 
@@ -293,8 +293,8 @@ struct DishV3 {
 
         // A column the second container adds is visible to the first.
         try first.save(ToDo(title: "Plain"))
-        try second.save(ToDo(title: "Owned", owner: Person(name: "Sam")))
-        #expect(try first.fetch(ToDo.self).map { $0.owner?.name } == [nil, "Sam"])
+        try second.save(ToDo(title: "Noted", notes: [Note(text: "Sam")]))
+        #expect(try first.fetch(ToDo.self).map { $0.notes.first?.text } == [nil, "Sam"])
 
         // A commit through one refreshes the other's context.
         let context = second.mainContext

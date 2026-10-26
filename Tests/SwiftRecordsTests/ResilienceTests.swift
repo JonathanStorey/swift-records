@@ -94,7 +94,7 @@ import Testing
             if case .text(let name)? = row["name"] { return name }
             return nil
         }
-        #expect(Set(tables) == ["_records_assets", "_records_meta", "_records_relations", "_records_sync_state"])
+        #expect(Set(tables) == ["_records_assets", "_records_meta", "_records_pointers", "_records_sync_state"])
     }
 
     @Test func recordShowsAChangeWhileItsSaveCommits() async throws {

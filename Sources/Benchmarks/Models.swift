@@ -3,21 +3,22 @@ import SwiftRecords
 
 @Record
 struct Recipe {
-    var id = UUID()
+    var id = UUID.ordered()
     var title: String
     @Indexed var servings: Int
     var rating: Double
     var tags: [String]
     var created: Date
-    var steps: [Step] = []
+    @Reference(to: \Step.recipe, sort: \.position) var steps: [Step] = []
 }
 
 @Record
 struct Step {
-    var id = UUID()
+    var id = UUID.ordered()
     var text: String
     var minutes: Int
-    @Reference(to: \Recipe.steps, action: .deleteSelf) var recipe: Recipe.ID?
+    var position = 0.0
+    @Reference(from: Recipe.self, action: .deleteSelf) var recipe: Recipe.ID?
 }
 
 extension Recipe {
@@ -29,7 +30,7 @@ extension Recipe {
             rating: Double(index % 50) / 10,
             tags: ["tag \(index % 20)", "tag \(index % 7)"],
             created: Date(timeIntervalSince1970: 1_700_000_000 + Double(index) * 60),
-            steps: (0..<5).map { Step(text: "Step \($0) of recipe \(index)", minutes: $0 * 5) }
+            steps: (0..<5).map { Step(text: "Step \($0) of recipe \(index)", minutes: $0 * 5, position: Double($0)) }
         )
     }
 }
