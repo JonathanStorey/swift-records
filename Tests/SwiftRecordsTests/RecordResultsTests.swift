@@ -40,10 +40,21 @@ private final class Pages: RecordPager {
     @Test func editsKeepTheOffset() {
         var list = RecordResults(Array(todos[4..<8]), page: RecordPage(limit: 4, offset: 4), totalCount: 10)
         list[6].title = "Six"
-        list.remove(at: 4)
-        list.append(ToDo(title: "New"))
+        list.delete(atOffsets: [0])
+        list.insert(ToDo(title: "New"))
         #expect(list.startIndex == 4)
         #expect(list.map(\.title) == ["5", "Six", "7", "New"])
+    }
+
+    @Test func insertReplacesByIDAndDeleteRemovesByID() {
+        var list = RecordResults(Array(todos[0..<3]))
+        var edited = todos[1]
+        edited.title = "One"
+        list.insert(edited)
+        #expect(list.map(\.title) == ["0", "One", "2"])
+        list.delete(todos[0])
+        list.delete(ToDo(title: "Not listed"))
+        #expect(list.map(\.title) == ["One", "2"])
     }
 
     @Test func pagingMovesThroughThePager() {

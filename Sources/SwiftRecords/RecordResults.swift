@@ -4,11 +4,11 @@ import Foundation
 /// view holds, with their place in the full result.
 ///
 /// Its indices are positions in the full result, so a page that skips 40 records runs from 40 up to
-/// `fetchOffset + count`, as an array slice keeps its base's indices. `ForEach($todos)` and
-/// `List($todos, editActions: .delete)` work as they do on an array. Inserts, edits and deletes write
-/// through the main context. The order comes from the query's sort, so moving or swapping records changes
-/// nothing.
-public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollection, RangeReplaceableCollection, Sendable {
+/// `fetchOffset + count`, as an array slice keeps its base's indices. `ForEach($todos)` binds each row as
+/// it does on an array, and `insert(_:)`, `delete(_:)` and `delete(atOffsets:)` add and remove records.
+/// Every write goes through the main context. The order comes from the query's sort, so the list has no
+/// positions to insert at, and moving or swapping records changes nothing.
+public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollection, Sendable {
     public typealias Index = Int
 
     /// The records the view holds, in the query's order.
@@ -75,8 +75,24 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
         set { elements[position - fetchOffset] = newValue }
     }
 
-    public mutating func replaceSubrange<C: Collection>(_ subrange: Range<Int>, with newElements: C) where C.Element == R {
-        elements.replaceSubrange((subrange.lowerBound - fetchOffset)..<(subrange.upperBound - fetchOffset), with: newElements)
+    /// Adds the record, or replaces the one with the same ID. It shows where the query's sort puts it, and
+    /// a filtered list leaves it out if the filter rejects it.
+    public mutating func insert(_ record: R) {
+        if let index = elements.firstIndex(where: { $0.id == record.id }) {
+            elements[index] = record
+        } else {
+            elements.append(record)
+        }
+    }
+
+    /// Deletes the record with the same ID, applying its delete rules, if the list holds it.
+    public mutating func delete(_ record: R) {
+        elements.removeAll { $0.id == record.id }
+    }
+
+    /// Deletes the records at these offsets from the list's first row, as `onDelete` passes them.
+    public mutating func delete(atOffsets offsets: IndexSet) {
+        elements = elements.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
     }
 
     /// Shows one page of the full result, from 0. Pages past the last show the last one, and a list

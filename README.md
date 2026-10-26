@@ -615,11 +615,14 @@ struct ContentView: View {
     @Environment(\.recordContext) private var context
 
     var body: some View {
-        List($todos, editActions: .all) { $todo in
-            TextField("Title", text: $todo.title)
+        List {
+            ForEach($todos) { $todo in
+                TextField("Title", text: $todo.title)
+            }
+            .onDelete(perform: $todos.delete(atOffsets:))
         }
         .toolbar {
-            Button("Add") { $todos.wrappedValue.append(ToDo(title: "New")) }   // shows at once
+            Button("Add") { $todos.insert(ToDo(title: "New")) }   // shows at once
             Button("Save") { try? context.save() }
         }
     }
@@ -662,8 +665,10 @@ Unsaved new records still count toward it, so the view never shows more than the
 `@Records("pantry", descriptor)`, to pin it.
 
 `todos` is a plain `[ToDo]`, and `$todos` is a `Binding<Records<ToDo>.Results>`. `Results` is a
-random-access, mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
-they do on an array's binding. Writes insert, update and delete through the main context, and commit
+random-access, mutable collection, so `ForEach($todos)` binds each row as it does on an array's binding,
+and editing a row updates its record. It has no positions to insert at, since the sort decides the order,
+so records come and go by `$todos.insert(todo)`, `$todos.delete(todo)` and, for `onDelete`,
+`$todos.delete(atOffsets:)`. Writes insert, update and delete through the main context, and commit
 with its next `save()`, or `$todos.save()`. Every view reading the same records shows the change at
 once, before it saves, and so do changes
 made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new or edited record
@@ -678,7 +683,10 @@ the page size you chose:
 ```swift
 @Records(RecordDescriptor<ToDo>(sortBy: [SortDescriptor(\.title)], fetchLimit: 20)) var todos: [ToDo]
 
-List($todos, editActions: .delete) { $todo in TextField("Title", text: $todo.title) }
+List {
+    ForEach($todos) { $todo in TextField("Title", text: $todo.title) }
+        .onDelete(perform: $todos.delete(atOffsets:))
+}
     .refreshable { try? await $todos.refresh() }           // saves, picks up other processes, syncs
     .toolbar {
         Button("Previous") { $todos.previousPage() }.disabled(!$todos.hasPreviousPage)
