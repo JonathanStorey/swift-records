@@ -23,6 +23,8 @@ final class RecordStore: @unchecked Sendable {
     private var logged: [[RowKey: RecordChange.Kind]] = []
     /// Above zero while applying changes from a sync server, which are never logged.
     private(set) var applyingSynced = 0
+    /// Above zero while a delete follows pointers to the records that go with it.
+    private var cascading = 0
     /// True once the open transaction has written something a fetch could see.
     var changedData = false
     /// Goes up with each committed transaction that changed data.
@@ -646,6 +648,8 @@ final class RecordStore: @unchecked Sendable {
             guard tableExists(pointer.table), columns[pointer.table, default: []].contains(pointer.field) else { continue }
             for row in try db.run("SELECT id FROM \(quoted(pointer.table)) WHERE \(quoted(pointer.field)) = ?", [id]) {
                 if pointer.action == .deleteSelf {
+                    cascading += 1
+                    defer { cascading -= 1 }
                     try deleteRow(pointer.table, id: row["id"]!)
                 } else {
                     try setReference(pointer.table, column: pointer.field, id: row["id"]!, to: .null)
@@ -1234,9 +1238,17 @@ struct RowKey: Hashable {
 
 extension RecordStore {
     /// Bumps a record's version and moves its log entry to the end, once per transaction.
+    /// Whether a server holds a copy of the record, from a download or an upload it confirmed.
+    private func serverHas(_ table: String, id: SQLiteValue) throws -> Bool {
+        let row = try db.run("SELECT known, tag FROM \"_records_meta\" WHERE record_table = ? AND record_id = ?", [.text(table), id]).first
+        return row?["known"] == .integer(1) || (row?["tag"] ?? .null) != .null
+    }
+
     func logChange(_ table: String, id: SQLiteValue, kind: RecordChange.Kind = .save) throws {
         changedData = true
-        if applyingSynced > 0 {
+        // A record that goes with a server delete is sent, since it may be one the deleting device never
+        // saw, such as a step added elsewhere at the same time. Its own delete usually arrives alongside.
+        if applyingSynced > 0, try !(kind == .delete && cascading > 0 && serverHas(table, id: id)) {
             // The server already has this change. A record it deleted has nothing left to send.
             if kind == .delete {
                 try dropLogEntry(table, id: id)

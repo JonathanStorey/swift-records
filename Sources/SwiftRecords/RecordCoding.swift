@@ -314,7 +314,7 @@ struct RecordDecoder<R: Record>: Decoder {
             if let field = R.cachedSchema.field(named: name), field.relationship != nil {
                 let records = try decoder.loader.loadRelated(R.self, ownerID: id, field: field)
                 if let storageType = T.self as? any AnyRelationshipStorage.Type {
-                    return storageType.make(from: records, loaded: Set(records.map { $0.id })) as! T
+                    return storageType.make(fetched: records) as! T
                 }
                 if let collectionType = T.self as? any RecordCollection.Type {
                     return collectionType.make(from: records) as! T

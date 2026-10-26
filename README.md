@@ -489,12 +489,16 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   the latest edit, by the copies' `@Timestamped(.modified)` dates, which each device stamps as it saves. A
   type without one has no edit dates to compare, so the server's copy wins, the same answer on every
   device.
-- **A delete beats an edit made elsewhere**, whichever side made it.
+- **A delete beats an edit made elsewhere**, whichever side made it. A `.deleteSelf` child added on
+  one device while its parent was deleted on another goes too, and an older copy saved after a delete
+  doesn't bring back the record, its children or its links.
 - **Arrival order doesn't matter.** A record can arrive before the records it links to, and its links
   appear when they do.
-- **A child's reference decides where it belongs.** If a parent's list and a child's reference
-  disagree, such as when the child moved on another device, the child goes to the parent it names, and
-  the parent's list only sets the order. A child the list doesn't have yet goes at the end.
+- **A child's pointer decides where it belongs.** A child moved on two devices at once ends under
+  whichever parent the later edit names, on every device. A parent's array is never sent, so an older
+  copy of it can't pull a child back.
+- **Saving an older copy keeps what arrived since.** A fetched array remembers what it held, so saving
+  it removes only what was taken out of it, and children and links another device added stay.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.

@@ -8,16 +8,17 @@ import Foundation
 @propertyWrapper
 public struct RelationshipStorage<Value> {
     public var wrappedValue: Value
-    /// The IDs this held when fetched, or nil for a value that wasn't, which replaces whatever is stored.
-    var loaded: Set<UUID>?
+    /// The value as fetched, or nil for a value that wasn't, which replaces whatever is stored. An array
+    /// shares its buffer with `wrappedValue` until that is edited, so an untouched one costs a reference.
+    var fetched: Value?
 
     public init(wrappedValue: Value) {
         self.wrappedValue = wrappedValue
     }
 
-    init(wrappedValue: Value, loaded: Set<UUID>?) {
-        self.wrappedValue = wrappedValue
-        self.loaded = loaded
+    init(fetched: Value) {
+        self.wrappedValue = fetched
+        self.fetched = fetched
     }
 }
 
@@ -47,15 +48,16 @@ protocol AnyRelationshipStorage {
     static var collectionType: any RecordCollection.Type { get }
     var records: [any Record] { get }
     var loaded: Set<UUID>? { get }
-    static func make(from records: [any Record], loaded: Set<UUID>) -> Self
+    static func make(fetched records: [any Record]) -> Self
 }
 
 extension RelationshipStorage: AnyRelationshipStorage where Value: RecordCollection {
     static var collectionType: any RecordCollection.Type { Value.self }
     var records: [any Record] { wrappedValue.records }
+    var loaded: Set<UUID>? { fetched.map { Set($0.records.map { $0.id }) } }
 
-    static func make(from records: [any Record], loaded: Set<UUID>) -> Self {
-        Self(wrappedValue: Value.make(from: records), loaded: loaded)
+    static func make(fetched records: [any Record]) -> Self {
+        Self(fetched: Value.make(from: records))
     }
 }
 
