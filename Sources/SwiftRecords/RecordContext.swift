@@ -86,10 +86,20 @@ public final class RecordContext {
     /// ```
     public var unsynced: Set<UUID> { unsynced(in: zone) }
 
-    /// Each zone's records with saved changes the server hasn't confirmed.
-    private var unsyncedIDs: [Zone: Set<UUID>] = [:]
+    /// Each zone's changes the server hasn't confirmed, as of the last update. It changes when which
+    /// records they are does, which tells views reading `unsynced` to read again.
+    private var unsyncedSummaries: [Zone: RecordStore.PendingSummary] = [:]
+    /// Each zone's unsynced records, read the first time they're asked for after a change, so a sync of
+    /// many records doesn't read them all after every batch.
+    @ObservationIgnored private var unsyncedIDs: [Zone: Set<UUID>] = [:]
 
-    func unsynced(in zone: Zone) -> Set<UUID> { unsyncedIDs[zone] ?? [] }
+    func unsynced(in zone: Zone) -> Set<UUID> {
+        guard let summary = unsyncedSummaries[zone], summary.count > 0 else { return [] }
+        if let ids = unsyncedIDs[zone] { return ids }
+        let ids = (try? observed[zone]?.storage.store.pendingIDs()) ?? []
+        unsyncedIDs[zone] = ids
+        return ids
+    }
 
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
@@ -251,15 +261,19 @@ public final class RecordContext {
     }
 
     private func updateUnsyncedChanges() {
-        var ids: [Zone: Set<UUID>] = [:]
+        var summaries: [Zone: RecordStore.PendingSummary] = [:]
         for (zone, entry) in observed where entry.storage.sync != nil {
-            let pending = (try? entry.storage.store.pendingIDs()) ?? []
-            if !pending.isEmpty { ids[zone] = pending }
+            if let summary = try? entry.storage.store.pendingSummary(), summary.count > 0 {
+                summaries[zone] = summary
+            }
         }
-        if ids != unsyncedIDs {
-            unsyncedIDs = ids
+        if summaries != unsyncedSummaries {
+            for zone in Set(summaries.keys).union(unsyncedSummaries.keys) where summaries[zone] != unsyncedSummaries[zone] {
+                unsyncedIDs[zone] = nil
+            }
+            unsyncedSummaries = summaries
         }
-        let count = ids.values.reduce(0) { $0 + $1.count }
+        let count = summaries.values.reduce(0) { $0 + $1.count }
         if count != unsyncedChanges {
             unsyncedChanges = count
         }

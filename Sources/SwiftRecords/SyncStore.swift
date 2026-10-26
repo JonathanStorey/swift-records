@@ -457,6 +457,28 @@ extension RecordStore {
         }
     }
 
+    /// How many changes the server doesn't have, and the sum of their places in the log, which differs
+    /// whenever which records they are does. It costs one aggregate query, where `pendingIDs()` reads
+    /// every record.
+    struct PendingSummary: Equatable {
+        let count: Int
+        let places: Int64
+    }
+
+    func pendingSummary() throws -> PendingSummary {
+        try locked {
+            let row = try db.run(
+                "SELECT COUNT(*) AS n, TOTAL(seq) AS places FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked"
+            ).first
+            let places: Int64 = switch row?["places"] {
+            case .real(let total)?: Int64(total)
+            case .integer(let total)?: total
+            default: 0
+            }
+            return PendingSummary(count: Int(row?["n"]?.integerValue ?? 0), places: places)
+        }
+    }
+
     /// The IDs of the records with changes the server doesn't have.
     func pendingIDs() throws -> Set<UUID> {
         try locked {
