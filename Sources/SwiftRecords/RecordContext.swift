@@ -93,6 +93,8 @@ public final class RecordContext {
         var latest: Latest? = nil
         /// Which records of the table a delete by predicate removes.
         var deletes: (@Sendable (Any) -> Bool)? = nil
+        /// The record's stored fields when its first unsaved edit was made, which the save merges against.
+        var base: SyncFields? = nil
         let run: @Sendable (ZoneStorage) throws -> Void
     }
 
@@ -331,7 +333,7 @@ public final class RecordContext {
     }
 
     func insert<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier? = nil) {
-        enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
+        enqueueSave(record, in: zone, source: source)
     }
 
     public func delete<R: Record>(_ record: R) {
@@ -783,7 +785,7 @@ public final class RecordContext {
         // Only records the edit changed are saved, so typing in one row doesn't rewrite the whole list.
         let before = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for record in records where !(before[record.id].map { StructuralEquality.equal($0, record) } ?? false) {
-            enqueue(key: Self.key(record, in: zone), zone: zone, table: R.table, source: source, latest: .saved(record)) { try $0.save(record) }
+            enqueueSave(record, in: zone, source: source)
         }
         return order.sorted(records)
     }
@@ -796,16 +798,34 @@ public final class RecordContext {
         "\(zone.name)|record|\(R.table)|\(id)"
     }
 
+    /// Queues a save of the record. Its first unsaved edit keeps the stored fields as the base the edit
+    /// started from, and later edits keep that base until the save, so the save merges three-way: fields
+    /// another save or a sync changed in the meantime keep their change unless the edit changed them too.
+    /// A record not yet stored has no base, and saves whole.
+    private func enqueueSave<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier?) {
+        let key = Self.key(record, in: zone)
+        let base: SyncFields?
+        if let earlier = pending[key] ?? inFlight[key] {
+            // A later edit, even one made while the earlier edit saves, started from the same copy.
+            base = earlier.base
+        } else {
+            base = try? storage(for: zone).storedFields(R.self, id: record.id)
+        }
+        enqueue(key: key, zone: zone, table: R.table, source: source, latest: .saved(record), base: base) {
+            try $0.save(record, base: base)
+        }
+    }
+
     private func enqueue(
         key: String, zone: Zone, table: String? = nil, source: ObjectIdentifier?, latest: Latest? = nil,
-        deletes: (@Sendable (Any) -> Bool)? = nil,
+        deletes: (@Sendable (Any) -> Bool)? = nil, base: SyncFields? = nil,
         _ run: @escaping @Sendable (ZoneStorage) throws -> Void
     ) {
         // Watch the zone from now on, so commits elsewhere refresh views.
         _ = try? storage(for: zone)
         sequence += 1
         pending[key] = Change(
-            zone: zone, table: table, sequence: sequence, source: source, latest: latest, deletes: deletes, run: run
+            zone: zone, table: table, sequence: sequence, source: source, latest: latest, deletes: deletes, base: base, run: run
         )
         // Views show unsaved changes at once.
         notifyHandlers()

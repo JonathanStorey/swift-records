@@ -499,6 +499,10 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   copy of it can't pull a child back.
 - **Saving an older copy keeps what arrived since.** A fetched array remembers what it held, so saving
   it removes only what was taken out of it, and children and links another device added stay.
+- **An unsaved edit keeps what arrived while you typed.** A context remembers the stored copy each
+  record's first unsaved edit started from. Saving writes only the properties the edit changed, so a
+  property another device changed in the meantime keeps that change, and a property both changed goes
+  to the edit. A record deleted elsewhere in the meantime stays deleted.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.

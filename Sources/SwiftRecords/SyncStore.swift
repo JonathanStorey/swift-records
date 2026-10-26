@@ -271,7 +271,7 @@ extension RecordStore {
         return try syncFields(type, id: id)
     }
 
-    private func syncFields<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> SyncFields? {
+    func syncFields<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> SyncFields? {
         guard tableExists(R.table), let row = try db.run("SELECT * FROM \(quoted(R.table)) WHERE id = ?", [id]).first else {
             return nil
         }
@@ -345,7 +345,7 @@ extension RecordStore {
         try applySyncFields(type, id: id, fields: fields)
     }
 
-    private func applySyncFields<R: Record>(_ type: R.Type, id: UUID, fields: SyncFields) throws {
+    func applySyncFields<R: Record>(_ type: R.Type, id: UUID, fields: SyncFields) throws {
         let sqlID = try ValueCoding.encode(id)
         var known: Set<String> = ["id"]
         var columns: [(name: String, value: SQLiteValue)] = []

@@ -95,6 +95,14 @@ extension ZoneStorage {
         try store.save(records)
     }
 
+    func save<R: Record>(_ record: R, base: SyncFields?) throws {
+        try store.save(record, base: base)
+    }
+
+    func storedFields<R: Record>(_ type: R.Type, id: R.ID) throws -> SyncFields? {
+        try store.storedFields(type, id: id)
+    }
+
     package func delete<R: Record>(_ record: R) throws {
         try store.delete(record)
     }
