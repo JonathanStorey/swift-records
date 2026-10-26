@@ -457,6 +457,15 @@ extension RecordStore {
         }
     }
 
+    /// The IDs of the records with changes the server doesn't have.
+    func pendingIDs() throws -> Set<UUID> {
+        try locked {
+            Set(try db.run("SELECT record_id FROM \"_records_meta\" WHERE kind IS NOT NULL AND version > acked").map {
+                try ValueCoding.decode(UUID.self, from: $0["record_id"] ?? .null)
+            })
+        }
+    }
+
     /// The changes the server doesn't have, oldest first, at most `limit` of them.
     func pendingChanges(limit: Int = .max) throws -> [PendingChange] {
         try locked {

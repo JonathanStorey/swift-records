@@ -112,10 +112,12 @@ public struct Records<R: Record>: DynamicProperty {
                 MainActor.assumeIsolated {
                     let elements = Self.value(context: context, cache: cache, query: query, zone: choice)
                     let page = cache.key?.page ?? query.page
+                    let unsynced = context.map { $0.unsynced(in: choice.zone(in: $0)) } ?? []
                     return RecordResults(
                         elements, page: page,
                         totalCount: page.isPaged ? cache.totalCount : nil,
-                        hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false, pager: cache
+                        hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false,
+                        unsynced: unsynced.isEmpty ? [] : unsynced.intersection(elements.map(\.id)), pager: cache
                     )
                 }
             },
@@ -323,6 +325,8 @@ extension Binding where Value: RecordResultsProtocol {
     public var hasPreviousPage: Bool { wrappedValue.hasPreviousPage }
     /// Whether edits made through this list are still waiting to save.
     public var hasChanges: Bool { wrappedValue.hasChanges }
+    /// The list's records whose saved changes the sync server hasn't confirmed.
+    public var unsynced: Set<UUID> { wrappedValue.unsynced }
 
     /// Shows the next page, if there is one.
     public func nextPage() {

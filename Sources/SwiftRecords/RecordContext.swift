@@ -78,6 +78,19 @@ public final class RecordContext {
     /// signed out.
     public private(set) var unsyncedChanges = 0
 
+    /// The records in the context's zone whose saved changes the sync server hasn't confirmed. It
+    /// is empty without a sync provider, and unsaved edits aren't in it until they save.
+    ///
+    /// ```swift
+    /// if context.unsynced.contains(note.id) { Image(systemName: "icloud.slash") }
+    /// ```
+    public var unsynced: Set<UUID> { unsynced(in: zone) }
+
+    /// Each zone's records with saved changes the server hasn't confirmed.
+    private var unsyncedIDs: [Zone: Set<UUID>] = [:]
+
+    func unsynced(in zone: Zone) -> Set<UUID> { unsyncedIDs[zone] ?? [] }
+
     /// The error from the latest save, cleared by the next one that succeeds.
     @ObservationIgnored private var saveFailure: RecordsError?
     /// A stored record that no longer decodes, which fetches skip, until it decodes again or is deleted.
@@ -238,10 +251,15 @@ public final class RecordContext {
     }
 
     private func updateUnsyncedChanges() {
-        let count = observed.values.reduce(0) { total, entry in
-            guard entry.storage.sync != nil else { return total }
-            return total + ((try? entry.storage.store.pendingChangeCount()) ?? 0)
+        var ids: [Zone: Set<UUID>] = [:]
+        for (zone, entry) in observed where entry.storage.sync != nil {
+            let pending = (try? entry.storage.store.pendingIDs()) ?? []
+            if !pending.isEmpty { ids[zone] = pending }
         }
+        if ids != unsyncedIDs {
+            unsyncedIDs = ids
+        }
+        let count = ids.values.reduce(0) { $0 + $1.count }
         if count != unsyncedChanges {
             unsyncedChanges = count
         }

@@ -23,11 +23,13 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
     public let totalCount: Int
     /// Whether edits made through this list are still waiting for the context to save them.
     public let hasChanges: Bool
+    /// The list's records whose saved changes the sync server hasn't confirmed. See `RecordContext.unsynced`.
+    public let unsynced: Set<UUID>
     let pager: (any RecordPager)?
 
     init(
         _ elements: [R], page: RecordPage = RecordPage(), totalCount: Int? = nil, hasChanges: Bool = false,
-        pager: (any RecordPager)? = nil
+        unsynced: Set<UUID> = [], pager: (any RecordPager)? = nil
     ) {
         self.elements = elements
         fetchOffset = page.offset
@@ -35,6 +37,7 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
         pages = page.pages
         self.totalCount = totalCount ?? page.offset + elements.count
         self.hasChanges = hasChanges
+        self.unsynced = unsynced
         self.pager = pager
     }
 
@@ -132,6 +135,7 @@ public protocol RecordResultsProtocol {
     var hasNextPage: Bool { get }
     var hasPreviousPage: Bool { get }
     var hasChanges: Bool { get }
+    var unsynced: Set<UUID> { get }
     @MainActor func show(page: Int)
     @MainActor func nextPage()
     @MainActor func previousPage()

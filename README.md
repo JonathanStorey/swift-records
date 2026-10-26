@@ -395,6 +395,8 @@ The async `save()` sends. The synchronous `save()` only commits, and its changes
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
 errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
 the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
+`context.unsynced` names those records in the context's zone, `$notes.unsynced` narrows it to a
+`@Records` list, and `$note.isSynced` says whether one `@Recordable` record is saved and confirmed.
 
 Besides pushes, the one sync the context starts on its own is when the app becomes active after being
 away for `resumeSyncInterval`, five minutes by default. It downloads and sends what's already saved,

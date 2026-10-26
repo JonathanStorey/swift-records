@@ -102,6 +102,16 @@ public struct Recordable<R: Record>: DynamicProperty {
         return cache.tracker.hasChanges(in: context)
     }
 
+    /// Whether the sync server has the record as shown: it's saved, has no unsaved edit from this wrapper,
+    /// and the server has confirmed its latest change. Without a sync provider, a saved record counts.
+    public var isSynced: Bool {
+        guard let context else { return false }
+        _ = value
+        let tracker = cache.tracker
+        return !tracker.isNew && !tracker.hasChanges(in: context)
+            && !context.unsynced(in: zone.zone(in: context)).contains(tracker.value.id)
+    }
+
     /// Deletes the record when the context saves, applying its delete rules.
     public func delete() {
         guard let context else { return }
