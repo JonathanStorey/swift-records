@@ -28,6 +28,8 @@ struct EncodedRecord {
         let name: String
         let targetType: any Record.Type
         let targets: [any Record]
+        /// The IDs the relationship held when fetched, or nil when the value wasn't fetched.
+        var loaded: Set<UUID>? = nil
     }
 
     var columns: [(name: String, value: SQLiteValue)] = []
@@ -195,6 +197,10 @@ final class RecordEncoder: Encoder {
                 if asset.storage != nil {
                     encoder.output.assets[name] = asset
                 }
+            } else if let storage = value as? any AnyRelationshipStorage {
+                encoder.output.relations.append(.init(
+                    name: name, targetType: type(of: storage).collectionType.recordType, targets: storage.records, loaded: storage.loaded
+                ))
             } else if let record = value as? any Record {
                 encoder.output.relations.append(.init(name: name, targetType: type(of: record), targets: [record]))
             } else if let collection = value as? any RecordCollection {
@@ -307,6 +313,9 @@ struct RecordDecoder<R: Record>: Decoder {
             }
             if let field = R.cachedSchema.field(named: name), field.relationship != nil {
                 let records = try decoder.loader.loadRelated(R.self, ownerID: id, field: field)
+                if let storageType = T.self as? any AnyRelationshipStorage.Type {
+                    return storageType.make(from: records, loaded: Set(records.map { $0.id })) as! T
+                }
                 if let collectionType = T.self as? any RecordCollection.Type {
                     return collectionType.make(from: records) as! T
                 }

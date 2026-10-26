@@ -37,8 +37,13 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
         if timestampKind(variable.attributes) != nil, isOptionalDate(binding) {
             return ["@SwiftRecords.TimestampStorage"]
         }
-        if let reference = referenceArguments(variable.attributes), reference.isInverse(binding), binding.initializer == nil {
-            return ["@SwiftRecords.InverseStorage"]
+        if let reference = referenceArguments(variable.attributes) {
+            if reference.isInverse(binding), binding.initializer == nil {
+                return ["@SwiftRecords.InverseStorage"]
+            }
+            if reference.isRelationship(binding), variable.bindingSpecifier.tokenKind == .keyword(.var), binding.accessorBlock == nil {
+                return ["@SwiftRecords.RelationshipStorage"]
+            }
         }
         return []
     }
@@ -316,6 +321,16 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
         func isInverse(_ binding: PatternBindingSyntax) -> Bool {
             to?.as(KeyPathExprSyntax.self) != nil && RecordMacro.isSet(binding)
         }
+
+        /// True for a `@Reference(to:)` that holds records: children as `[Child]` or `Child?`, or a
+        /// many-to-many as `[Target]`.
+        func isRelationship(_ binding: PatternBindingSyntax) -> Bool {
+            guard from == nil, let to, !RecordMacro.holdsIDs(binding) else { return false }
+            if to.as(KeyPathExprSyntax.self) != nil {
+                return RecordMacro.isArray(binding) || RecordMacro.isOptional(binding)
+            }
+            return toType != nil && RecordMacro.isArray(binding)
+        }
     }
 
     private static func referenceArguments(_ attributes: AttributeListSyntax) -> ReferenceAttribute? {
@@ -409,13 +424,13 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
     }
 
     /// True for a type such as `[Step.ID]` or `Step.ID?`, which names IDs where records belong.
-    private static func holdsIDs(_ binding: PatternBindingSyntax) -> Bool {
+    fileprivate static func holdsIDs(_ binding: PatternBindingSyntax) -> Bool {
         guard let type = binding.typeAnnotation?.type.trimmedDescription else { return false }
         let element = type.split(whereSeparator: { "[]?<>".contains($0) }).last.map(String.init) ?? type
         return element == "UUID" || element.hasSuffix(".ID")
     }
 
-    private static func isArray(_ binding: PatternBindingSyntax) -> Bool {
+    fileprivate static func isArray(_ binding: PatternBindingSyntax) -> Bool {
         guard let type = binding.typeAnnotation?.type else { return false }
         return type.is(ArrayTypeSyntax.self) || type.trimmedDescription.hasPrefix("Array<")
     }

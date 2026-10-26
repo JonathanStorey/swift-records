@@ -423,10 +423,10 @@ final class RecordMacroTests: XCTestCase {
             expandedSource: """
             struct Recipe {
                 var id = UUID()
-                var steps: [Step] = []
-                var cover: Photo? = nil
-                var tags: [Tag] = []
-                var cooks: [Cook] = []
+                @SwiftRecords.RelationshipStorage var steps: [Step] = []
+                @SwiftRecords.RelationshipStorage var cover: Photo? = nil
+                @SwiftRecords.RelationshipStorage var tags: [Tag] = []
+                @SwiftRecords.RelationshipStorage var cooks: [Cook] = []
 
                 typealias ID = UUID
             }

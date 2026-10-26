@@ -282,15 +282,16 @@ final class RecordStore: @unchecked Sendable {
 
         try writeRow(R.self, id: id, columns: encoded.columns, preserving: preserving)
 
-        let held = Dictionary(encoded.relations.map { ($0.name, $0.targets) }, uniquingKeysWith: { first, _ in first })
+        let held = Dictionary(encoded.relations.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         for field in R.cachedSchema.fields {
             // An optional that is nil isn't encoded, so it holds nothing.
-            let targets = held[field.name] ?? []
+            let targets = held[field.name]?.targets ?? []
+            let loaded = held[field.name]?.loaded
             switch field.relationship {
             case .children(let type, let pointer)?:
-                try saveChildren(targets, ownerID: id, type: type, pointer: pointer, visited: &visited)
+                try saveChildren(targets, loaded: loaded, ownerID: id, type: type, pointer: pointer, visited: &visited)
             case .links?:
-                try saveLinks(targets, owner: R.self, ownerID: id, field: field, visited: &visited)
+                try saveLinks(targets, loaded: loaded, owner: R.self, ownerID: id, field: field, visited: &visited)
             case nil:
                 break
             }
@@ -446,9 +447,12 @@ final class RecordStore: @unchecked Sendable {
     // MARK: Relationships
 
     /// Saves the records a `@Reference(to:)` array holds, each pointing to its owner, and applies the
-    /// pointer's action to the records that pointed here and no longer belong.
+    /// pointer's action to the records that pointed here and no longer belong. With `loaded`, the IDs the
+    /// array held when fetched, only those taken out since then are removed, so a child that arrived
+    /// from another device after the fetch stays.
     private func saveChildren(
-        _ children: [any Record], ownerID: SQLiteValue, type: any Record.Type, pointer: AnyKeyPath, visited: inout Set<RowKey>
+        _ children: [any Record], loaded: Set<UUID>?, ownerID: SQLiteValue, type: any Record.Type, pointer: AnyKeyPath,
+        visited: inout Set<RowKey>
     ) throws {
         func save<C: Record>(_ type: C.Type) throws {
             guard let field = C.cachedSchema.field(for: pointer), field.isPointer else { return }
@@ -461,7 +465,7 @@ final class RecordStore: @unchecked Sendable {
             try ensureColumns([field.name], in: C.table)
             for row in try db.run("SELECT id FROM \(quoted(C.table)) WHERE \(quoted(field.name)) = ?", [ownerID]) {
                 let id = row["id"]!
-                guard !kept.contains(id) else { continue }
+                guard !kept.contains(id), try wasRemoved(id, from: loaded) else { continue }
                 if field.action == .deleteSelf {
                     try deleteRow(C.table, id: id)
                 } else {
@@ -485,9 +489,11 @@ final class RecordStore: @unchecked Sendable {
     }
 
     /// Saves the records a many-to-many array holds, and adds and removes link records so exactly those
-    /// are linked. Links made in one save are a millisecond apart, so they keep the array's order.
+    /// are linked. Links made in one save are a millisecond apart, so they keep the array's order. With
+    /// `loaded`, only links to targets taken out since the fetch are removed.
     private func saveLinks<R: Record>(
-        _ targets: [any Record], owner: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field, visited: inout Set<RowKey>
+        _ targets: [any Record], loaded: Set<UUID>?, owner: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field,
+        visited: inout Set<RowKey>
     ) throws {
         func save<T: Record>(_ record: T) throws {
             try saveRecord(record, visited: &visited)
@@ -509,9 +515,14 @@ final class RecordStore: @unchecked Sendable {
             names.map { .text($0) } + [ownerID]
         ) {
             let target = row["to"] ?? .null
-            if wanted.contains(target), linked.insert(target).inserted { continue }
-            // A link a server delivered before its target stays until the target arrives.
-            if syncEnabled, let type = field.relationship?.target, try !rowExists(type.table, id: target) { continue }
+            if wanted.contains(target) {
+                // The first link to a wanted target stays, and any duplicate goes.
+                if linked.insert(target).inserted { continue }
+            } else {
+                guard try wasRemoved(target, from: loaded) else { continue }
+                // A link a server delivered before its target stays until the target arrives.
+                if syncEnabled, let type = field.relationship?.target, try !rowExists(type.table, id: target) { continue }
+            }
             try deleteRow(_RecordLink.table, id: row["id"]!)
         }
         let from = try ValueCoding.decode(UUID.self, from: ownerID)
@@ -523,6 +534,13 @@ final class RecordStore: @unchecked Sendable {
             )
             try save(link)
         }
+    }
+
+    /// Whether a related record missing from a relationship's value was taken out of it: true unless the
+    /// value was fetched without it, which means it arrived later.
+    private func wasRemoved(_ id: SQLiteValue, from loaded: Set<UUID>?) throws -> Bool {
+        guard let loaded else { return true }
+        return loaded.contains(try ValueCoding.decode(UUID.self, from: id))
     }
 
     /// The names a many-to-many property's links are stored under: `Owner.property`, then its earlier names.

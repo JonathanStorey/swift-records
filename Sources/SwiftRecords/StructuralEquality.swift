@@ -11,6 +11,10 @@ enum StructuralEquality {
         if let lhs = lhs as? any Hashable {
             return same(lhs, rhs)
         }
+        if let lhs = lhs as? any AnyRelationshipStorage, let rhs = rhs as? any AnyRelationshipStorage {
+            // What a relationship held when fetched doesn't make it a different value.
+            return lhs.records.count == rhs.records.count && zip(lhs.records, rhs.records).allSatisfy { equal($0, $1) }
+        }
         let left = Mirror(reflecting: lhs)
         let right = Mirror(reflecting: rhs)
         guard left.children.count == right.children.count else { return false }

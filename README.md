@@ -240,6 +240,9 @@ pointer names it, and `Child?` holds one, for a one-to-one.
 
 - Saving the parent sets each child's pointer to it, and setting a child's pointer and saving the
   child moves it, so you can link from either side.
+- A fetched array remembers what it held, so saving it removes only the children you took out. A child
+  that arrived from another device, or another save, after the fetch stays. A value you build rather
+  than fetch says exactly what the parent holds. Many-to-many arrays work the same way.
 - Without `sort:`, children come in ID order, which is creation order with `UUID.ordered()` IDs.
   `sort: \.position` or an array of `SortDescriptor`s orders them by the children's own properties, so
   reordering is an edit to the children, and the pointer and sort columns share an index.

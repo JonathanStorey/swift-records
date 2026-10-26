@@ -256,6 +256,36 @@ struct Device {
         }
     }
 
+    @Test func savingAnOlderCopyKeepsWhatArrivedSince() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Bread", steps: [SyncStep(text: "First"), SyncStep(text: "Second")], cooks: [SyncCook(name: "Ana")])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        // An edit sheet holds this copy while the phone's changes arrive.
+        var draft = try #require(try await tablet.recipes().first)
+
+        recipe.steps.append(SyncStep(text: "Bake"))
+        recipe.cooks.append(SyncCook(name: "Ben"))
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+
+        // Only what the draft itself took out is removed.
+        draft.title = "Rye"
+        draft.steps.removeFirst()
+        tablet.context.insert(draft)
+        try await tablet.context.save()
+        try await phone.context.refresh()
+        for device in [phone, tablet] {
+            let saved = try #require(try await device.recipes().first)
+            #expect(saved.title == "Rye")
+            #expect(saved.steps.map(\.text) == ["Second", "Bake"])
+            #expect(saved.cooks.map(\.name) == ["Ana", "Ben"])
+        }
+    }
+
     @Test func linksMadeOnTwoDevicesBothArrive() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)

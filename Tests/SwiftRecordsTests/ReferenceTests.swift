@@ -106,6 +106,34 @@ struct MisplacedReference {
         #expect(try container.fetch(Board.self, id: to.id)?.cards.map(\.text) == ["Move me"])
     }
 
+    @Test func aFetchedCopyRemovesOnlyWhatItTookOut() throws {
+        let board = Board(cards: [Card(text: "A"), Card(text: "B")], stickers: [Sticker(name: "Old")])
+        try container.save(board)
+        var copy = try #require(try container.fetch(Board.self, id: board.id))
+
+        // Another save adds a card and a sticker after the copy was fetched.
+        try container.save(Card(text: "C", board: board.id))
+        var current = try #require(try container.fetch(Board.self, id: board.id))
+        current.stickers.append(Sticker(name: "New"))
+        try container.save(current)
+
+        copy.cards.removeAll { $0.text == "A" }
+        copy.stickers = []
+        try container.save(copy)
+        let saved = try #require(try container.fetch(Board.self, id: board.id))
+        #expect(saved.cards.map(\.text) == ["B", "C"])
+        #expect(saved.stickers.map(\.name) == ["New"])
+    }
+
+    @Test func aBuiltValueReplacesWhatIsStored() throws {
+        let board = Board(cards: [Card(text: "A")])
+        try container.save(board)
+        // A value that wasn't fetched says exactly what the board holds.
+        try container.save(Board(id: board.id, cards: [Card(text: "B")]))
+        #expect(try container.fetch(Board.self, id: board.id)?.cards.map(\.text) == ["B"])
+        #expect(try cards() == ["B": board.id])
+    }
+
     @Test func aChildSavedWithItsReferenceJoinsTheParent() throws {
         let board = Board(cards: [Card(text: "First")])
         try container.save(board)

@@ -1,7 +1,8 @@
 import Foundation
 
-/// The wrapper `@Record` adds to each `@Reference(from:)` property, which makes it read-only. The
-/// container fills it from the owners' links, and you change it by linking from the owner's side.
+/// The wrapper `@Record` adds to the read-only side of a many-to-many, a `Set` of IDs declared with
+/// `@Reference(to: \Owner.links)`. The container fills it from the owners' links, and you change it by
+/// linking from the owner's side.
 @propertyWrapper
 public struct InverseStorage: Hashable, Sendable, Codable {
     var ids: Set<UUID>
