@@ -13,8 +13,6 @@ public enum RecordsError: Error, Hashable, Sendable {
     case unknownInverse(String)
     /// A zone name, once lowercased, isn't 1 to 64 letters, digits, `-` or `_` starting with a letter.
     case invalidZoneName(String)
-    /// A zone that never syncs, `.inMemory` or `.localOnly`, was given where a sync server's zone is needed.
-    case unsyncedZone(Zone)
     /// Archived CloudKit system fields don't belong to the record they were given with: they don't unarchive,
     /// or they name another record, type or zone.
     case mismatchedSystemFields(type: String, id: UUID)

@@ -72,48 +72,6 @@ extension RecordStore {
         valueType == Data.self || valueType == Data?.self
     }
 
-    /// The values a struct crosses as, from the struct alone: no container, no stored row and no sync
-    /// history. Each field maps as a stored record's does. A pointer is whatever the struct holds, since
-    /// only saving it through its parent sets it, and an asset that isn't a file yet is written to a
-    /// temporary one. `files` holds each asset's file by its ID.
-    static func recordValues<R: Record>(of record: R) throws -> (values: [String: RecordValue], files: [String: URL]) {
-        let encoded = try RecordEncoder.encode(record)
-        let columns = Dictionary(encoded.columns, uniquingKeysWith: { _, last in last })
-        var fields: SyncFields = [:]
-        var files: [String: URL] = [:]
-        for field in R.cachedSchema.fields where field.name != "id" && field.isStored && field.timestamp != .synced {
-            if field.isAsset {
-                if let storage = encoded.assets[field.name]?.storage {
-                    let file = try file(of: storage)
-                    files[file.lastPathComponent] = file
-                    fields[field.name] = .url(file)
-                }
-            } else if field.timestamp != nil {
-                // The encoder leaves timestamps to the container, so they're read from the struct.
-                if let date = record[keyPath: field.keyPath] as? Date {
-                    fields[field.name] = try SyncValue(property: date)
-                }
-            } else if let value = columns[field.name], value != .null {
-                fields[field.name] = field.isPointer
-                    ? .reference(try ValueCoding.decode(UUID.self, from: value), action: field.action)
-                    : try syncValue(of: value, as: Swift.type(of: field.keyPath).valueType)
-            }
-        }
-        return (try recordValues(R.self, fields: fields), files)
-    }
-
-    /// An asset's file, written to the temporary folder if it's only in memory.
-    private static func file(of storage: Asset.Storage) throws -> URL {
-        switch storage.source {
-        case .file(let url), .stored(let url):
-            return url
-        case .data(let data):
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent(storage.name)
-            try data.write(to: url, options: .atomic)
-            return url
-        }
-    }
-
     // MARK: Values to fields
 
     /// The container's typed fields for values from a server, each typed as a stored value of its property is.
