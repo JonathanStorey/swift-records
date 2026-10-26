@@ -38,7 +38,7 @@ struct RecordOrder<R: Record> {
 
     /// Whether the descriptor sorts by this field, and the field is a stored number or date.
     private static func sortsInSQL(_ field: RecordSchema<R>.Field, as descriptor: SortDescriptor<R>) -> Bool {
-        guard field.inverse == nil, !field.isAsset, field.timestamp != .synced, field.name != "id" else { return false }
+        guard field.isStored, !field.isAsset, field.timestamp != .synced, field.name != "id" else { return false }
         let keyPath = field.keyPath
         return matches(keyPath, Int.self, descriptor) || matches(keyPath, Int64.self, descriptor)
             || matches(keyPath, Int32.self, descriptor) || matches(keyPath, Int16.self, descriptor)

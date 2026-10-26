@@ -119,6 +119,11 @@ final class TestServer: @unchecked Sendable {
         value(type, id, field) != nil
     }
 
+    /// The stored records of a type, not counting deletions, across every account.
+    func records(_ type: String) -> [RecordChangeData] {
+        withLock { latest.values.map(\.change).filter { $0.type == type && !$0.isDeletion } }
+    }
+
     /// Records stored, not counting deletions, across every account.
     var count: Int { withLock { latest.values.filter { !$0.change.isDeletion }.count } }
 

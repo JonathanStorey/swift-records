@@ -9,7 +9,7 @@ struct DishV1 {
     var id = UUID.ordered()
     var title: String
     var minutes: Int
-    var shelf: [Ingredient] = []
+    @Reference(to: Ingredient.self) var shelf: [Ingredient] = []
 }
 
 @Record("Dish")
@@ -17,7 +17,7 @@ struct DishV2 {
     var id = UUID.ordered()
     var title: String
     @Renamed(from: "minutes") var duration: Int = 0
-    @Renamed(from: "shelf") var ingredients: [Ingredient] = []
+    @Renamed(from: "shelf") @Reference(to: Ingredient.self) var ingredients: [Ingredient] = []
     @Indexed var servings = 2
     var rating: Double = 4.5
     var tags: [String] = ["new"]
@@ -28,7 +28,7 @@ struct DishV2 {
 struct Ingredient {
     var id = UUID.ordered()
     var name: String
-    @Reference(from: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
+    @Reference(to: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
 }
 
 @Suite struct SchemaEvolutionTests {

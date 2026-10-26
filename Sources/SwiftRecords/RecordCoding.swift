@@ -3,18 +3,21 @@ import Foundation
 /// A `[Record]` or `Record?` property, recognized from its static type so empty values still count.
 protocol RecordCollection {
     static var recordType: any Record.Type { get }
+    static var isArray: Bool { get }
     var records: [any Record] { get }
     static func make(from records: [any Record]) -> Self
 }
 
 extension Array: RecordCollection where Element: Record {
     static var recordType: any Record.Type { Element.self }
+    static var isArray: Bool { true }
     var records: [any Record] { self }
     static func make(from records: [any Record]) -> [Element] { records.compactMap { $0 as? Element } }
 }
 
 extension Optional: RecordCollection where Wrapped: Record {
     static var recordType: any Record.Type { Wrapped.self }
+    static var isArray: Bool { false }
     var records: [any Record] { map { [$0] } ?? [] }
     static func make(from records: [any Record]) -> Wrapped? { records.first as? Wrapped }
 }
@@ -131,8 +134,8 @@ private struct NestedUnkeyedContainer: UnkeyedEncodingContainer {
 
 // MARK: - Encoding
 
-/// Encodes a record's properties: primitives become columns, nested records become relations,
-/// and anything else is stored as JSON.
+/// Encodes a record's properties: primitives become columns, the records a `@Reference(to:)` property
+/// holds become relations, and anything else is stored as JSON.
 final class RecordEncoder: Encoder {
     var codingPath: [CodingKey] = []
     var userInfo: [CodingUserInfoKey: Any] = [:]
@@ -225,10 +228,12 @@ final class RecordEncoder: Encoder {
 
 /// Supplies relationship and inverse values while a record decodes.
 protocol RelationLoader {
-    func loadRelation(owner table: String, ownerID: SQLiteValue, field: String, targetType: any Record.Type) throws -> [any Record]
+    /// The records a `@Reference(to:)` property holds, in its order.
+    func loadRelated<R: Record>(_ type: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field) throws -> [any Record]
+    /// Whether a `@Reference(to:)` property holds any record.
+    func hasRelated<R: Record>(_ type: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field) throws -> Bool
+    /// The IDs of the records whose many-to-many array at `inverse` links here.
     func loadInverse(targetID: SQLiteValue, inverse: AnyKeyPath) throws -> [SQLiteValue]
-    func hasRelation(owner table: String, field: String) -> Bool
-    func relationCount(owner table: String, ownerID: SQLiteValue, field: String) throws -> Int
     func assetURL(named name: String) -> URL
     func syncedDate(table: String, id: SQLiteValue) throws -> Date?
 }
@@ -270,20 +275,18 @@ struct RecordDecoder<R: Record>: Decoder {
 
         func contains(_ key: Key) -> Bool {
             let name = key.stringValue
-            return stored(name) != nil
-                || R.cachedSchema.field(named: name)?.timestamp == .synced
-                || R.cachedSchema.field(named: name)?.inverse != nil
-                || decoder.loader.hasRelation(owner: R.table, field: name)
+            let field = R.cachedSchema.field(named: name)
+            return stored(name) != nil || field?.timestamp == .synced || field?.isStored == false
         }
 
         func decodeNil(forKey key: Key) throws -> Bool {
             let name = key.stringValue
             if R.cachedSchema.field(named: name)?.timestamp == .synced { return false }
             if let value = stored(name) { return value == .null }
-            if R.cachedSchema.field(named: name)?.inverse != nil { return false }
-            // An optional relation with no linked record decodes as nil.
-            guard decoder.loader.hasRelation(owner: R.table, field: name) else { return true }
-            return try decoder.loader.relationCount(owner: R.table, ownerID: id, field: name) == 0
+            guard let field = R.cachedSchema.field(named: name), !field.isStored else { return true }
+            if field.inverse != nil { return false }
+            // An optional relationship with no record pointing here decodes as nil.
+            return try !decoder.loader.hasRelated(R.self, ownerID: id, field: field)
         }
 
         func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
@@ -302,18 +305,15 @@ struct RecordDecoder<R: Record>: Decoder {
                 }
                 return try ValueCoding.decode(T.self, fromArray: ids)
             }
-            if let recordType = T.self as? any Record.Type {
-                let records = try decoder.loader.loadRelation(owner: R.table, ownerID: id, field: name, targetType: recordType)
+            if let field = R.cachedSchema.field(named: name), field.relationship != nil {
+                let records = try decoder.loader.loadRelated(R.self, ownerID: id, field: field)
+                if let collectionType = T.self as? any RecordCollection.Type {
+                    return collectionType.make(from: records) as! T
+                }
                 guard let record = records.first as? T else {
                     throw DecodingError.valueNotFound(T.self, .init(codingPath: codingPath + [key], debugDescription: "No related \(T.self)"))
                 }
                 return record
-            }
-            if let collectionType = T.self as? any RecordCollection.Type {
-                let records = try decoder.loader.loadRelation(
-                    owner: R.table, ownerID: id, field: name, targetType: collectionType.recordType
-                )
-                return collectionType.make(from: records) as! T
             }
             guard let value = stored(name), value != .null else {
                 // A row saved before the property existed takes the property's declared default.

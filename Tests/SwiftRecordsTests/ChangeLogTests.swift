@@ -33,23 +33,24 @@ import Testing
         #expect(try version(todo) == 1)
     }
 
-    @Test func linkingChangesTheOwnerOnly() throws {
+    @Test func linkingChangesNeitherEnd() throws {
         let note = Note(text: "Shared")
         var first = ToDo(title: "First")
         let second = ToDo(title: "Second", notes: [note])
         try container.save([first, second])
-        #expect(try version(second) == 1)
+        let token = try container.changeToken
 
+        // The pair is a link record of its own, so neither the to-do nor the note changes.
         first.notes = [note]
         try container.save(first)
-        #expect(try version(first) == 2)
+        #expect(try version(first) == 1)
         #expect(try version(note) == 1)
+        #expect(try container.changes(since: token).map(\.recordType) == ["RecordLink"])
 
-        // The inverse is read from the owners' links, so saving the target leaves them alone.
+        // The other side reads the links, so saving the note leaves them alone.
         let fetched = try #require(try container.fetch(Note.self, id: note.id))
         try container.save(fetched)
         #expect(try version(note) == 1)
-        #expect(try version(first) == 2)
         #expect(try container.fetch(Note.self, id: note.id)?.todos == [first.id, second.id])
     }
 
@@ -87,12 +88,15 @@ import Testing
         #expect(deletes.first { $0.id == todo.id }?.version == 2)
     }
 
-    @Test func deletingATargetChangesItsOwners() throws {
+    @Test func deletingATargetDeletesItsLinks() throws {
         let note = Note(text: "Linked")
         let todo = ToDo(title: "Owner", notes: [note])
         try container.save(todo)
+        let token = try container.changeToken
         try container.delete(note)
-        #expect(try version(todo) == 2)
+        #expect(try version(todo) == 1)
+        #expect(Set(try container.changes(since: token).map(\.recordType)) == ["Note", "RecordLink"])
+        #expect(try container.fetch(ToDo.self, id: todo.id)?.notes.isEmpty == true)
     }
 
     @Test func savingAgainAfterADeleteContinuesTheVersion() throws {

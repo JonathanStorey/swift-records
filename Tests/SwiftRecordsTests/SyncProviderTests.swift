@@ -10,8 +10,8 @@ struct SyncRecipe {
     @Renamed(from: "notes") var summary = ""
     var tags: [String] = []
     var updated: Date?
-    var steps: [SyncStep] = []
-    var cook: SyncCook?
+    @Reference(to: \SyncStep.recipe) var steps: [SyncStep] = []
+    @Reference(to: SyncCook.self) var cooks: [SyncCook] = []
     @Asset var photo: Data?
 }
 
@@ -19,15 +19,14 @@ struct SyncRecipe {
 struct SyncStep {
     var id = UUID.ordered()
     var text: String
-    @Reference(to: \SyncRecipe.steps, action: .deleteSelf) var recipe: SyncRecipe.ID?
-    @Reference(from: \SyncRecipe.steps) var recipes: Set<SyncRecipe.ID>
+    @Reference(from: SyncRecipe.self, action: .deleteSelf) var recipe: SyncRecipe.ID?
 }
 
 @Record
 struct SyncCook {
     var id = UUID.ordered()
     var name: String
-    @Reference(from: \SyncRecipe.cook) var recipeIDs: Set<SyncRecipe.ID>
+    @Reference(to: \SyncRecipe.cooks) var recipeIDs: Set<SyncRecipe.ID>
 }
 
 /// One device: an in-memory container syncing through its own provider.
@@ -83,21 +82,21 @@ struct Device {
         let tablet = try Device(server)
         let recipe = SyncRecipe(
             title: "Soup", servings: 4, tags: ["winter"], updated: Date(timeIntervalSince1970: 1_000),
-            steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cook: SyncCook(name: "Ana")
+            steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cooks: [SyncCook(name: "Ana")]
         )
         phone.context.insert(recipe)
         try await phone.context.save()
-        #expect(server.count == 4)
+        // The recipe, two steps, the cook and the link between the recipe and the cook.
+        #expect(server.count == 5)
 
-        // The JSON reads like the record: plain values, dates in milliseconds, relationships as IDs.
+        // The JSON reads like the record: plain values, dates in milliseconds, and pointers as references.
         #expect(server.value("SyncRecipe", recipe.id, "title") == .string("Soup"))
         #expect(server.value("SyncRecipe", recipe.id, "servings") == .int(4))
         #expect(server.value("SyncRecipe", recipe.id, "updated") == .date(Date(timeIntervalSince1970: 1_000)))
-        #expect(server.value("SyncRecipe", recipe.id, "steps") == .strings(recipe.steps.map(\.id.uuidString)))
-        #expect(server.value("SyncRecipe", recipe.id, "cook") == .strings([recipe.cook!.id.uuidString]))
+        #expect(!server.has("SyncRecipe", recipe.id, "steps"))
+        #expect(!server.has("SyncRecipe", recipe.id, "cooks"))
         #expect(server.value("SyncRecipe", recipe.id, "tags") == .strings(["winter"]))
         #expect(server.value("SyncStep", recipe.steps[0].id, "recipe") == .reference(recipe.id, action: .deleteSelf))
-        #expect(!server.has("SyncStep", recipe.steps[0].id, "recipes"))
         #expect(server.record("SyncRecipe", recipe.id)?.tag != nil)
 
         try await tablet.context.refresh()
@@ -108,9 +107,9 @@ struct Device {
         #expect(received.tags == ["winter"])
         #expect(received.updated == recipe.updated)
         #expect(received.steps.map(\.text) == ["Chop", "Simmer"])
-        #expect(received.cook?.name == "Ana")
-        // Inverses are rebuilt on each device.
-        #expect(try tablet.context.fetch(SyncStep.self).map(\.recipes) == [[recipe.id], [recipe.id]])
+        #expect(received.cooks.map(\.name) == ["Ana"])
+        // The other side of a many-to-many reads the same links.
+        #expect(try tablet.context.fetch(SyncCook.self).map(\.recipeIDs) == [[recipe.id]])
     }
 
     @Test func refreshUpdatesViewsBeforeReturning() async throws {
@@ -233,20 +232,19 @@ struct Device {
         #expect(try await tablet.recipes().map(\.title) == ["Lemon cake"])
     }
 
-    @Test func listsMergeItemByItem() async throws {
+    @Test func childrenAddedOnTwoDevicesBothArrive() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
-        let first = SyncStep(text: "First")
-        let second = SyncStep(text: "Second")
-        var recipe = SyncRecipe(title: "Bread", steps: [first, second])
+        var recipe = SyncRecipe(title: "Bread", steps: [SyncStep(text: "First"), SyncStep(text: "Second")])
         phone.context.insert(recipe)
         try await phone.context.save()
         try await tablet.context.refresh()
 
+        // Each device adds a step. Each new step is a record of its own, so there's nothing to merge.
         var other = recipe
         recipe.steps.append(SyncStep(text: "Bake"))
         phone.context.insert(recipe)
-        other.steps.insert(SyncStep(text: "Mix"), at: 0)
+        other.steps.append(SyncStep(text: "Cool"))
         tablet.context.insert(other)
 
         try await phone.context.save()
@@ -254,23 +252,25 @@ struct Device {
         try await phone.context.refresh()
         try await tablet.context.refresh()
         for device in [phone, tablet] {
-            #expect(try await device.recipes().first?.steps.map(\.text) == ["Mix", "First", "Second", "Bake"])
+            #expect(try await device.recipes().first?.steps.map(\.text) == ["First", "Second", "Bake", "Cool"])
         }
     }
 
-    @Test func movesMadeOnTwoDevicesBothApply() async throws {
+    @Test func linksMadeOnTwoDevicesBothArrive() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
-        let steps = ["One", "Two", "Three", "Four", "Five"].map { SyncStep(text: $0) }
-        var recipe = SyncRecipe(title: "Stew", steps: steps)
+        let ana = SyncCook(name: "Ana")
+        var recipe = SyncRecipe(title: "Stew")
         phone.context.insert(recipe)
+        phone.context.insert(ana)
         try await phone.context.save()
         try await tablet.context.refresh()
 
+        // Both devices link Ana, and the tablet links Ben too.
         var other = recipe
-        recipe.steps.append(recipe.steps.remove(at: 1))
+        recipe.cooks = [ana]
         phone.context.insert(recipe)
-        other.steps.insert(other.steps.remove(at: 4), at: 0)
+        other.cooks = [ana, SyncCook(name: "Ben")]
         tablet.context.insert(other)
 
         try await phone.context.save()
@@ -278,8 +278,10 @@ struct Device {
         try await phone.context.refresh()
         try await tablet.context.refresh()
         for device in [phone, tablet] {
-            #expect(try await device.recipes().first?.steps.map(\.text) == ["Five", "One", "Three", "Four", "Two"])
+            #expect(try await device.recipes().first?.cooks.map(\.name) == ["Ana", "Ben"])
         }
+        // The same pair made on two devices is one record, since its ID comes from the pair.
+        #expect(server.records("RecordLink").count == 2)
     }
 
     @Test func listMergeRules() {
@@ -344,22 +346,40 @@ struct Device {
 
     // MARK: Arrival order and newer versions
 
+    @Test func childrenArrivingBeforeTheirParentResolveLater() async throws {
+        let phone = try Device(server)
+        _ = try await phone.recipes()
+        let recipeID = UUID.ordered()
+        server.put("SyncStep", fields: ["text": .string("Whisk"), "recipe": .reference(recipeID, action: .deleteSelf)])
+        await phone.download()
+        #expect(try phone.context.fetch(SyncStep.self).map(\.recipe) == [recipeID])
+
+        server.put("SyncRecipe", id: recipeID, fields: ["title": .string("Omelette")])
+        await phone.download()
+        #expect(try await phone.recipes().first?.steps.map(\.text) == ["Whisk"])
+    }
+
     @Test func linksArrivingBeforeTheirTargetsResolveLater() async throws {
         let phone = try Device(server)
         _ = try await phone.recipes()
-        let step = SyncStep(text: "Whisk")
-        server.put("SyncRecipe", fields: ["title": .string("Omelette"), "steps": .strings([step.id.uuidString])])
+        let recipeID = UUID.ordered()
+        let cook = SyncCook(name: "Ana")
+        server.put("SyncRecipe", id: recipeID, fields: ["title": .string("Omelette")])
+        server.put("RecordLink", id: _RecordLink.id(relation: "SyncRecipe.cooks", from: recipeID, to: cook.id), fields: [
+            "relation": .string("SyncRecipe.cooks"), "from": .reference(recipeID, action: .deleteSelf),
+            "to": .reference(cook.id, action: .deleteSelf), "created": .date(Date()),
+        ])
         await phone.download()
         var recipe = try #require(try await phone.recipes().first)
-        #expect(recipe.steps.isEmpty)
+        #expect(recipe.cooks.isEmpty)
 
         // Saving the recipe here keeps the link it can't see yet.
         recipe.title = "Cheese omelette"
         phone.context.insert(recipe)
         try phone.commit()
-        server.put("SyncStep", id: step.id, fields: ["text": .string("Whisk")])
+        server.put("SyncCook", id: cook.id, fields: ["name": .string("Ana")])
         await phone.download()
-        #expect(try await phone.recipes().first?.steps.map(\.text) == ["Whisk"])
+        #expect(try await phone.recipes().first?.cooks.map(\.name) == ["Ana"])
     }
 
     @Test func fieldsFromNewerVersionsAreKeptAndSentBack() async throws {

@@ -6,10 +6,11 @@ import Foundation
 extension RecordContainer {
     /// The `CKRecord` a save becomes, or `nil` for a deletion, which you delete by `RecordContainer.recordID(for:in:)`.
     ///
-    /// Each field is copied as it is: a `RecordValue` is already what CloudKit stores. A relationship such as
-    /// `var notes: [Note]` is a list of its records' names in order, never forward references, and each note
-    /// is its own `CKRecord`. A child's `@Reference(to:action:)` is a `CKRecord.Reference` with that action,
-    /// and an asset is a `CKAsset` of its file here.
+    /// Each field is copied as it is: a `RecordValue` is already what CloudKit stores. A record holds only
+    /// its own values. A `@Reference(from:)` pointer is a `CKRecord.Reference` with its action, and the
+    /// first one with `.deleteSelf` is also the record's `parent`, as `CKShare` expects. The arrays pointers
+    /// and links fill aren't fields, and each pair in a many-to-many is its own `RecordLink` record. An asset
+    /// is a `CKAsset` of its file here.
     ///
     /// The change's `tag` is the server copy's archived system fields, as `change(from:zone:)` sets it, and
     /// the record is built on them, so it carries the change tag and saves as an update. A change with no
@@ -40,7 +41,7 @@ extension RecordContainer {
             guard let value = record[key] else { continue }
             if let reference = value as? CKRecord.Reference {
                 guard let target = UUID(uuidString: reference.recordID.recordName) else { continue }
-                fields[key] = .reference(target, action: reference.action == .deleteSelf ? .deleteSelf : .none)
+                fields[key] = .reference(target, action: reference.action == .deleteSelf ? .deleteSelf : .nullify)
             } else if let asset = value as? CKAsset {
                 guard let file = asset.fileURL else { continue }
                 // Named by its contents, so every device and every download agree on the name.
@@ -101,6 +102,11 @@ extension CKRecord {
         for key in allKeys() where values[key] == nil {
             setObject(nil, forKey: key)
         }
+        // The record belongs to what its first `.deleteSelf` pointer names, which is how sharing finds it.
+        parent = values.keys.sorted().lazy.compactMap { key -> CKRecord.Reference? in
+            guard case .reference(let id, .deleteSelf)? = values[key] else { return nil }
+            return CKRecord.Reference(recordID: RecordContainer.recordID(for: id, in: self.recordID.zoneID), action: .none)
+        }.first
         for (key, value) in values {
             switch value {
             case .string(let value): self[key] = value
@@ -134,11 +140,13 @@ extension CKRecord {
 /// let pantryRecord = try CKRecordEncoder().encode(item, zone: "pantry") // the CloudKit zone "pantry"
 /// ```
 ///
-/// Fields map as they do when the container syncs. Every stored property is a field of the same name. A
-/// relationship such as `var steps: [Step]` is a list of the steps' record names in order, and each step is
-/// its own `CKRecord`, so encode it separately. A child's `@Reference(to:action:)` is a `CKRecord.Reference`
-/// with that action. Lists of strings, numbers and dates are CloudKit lists, an asset is a `CKAsset`, and any
-/// other `Codable` value is its JSON as `Data`. Inverses and `@Timestamped(.synced)` aren't stored.
+/// Fields map as they do when the container syncs. Every stored property is a field of the same name, and
+/// the record holds only its own values. A `@Reference(from:)` pointer is a `CKRecord.Reference` with its
+/// action, and the first with `.deleteSelf` is also the record's `parent`. A `@Reference(to:)` array isn't
+/// a field: each child is its own `CKRecord` holding its pointer, so encode it separately, and each pair in
+/// a many-to-many is a `RecordLink` record, which `links(of:zone:)` encodes. Lists of strings, numbers and
+/// dates are CloudKit lists, an asset is a `CKAsset`, and any other `Codable` value is its JSON as `Data`.
+/// `@Timestamped(.synced)` isn't stored.
 public struct CKRecordEncoder {
     public init() {}
 
@@ -163,6 +171,23 @@ public struct CKRecordEncoder {
         }
         ckRecord.fill(values) { files[$0] }
         return ckRecord
+    }
+
+    /// The `RecordLink` records for each pair a record's many-to-many arrays hold, as new records. A link's
+    /// name is hashed from the relationship and both ends, so it matches the one the container syncs.
+    public func links<R: Record>(of record: R, zone: Zone = .default) throws -> [CKRecord] {
+        let encoded = try RecordEncoder.encode(record)
+        let now = Date()
+        var links: [CKRecord] = []
+        for relation in encoded.relations {
+            guard let field = R.cachedSchema.field(named: relation.name), case .links? = field.relationship else { continue }
+            let name = RecordStore.relationNames(R.self, field: field)[0]
+            for (index, target) in relation.targets.enumerated() {
+                let link = _RecordLink(relation: name, from: record.id, to: target.id, created: now.addingTimeInterval(Double(index) / 1000))
+                links.append(try encode(link, zone: zone))
+            }
+        }
+        return links
     }
 
     /// The server's last copy, rebuilt from its archived system fields, if they belong to this record. The

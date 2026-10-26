@@ -1,6 +1,6 @@
 # swift-records
 
-A SQLite-backed store for plain Swift structs. Mark a struct with `@Record`, and nested records are
+A SQLite-backed store for plain Swift structs. Mark a struct with `@Record`, and related records are
 saved to their own tables automatically.
 
 ```swift
@@ -11,28 +11,29 @@ struct ToDo {
     var id = UUID()
     var title: String
     var done = false
-    var notes: [Note] = []                 // to-many, order kept
-    var labels: [Label] = []               // many-to-many
-    var tags: [String] = []                // plain Codable, stored as JSON
+    @Reference(to: \Note.todo) var notes: [Note] = []      // children, read through their pointer
+    @Reference(to: Label.self) var labels: [Label] = []     // many-to-many
+    var tags: [String] = []                                 // plain Codable, stored as JSON
 }
 
 @Record
 struct Note {
     var id = UUID()
     var text: String
-    @Reference(to: \ToDo.notes, action: .deleteSelf) var todo: ToDo.ID?   // its one parent
+    @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?   // the stored pointer
 }
 
 @Record
 struct Label {
     var id = UUID()
     var name: String
-    @Reference(from: \ToDo.labels) var todoIDs: Set<ToDo.ID>             // inverse, read-only
+    @Reference(to: \ToDo.labels) var todoIDs: Set<ToDo.ID>                // the other side, read-only
 }
 ```
 
 Every record's `id` is a `UUID`, so records created on different devices never collide. IDs are
-stored as 16-byte blobs, which keeps primary keys and join tables compact.
+stored as 16-byte blobs, which keeps primary keys and indexes compact. `UUID.ordered()` makes a version 7
+UUID that sorts after every ID made before it, so records list in the order they were created.
 
 ## Containers and contexts
 
@@ -123,8 +124,9 @@ automatically. It's optional for a local container and required for sync.
 Registering also checks the types before anything is written, and throws
 `RecordsError.invalidSchema(type:reason:)` for a setup mistake that would mix up data:
 - two types stored under one name
-- a relationship whose target has neither a `@Reference(to:)` nor a `@Reference(from:)` for it
-- a reference or inverse whose key path isn't a relationship back to its type
+- children whose key path isn't a `@Reference(from:)` pointer back to their parent's type
+- a read-only many-to-many side whose key path isn't a many-to-many to its type
+- an app type stored as `RecordLink`, the name the container keeps for many-to-many links
 - an `@Renamed` old name that is still a property's name, or is shared by two properties
 - with a sync provider, a type or property name a server can't take: it must be letters, digits and
   underscores, starting with a letter
@@ -184,7 +186,7 @@ changes and their main contexts refresh together.
 
 Simple predicates on a record's own properties run as SQL: `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`,
 `||`, `!`, `nil` checks, `[values].contains(\.property)`, `String.contains` (iOS 18 / macOS 15) and
-`localizedStandardContains`. Searching inside a to-many relationship also runs as SQL:
+`localizedStandardContains`. Searching inside children or a many-to-many also runs as SQL:
 
 ```swift
 let greeted = try context.fetch(ToDo.self, where: #Predicate { todo in
@@ -200,7 +202,7 @@ terms translate, those run as SQL to narrow the rows and only the rest is checke
 - **New properties** read their declared default from rows saved before they existed, such as
   `var servings = 2`. Optionals read as `nil`. A new non-optional property needs a default.
 - **Renamed properties** keep their values with `@Renamed(from: "minutes") var duration = 0`. The
-  column (or a relationship's join table) is renamed the first time the container uses the type.
+  column is renamed the first time the container uses the type, and a many-to-many keeps its links.
 - **Renamed types** keep their data with `@Record("Recipe")`, which fixes the stored name. A
   type nested inside another needs one, since its simple name could clash.
 - A property renamed more than once lists every earlier name: `@Renamed(from: "minutes", "time")`.
@@ -217,39 +219,45 @@ an edit. A `Double` or `Float` that is NaN can't be stored, so saving it throws.
 
 ## Relationships
 
-Relationships follow CloudKit's model: the child says how it belongs. Any property whose type is a
-`@Record`, an optional `@Record` or an array of them is a relationship, stored in a join table named
-`Owner.property` that keeps the owner's order. Its target type declares one of two things for it.
+Relationships follow CloudKit's model: a child stores a pointer to its parent, and the parent's list
+of children is read back through that pointer. A plain `[Note]`, `Note?` or `Note` property is a
+compile error, so every relationship says which kind it is.
 
-**One parent: `@Reference(to:action:)`.** A note belongs to one to-do, a step to one recipe, a reply to
-one comment. The child holds its parent's ID, which is a column you can query and set.
+**The pointer: `@Reference(from:action:)`.** A note belongs to one to-do, a step to one recipe, a reply
+to one comment. The child holds its parent's ID as `Parent.ID?`, a column you can query and set.
 
-- Saving the parent sets each child in its array to point at it. Setting a child's reference and
-  saving the child moves it to the end of its new parent's array, so you can link from either side.
 - The action says what happens when the parent goes, named after `CKRecord.ReferenceAction`.
-  `.deleteSelf` deletes the child when the parent is deleted, when it's removed from the array, or when
-  its reference is cleared. `.none`, the default, keeps the child and clears its reference.
-- Moving a child between two arrays in one save keeps it. A `.deleteSelf` child is only deleted if it
+  `.deleteSelf` deletes the child when the parent is deleted, when it's removed from the parent's
+  array, or when its pointer is cleared. `.nullify`, the default, keeps the child and clears its pointer.
+- Moving a child between two parents in one save keeps it. A `.deleteSelf` child is only deleted if it
   ends the transaction without a parent.
-- `#Predicate { $0.todo == todoID }` runs as SQL, and the reference column is indexed.
-- A record with references to several parents, such as a `Membership` that belongs to a `Person` and a
-  `Team`, declares one for each. That is how to give a many-to-many link properties of its own. Saving
-  it through one parent's array never clears its reference to another.
+- `#Predicate { $0.todo == todoID }` runs as SQL, and the pointer column is indexed.
+- A record with pointers to several parents, such as a `Membership` that belongs to a `Person` and a
+  `Team`, declares one for each. That is how to give a many-to-many link properties of its own.
 
-**Several owners: `@Reference(from:)`.** A label can be on many to-dos. The inverse is a `Set` of the
-owners' IDs, so name it for that, such as `todoIDs`.
+**Children: `@Reference(to: \Child.pointer)`.** The parent's `[Child]` holds every record whose
+pointer names it, and `Child?` holds one, for a one-to-one.
 
-- Deleting an owner, or removing the label from its array, only unlinks it.
-- Loading full records would recurse forever with value types, so fetch the owners with a predicate,
-  `#Predicate<ToDo> { ids.contains($0.id) }` on a local `let ids = label.todoIDs`, which runs as SQL.
-- It is read-only, with no initial value: the container fills it from the owners' links, so link or
-  unlink from the owner's side.
-- `#Predicate { $0.todoIDs.contains(todo.id) }` runs as SQL, like `contains { }` on a forward
-  relationship, so searches work at full speed in both directions.
+- Saving the parent sets each child's pointer to it, and setting a child's pointer and saving the
+  child moves it, so you can link from either side.
+- Without `sort:`, children come in ID order, which is creation order with `UUID.ordered()` IDs.
+  `sort: \.position` or an array of `SortDescriptor`s orders them by the children's own properties, so
+  reordering is an edit to the children, and the pointer and sort columns share an index.
 
-Deleting any record removes it from every owner's relationship, so a deleted recipe leaves each
-cookbook that held it. The container checks that every relationship's target declares one of these
-when you register the types.
+**Many-to-many: `@Reference(to: Target.self)`.** A label can be on many to-dos. The owner declares
+`[Label]`, and each pair is stored as a link record that belongs to both ends.
+
+- Without `sort:`, links come in the order they were made. `sort:` works as it does for children.
+- Deleting either end, or removing the label from the array, only removes the link.
+- A link's ID is derived from its pair, so the same link made on two devices is one record.
+- The other side is optional: `@Reference(to: \ToDo.labels) var todoIDs: Set<ToDo.ID>` is read-only
+  with no initial value, filled from the owners' links. It holds IDs, since loading full records would
+  recurse forever with value types. Fetch the owners with `#Predicate<ToDo> { ids.contains($0.id) }` on
+  a local `let ids = label.todoIDs`, which runs as SQL.
+- `#Predicate { $0.todoIDs.contains(todo.id) }` runs as SQL, like `contains { }` on the owner's side,
+  so searches work at full speed in both directions.
+
+The container checks every relationship's key path when you register the types.
 
 ## Assets
 
@@ -335,7 +343,7 @@ Button("Save") { context.insert(draft); dismiss() }
 
 It counts the context's pending changes and related records, so editing a step marks its recipe as
 changed, and undoing an edit makes it false again. A record the context has never saved is changed.
-`@Timestamped` properties and inverses are left out, because the container sets them. It never saves, so
+`@Timestamped` properties and the read-only side of a many-to-many are left out, because the container sets them. It never saves, so
 a view can call it while it updates, and each call costs one read by ID.
 
 ## Change tracking
@@ -423,8 +431,9 @@ public struct RecordChangeData {
 
 Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.bytes`, the lists
 `.strings`, `.ints`, `.doubles` and `.dates`, `.reference(id, action:)` for a child's parent, and
-`.asset(id)` for an asset's file ID. Relationships are `.strings` of record names. Any other `Codable`
-value travels as its JSON in `.bytes`. Nothing else is added.
+`.asset(id)` for an asset's file ID. Children and many-to-many arrays aren't fields: a child sends its
+pointer, and each many-to-many link is a `RecordLink` record with `relation`, `from`, `to` and `created`
+fields. Any other `Codable` value travels as its JSON in `.bytes`. Nothing else is added.
 
 The container stays local first. It keeps its own creation and modification times, and it treats
 `tag` as opaque: it stores it with the record, outside the struct, and hands it back with the record's
@@ -469,11 +478,11 @@ The server records who created each record in a public zone, and that user owns 
 the server refuses changes from anyone else, signing out never deletes them, and they download without
 an account.
 
-Inverses aren't sent. The container owns the rules:
+Children, many-to-many arrays and their read-only other sides aren't sent. The container owns the rules:
 
 - **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
-  changed keeps that change, using a snapshot of the record as last synced. Relationship lists merge
-  item by item, so steps added on two devices both survive, and so do steps moved on both. Only a property both sides changed goes to
+  changed keeps that change, using a snapshot of the record as last synced. Every child and every link
+  is its own record, so steps added on two devices both survive, and so do links. Only a property both sides changed goes to
   the latest edit, by the copies' `@Timestamped(.modified)` dates, which each device stamps as it saves. A
   type without one has no edit dates to compare, so the server's copy wins, the same answer on every
   device.
@@ -508,12 +517,12 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | `String`, numbers, `Bool`, `Date`, `Data` | fields of the same name |
 | `[String]`, number and `[Date]` arrays | CloudKit lists |
 | any other `Codable` value | its JSON as `Data` |
-| `var notes: [Note]` | the notes' record names in order, as a `[String]`, never forward references |
-| a child's `@Reference(to:action:)` | a `CKRecord.Reference` with that action |
+| a child's `@Reference(from:action:)` | a `CKRecord.Reference` with that action, and the first `.deleteSelf` one as `parent` |
+| a many-to-many link | a `RecordLink` record with two `.deleteSelf` references |
 | `@Asset` | a `CKAsset` |
-| inverses, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
+| children, many-to-many arrays, their other sides, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
 
-Each child is its own `CKRecord`, and locally it still appears nested in its parent's array. Coming
+Each child is its own `CKRecord`, and locally it still appears in its parent's array. Coming
 back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
 `modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
 change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
@@ -533,8 +542,9 @@ Pass the server's last copy as `systemFields`, archived with `encodeSystemFields
 carries its change tag so it saves as an update. A synced change's `tag` is exactly these. System fields that name another record, type or zone
 throw `RecordsError.mismatchedSystemFields`.
 
-A recipe's `steps` field lists the steps' record names, and each step encodes separately. A child's
-reference is whatever the struct holds, which saving it through its parent sets. An asset still in memory
+A recipe has no `steps` field: each step encodes separately with its `recipe` reference, which is
+whatever the struct holds and which saving it through its parent sets. `links(of:zone:)` encodes a
+record's many-to-many links as `RecordLink` records. An asset still in memory
 is written to a temporary file for its `CKAsset`. It throws `RecordsError.invalidValue` when a property
 won't encode, and `RecordsError.unsyncedZone` for `.inMemory` or `.localOnly`, which never sync.
 
@@ -620,7 +630,7 @@ A list's changes animate with the default animation, including ones from a backg
 `@Records` also loads records by ID, and keeps them current the same way:
 
 ```swift
-@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // an inverse's owners, sorted by ID
+@Records(ids: recipe.cookbookIDs) var cookbooks: [Cookbook]   // a many-to-many's owners, sorted by ID
 @Records(ids: [recipeID]) var recipes: [Recipe]               // one record, empty once it's deleted
 ```
 

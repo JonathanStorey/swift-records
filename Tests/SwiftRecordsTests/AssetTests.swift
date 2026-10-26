@@ -7,13 +7,13 @@ struct Photo {
     var id = UUID.ordered()
     var caption = ""
     @Asset(fileExtension: "jpg") var image: Data? = nil
-    @Reference(to: \Album.photos, action: .deleteSelf) var album: Album.ID?
+    @Reference(from: Album.self, action: .deleteSelf) var album: Album.ID?
 }
 
 @Record
 struct Album {
     var id = UUID.ordered()
-    var photos: [Photo] = []
+    @Reference(to: \Photo.album) var photos: [Photo] = []
 }
 
 @Suite struct AssetTests {

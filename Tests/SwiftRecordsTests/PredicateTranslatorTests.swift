@@ -17,8 +17,9 @@ import Testing
     @Test func translatesContainsOnAnInverse() throws {
         let id = UUID()
         let clause = try PredicateTranslator.translate(#Predicate<Note> { $0.todos.contains(id) })
-        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "ToDo.notes" AS "j1" WHERE "j1".target = "Note"."id" AND "j1".owner = ?)"#)
-        #expect(clause.relations == ["ToDo.notes"])
+        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "RecordLink" AS "j1" WHERE "j1".relation IN (?) AND "j1"."to" = "Note"."id" AND "j1"."from" = ?)"#)
+        #expect(clause.bindings == [.text("ToDo.notes"), try ValueCoding.encode(id)])
+        #expect(clause.relations == ["RecordLink"])
     }
 
     @Test func translatesComparisonsAndLogic() throws {
@@ -49,7 +50,7 @@ import Testing
             try PredicateTranslator.translate(#Predicate<ToDo> { $0.title.count > 3 })
         }
         #expect(throws: PredicateTranslator.Unsupported.self) {
-            try PredicateTranslator.translate(#Predicate<ToDo> { $0.owner?.name == "Sam" })
+            try PredicateTranslator.translate(#Predicate<ToDo> { $0.notes.first?.text == "Sam" })
         }
     }
 
@@ -63,9 +64,18 @@ import Testing
         let clause = try PredicateTranslator.translate(#Predicate<ToDo> { todo in
             todo.notes.contains { $0.text == "hello world" }
         })
-        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "ToDo.notes" AS "j1" JOIN "Note" AS "t1" ON "t1"."id" = "j1".target WHERE "j1".owner = "ToDo"."id" AND ("t1"."text" IS ?))"#)
-        #expect(clause.bindings == [.text("hello world")])
-        #expect(clause.relations == ["ToDo.notes"])
+        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "RecordLink" AS "j1" JOIN "Note" AS "t1" ON "t1"."id" = "j1"."to" WHERE "j1".relation IN (?) AND "j1"."from" = "ToDo"."id" AND ("t1"."text" IS ?))"#)
+        #expect(clause.bindings == [.text("ToDo.notes"), .text("hello world")])
+        #expect(clause.relations == ["Note", "RecordLink"])
+    }
+
+    @Test func translatesChildrenContainsToExists() throws {
+        let clause = try PredicateTranslator.translate(#Predicate<ToDo> { todo in
+            todo.subtasks.contains { $0.title == "Call" }
+        })
+        #expect(clause.sql == #"EXISTS (SELECT 1 FROM "Subtask" AS "t1" WHERE "t1"."todo" = "ToDo"."id" AND ("t1"."title" IS ?))"#)
+        #expect(clause.bindings == [.text("Call")])
+        #expect(clause.relations == ["Subtask"])
     }
 
     @Test func nestedClosuresCanReadTheOuterRecord() throws {

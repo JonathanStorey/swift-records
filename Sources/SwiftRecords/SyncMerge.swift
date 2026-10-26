@@ -19,19 +19,10 @@ enum SyncMerge {
             if local == base[key] { return server }
             if server == base[key] { return local }
         }
-        switch (local, server) {
-        case (.ids(let localIDs)?, .ids(let serverIDs)?):
-            var baseIDs: [UUID]?
-            if let base {
-                if case .ids(let ids)? = base[key] { baseIDs = ids } else { baseIDs = [] }
-            }
-            return .ids(mergeList(local: localIDs, server: serverIDs, base: baseIDs, preferLocal: preferLocal))
-        default:
-            return preferLocal ? local : server
-        }
+        return preferLocal ? local : server
     }
 
-    /// Merges an ordered relationship item by item. A removal on either side applies, and an insertion keeps
+    /// Merges an ordered list of IDs item by item. A removal on either side applies, and an insertion keeps
     /// its place after the item it followed on its own side. A move is an item that left its order relative
     /// to the others, found as the items outside the longest run each side kept in the ancestor's order, so
     /// moves made on both sides all apply. An item both sides moved takes the preferred side's place, as does

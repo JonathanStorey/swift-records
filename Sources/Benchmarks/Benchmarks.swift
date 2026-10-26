@@ -167,7 +167,10 @@ struct Run {
         try await measure("Reorder the steps of 1,000 recipes", records: 6_000) {
             for var recipe in edited {
                 recipe.title += " (reordered)"
-                recipe.steps.reverse()
+                // Steps sort by position, so reversing them is a new position for each.
+                for index in recipe.steps.indices {
+                    recipe.steps[index].position = Double(recipe.steps.count - index)
+                }
                 context.insert(recipe)
             }
             try Self.commit(context)

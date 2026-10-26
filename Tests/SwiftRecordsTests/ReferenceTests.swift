@@ -6,49 +6,49 @@ import Testing
 struct Board {
     var id = UUID.ordered()
     var title = ""
-    var cards: [Card] = []
-    var stickers: [Sticker] = []
+    @Reference(to: \Card.board) var cards: [Card] = []
+    @Reference(to: Sticker.self) var stickers: [Sticker] = []
 }
 
 @Record
 struct Card {
     var id = UUID.ordered()
     var text = ""
-    @Reference(to: \Board.cards, action: .deleteSelf) var board: Board.ID?
+    @Reference(from: Board.self, action: .deleteSelf) var board: Board.ID?
 }
 
 @Record
 struct Sticker {
     var id = UUID.ordered()
     var name = ""
-    @Reference(from: \Board.stickers) var boardIDs: Set<Board.ID>
+    @Reference(to: \Board.stickers) var boardIDs: Set<Board.ID>
 }
 
 @Record
 struct Shelf {
     var id = UUID.ordered()
-    var books: [Book] = []
+    @Reference(to: \Book.shelf) var books: [Book] = []
 }
 
 @Record
 struct Book {
     var id = UUID.ordered()
     var title = ""
-    @Reference(to: \Shelf.books) var shelf: Shelf.ID?
+    @Reference(from: Shelf.self) var shelf: Shelf.ID?
 }
 
 @Record
 struct Member {
     var id = UUID.ordered()
     var name = ""
-    var memberships: [Membership] = []
+    @Reference(to: \Membership.member) var memberships: [Membership] = []
 }
 
 @Record
 struct Team {
     var id = UUID.ordered()
     var name = ""
-    var memberships: [Membership] = []
+    @Reference(to: \Membership.team) var memberships: [Membership] = []
 }
 
 /// A link with properties of its own, which belongs to both ends.
@@ -56,22 +56,15 @@ struct Team {
 struct Membership {
     var id = UUID.ordered()
     var role = ""
-    @Reference(to: \Member.memberships, action: .deleteSelf) var member: Member.ID?
-    @Reference(to: \Team.memberships, action: .deleteSelf) var team: Team.ID?
+    @Reference(from: Member.self, action: .deleteSelf) var member: Member.ID?
+    @Reference(from: Team.self, action: .deleteSelf) var team: Team.ID?
 }
 
-/// A relationship whose target doesn't say how it belongs.
-@Record
-struct LooseBoard {
-    var id = UUID.ordered()
-    var cards: [Card] = []
-}
-
-/// A reference to a property that isn't a relationship to this type.
+/// Children read through a pointer that names another type.
 @Record
 struct MisplacedReference {
     var id = UUID.ordered()
-    @Reference(to: \Board.cards) var board: Board.ID?
+    @Reference(to: \Card.board) var cards: [Card] = []
 }
 
 @Suite struct ReferenceTests {
@@ -89,7 +82,7 @@ struct MisplacedReference {
         #expect(try cards() == ["A": board.id, "B": board.id])
     }
 
-    @Test func settingAReferenceMovesTheChildToTheEndOfTheNewParent() throws {
+    @Test func settingAPointerMovesTheChildToTheNewParent() throws {
         var card = Card(text: "Move me")
         let from = Board(title: "From", cards: [card])
         let to = Board(title: "To", cards: [Card(text: "Already here")])
@@ -98,7 +91,8 @@ struct MisplacedReference {
         card.board = to.id
         try container.save(card)
         #expect(try container.fetch(Board.self, id: from.id)?.cards.isEmpty == true)
-        #expect(try container.fetch(Board.self, id: to.id)?.cards.map(\.text) == ["Already here", "Move me"])
+        // Without `sort:`, children come in the order they were created.
+        #expect(try container.fetch(Board.self, id: to.id)?.cards.map(\.text) == ["Move me", "Already here"])
     }
 
     @Test func movingBetweenArraysInOneSaveKeepsTheChild() throws {
@@ -197,8 +191,7 @@ struct MisplacedReference {
 
     // MARK: Schema
 
-    @Test func relationshipsMustSayHowTheirTargetsBelong() {
-        #expect(throws: RecordsError.self) { try RecordContainer(for: [LooseBoard.self], inMemory: true) }
+    @Test func relationshipsMustReadTheOtherSide() {
         #expect(throws: RecordsError.self) { try RecordContainer(for: [MisplacedReference.self], inMemory: true) }
     }
 }
@@ -207,14 +200,15 @@ struct MisplacedReference {
 @Suite struct ReferenceSyncTests {
     let server = TestServer()
 
-    @Test func referencesAndListsCrossAsIDs() async throws {
+    @Test func onlyPointersCross() async throws {
         let phone = try Device(server)
         let recipe = SyncRecipe(title: "Soup", steps: [SyncStep(text: "Chop")])
         phone.context.insert(recipe)
         try await phone.context.save()
 
         #expect(server.value("SyncStep", recipe.steps[0].id, "recipe") == .reference(recipe.id, action: .deleteSelf))
-        #expect(server.value("SyncRecipe", recipe.id, "steps") == .strings([recipe.steps[0].id.uuidString]))
+        // The recipe holds no list of its steps: each step points to it.
+        #expect(server.value("SyncRecipe", recipe.id, "steps") == nil)
 
         let tablet = try Device(server)
         try await tablet.context.refresh()

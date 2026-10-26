@@ -39,9 +39,7 @@ enum SyncValue: Hashable, Codable, Sendable {
     case uuid(UUID)
     /// A `URL`, or an asset's stored file.
     case url(URL)
-    /// A relationship, in order.
-    case ids([UUID])
-    /// A child's `@Reference(to:)`: its parent's ID and what happens to it when the parent goes.
+    /// A `@Reference(from:)` pointer: the ID it holds and what happens to the record when that one goes.
     case reference(UUID, action: ReferenceAction)
     /// A field this version of the app doesn't know, as it arrived, sent back untouched.
     case unknown(RecordValue)
@@ -94,7 +92,6 @@ extension SyncValue {
             case .data(let value): .blob(value)
             case .uuid(let value): try ValueCoding.encode(value)
             case .url(let value): .text(value.absoluteString)
-            case .ids(let value): .text(String(decoding: try CanonicalJSON.encode(value), as: UTF8.self))
             case .reference(let id, _): try ValueCoding.encode(id)
             case .unknown(let value): .text(String(decoding: try value.json(), as: UTF8.self))
             }
@@ -124,15 +121,20 @@ struct PendingChange: Hashable, Sendable {
 // MARK: - Registered types
 
 extension RecordStore {
-    /// Registers record types and every type their relationships reach, creating their tables and join
-    /// tables and applying renames and indexes now rather than on first use.
+    /// Registers record types and every type their relationships reach, with the link type every container
+    /// has, creating their tables and applying renames and indexes now rather than on first use.
     ///
     /// Every type is checked before anything is written, so a setup mistake fails when the container
     /// opens instead of mixing up data later. `syncSafe` also requires names a server such as CloudKit accepts.
     func register(_ types: [any Record.Type], syncSafe: Bool = false) throws {
         var found: [String: any Record.Type] = [:]
-        var queue = types
+        var queue = [_RecordLink.self] + types
         while let type = queue.popLast() {
+            if type.table == _RecordLink.table, ObjectIdentifier(type) != ObjectIdentifier(_RecordLink.self) {
+                throw RecordsError.invalidSchema(
+                    type: type.table, reason: "\"\(type.table)\" is reserved for the links of many-to-many relationships. Give \(type) a different @Record(_:)."
+                )
+            }
             if let other = found[type.table] ?? registered[type.table] {
                 guard ObjectIdentifier(other) == ObjectIdentifier(type) else {
                     throw RecordsError.invalidSchema(
@@ -155,19 +157,19 @@ extension RecordStore {
         }
     }
 
-    /// The types a type's relationships, references and inverses name.
+    /// The types a type's pointers, relationships and inverses name.
     private static func relatedTypes<R: Record>(_ type: R.Type) -> [any Record.Type] {
         R.cachedSchema.fields.compactMap { field in
-            if let inverse = field.inverse ?? field.parent {
+            if let inverse = field.inverse {
                 return Swift.type(of: inverse).rootType as? any Record.Type
             }
-            return relationTarget(field)
+            return field.pointerTarget ?? field.relationship?.target
         }
     }
 
-    /// Checks what the macro can't see from inside one type: relationships whose targets say how they
-    /// belong, references and inverses that point back, renames that don't collide, and with sync, names a
-    /// server accepts.
+    /// Checks what the macro can't see from inside one type: relationships whose key paths name a pointer
+    /// or link array on the other side, property types that match, renames that don't collide, and with
+    /// sync, names a server accepts.
     private static func validate<R: Record>(_ type: R.Type, syncSafe: Bool) throws {
         func invalid(_ reason: String) -> RecordsError {
             .invalidSchema(type: R.table, reason: reason)
@@ -175,28 +177,30 @@ extension RecordStore {
         let names = Set(R.cachedSchema.fields.map { $0.name })
         var oldNames: [String: String] = [:]
         for field in R.cachedSchema.fields {
-            if let target = relationTarget(field), !declaresRelationship(target, field.keyPath) {
-                throw invalid(
-                    "\(field.name) links to \(target), which doesn't say how it belongs. Give \(target) "
-                        + "@Reference(to: \\\(R.self).\(field.name)) if each one has one parent, or "
-                        + "@Reference(from: \\\(R.self).\(field.name)) if it can have several."
-                )
-            }
-            if let parent = field.parent {
-                guard let owner = Swift.type(of: parent).rootType as? any Record.Type,
-                      let target = forwardTarget(of: owner, keyPath: parent), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
-                    throw invalid("\(field.name) is a reference to \(parent), which isn't a relationship to \(R.self).")
+            let valueType = Swift.type(of: field.keyPath).valueType
+            switch field.relationship {
+            case .children(let child, let pointer)?:
+                guard pointsTo(child, pointer, R.self) else {
+                    if relationNames(pointer) != nil {
+                        throw invalid(
+                            "\(field.name) reads the other side of the many-to-many \(pointer). Declare it as 'Set<\(child).ID>'."
+                        )
+                    }
+                    throw invalid("\(field.name) reads \(pointer), which isn't a @Reference(from: \(R.self).self) pointer.")
                 }
-                if R.cachedSchema.fields.contains(where: { $0.parent == parent && $0.name != field.name }) {
-                    throw invalid("Two properties are references to \(parent). Keep one.")
+                guard holds(valueType, child, optional: true) else {
+                    throw invalid("\(field.name) holds the \(child) records that point here. Declare it as '[\(child)]' or '\(child)?'.")
                 }
+            case .links(let target)?:
+                guard holds(valueType, target, optional: false) else {
+                    throw invalid("\(field.name) holds the \(target) records it links to. Declare it as '[\(target)]'.")
+                }
+            case nil:
+                break
             }
             if let inverse = field.inverse {
-                guard let owner = Swift.type(of: inverse).rootType as? any Record.Type else {
-                    throw invalid("\(field.name) is an inverse of \(inverse), which isn't a property of a @Record type.")
-                }
-                guard let target = forwardTarget(of: owner, keyPath: inverse), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
-                    throw invalid("\(field.name) is an inverse of \(inverse), which isn't a relationship to \(R.self).")
+                guard let target = linkTarget(inverse), ObjectIdentifier(target) == ObjectIdentifier(R.self) else {
+                    throw invalid("\(field.name) reads \(inverse), which isn't a many-to-many relationship to \(R.self).")
                 }
             }
             for old in field.previousNames {
@@ -207,7 +211,7 @@ extension RecordStore {
                     throw invalid("\(other) and \(field.name) are both renamed from \"\(old)\".")
                 }
             }
-            if syncSafe, !isSyncSafe(field.name) {
+            if syncSafe, field.isStored, !isSyncSafe(field.name) {
                 throw invalid("\"\(field.name)\" can't sync. Use letters, digits and underscores, starting with a letter.")
             }
         }
@@ -216,17 +220,30 @@ extension RecordStore {
         }
     }
 
-    /// True when `target` has a `@Reference(to:)` or `@Reference(from:)` property for the relationship at `keyPath`.
-    private static func declaresRelationship(_ target: any Record.Type, _ keyPath: AnyKeyPath) -> Bool {
-        func check<T: Record>(_ type: T.Type) -> Bool {
-            T.cachedSchema.fields.contains { $0.parent == keyPath || $0.inverse == keyPath }
+    /// Whether `pointer` is a `@Reference(from:)` property of `child` that points to `parent`.
+    private static func pointsTo(_ child: any Record.Type, _ pointer: AnyKeyPath, _ parent: any Record.Type) -> Bool {
+        func check<C: Record>(_ type: C.Type) -> Bool {
+            guard let field = C.cachedSchema.field(for: pointer), field.isPointer, let target = field.pointerTarget else { return false }
+            return ObjectIdentifier(target) == ObjectIdentifier(parent)
         }
-        return check(target)
+        return check(child)
     }
 
-    /// The related type of the forward relationship a key path names, or `nil` if it names none.
-    private static func forwardTarget<O: Record>(of owner: O.Type, keyPath: AnyKeyPath) -> (any Record.Type)? {
-        O.cachedSchema.field(for: keyPath).flatMap(relationTarget)
+    /// Whether a property's type is an array of `type`, or with `optional`, an optional one.
+    private static func holds(_ valueType: Any.Type, _ type: any Record.Type, optional: Bool) -> Bool {
+        guard let collection = valueType as? any RecordCollection.Type,
+              ObjectIdentifier(collection.recordType) == ObjectIdentifier(type) else { return false }
+        return optional || collection.isArray
+    }
+
+    /// The type a many-to-many key path, such as `\Recipe.tags`, links to, or nil if it names no such property.
+    private static func linkTarget(_ keyPath: AnyKeyPath) -> (any Record.Type)? {
+        func target<O: Record>(_ type: O.Type) -> (any Record.Type)? {
+            guard case .links(let target)? = O.cachedSchema.field(for: keyPath)?.relationship else { return nil }
+            return target
+        }
+        guard let owner = Swift.type(of: keyPath).rootType as? any Record.Type else { return nil }
+        return target(owner)
     }
 
     /// Letters, digits and underscores, starting with a letter and at most 255 long, which CloudKit
@@ -237,24 +254,10 @@ extension RecordStore {
         return name.unicodeScalars.allSatisfy { isLetter($0) || ("0"..."9").contains($0) || $0 == "_" }
     }
 
-    /// Creates a registered type's table and join tables.
+    /// Creates a registered type's table.
     private func prepareRegistered<R: Record>(_ type: R.Type) throws {
         try ensureTable(R.table)
         try prepare(R.self)
-        for field in R.cachedSchema.fields {
-            guard let target = Self.relationTarget(field) else { continue }
-            _ = try ensureRelation(R.self, field: field, target: target)
-        }
-    }
-
-    /// The related type of a forward relationship property, such as `Note` for `[Note]` or `Person?`.
-    static func relationTarget<R: Record>(_ field: RecordSchema<R>.Field) -> (any Record.Type)? {
-        guard field.inverse == nil, !field.isAsset else { return nil }
-        let valueType = Swift.type(of: field.keyPath).valueType
-        if let collection = valueType as? any RecordCollection.Type {
-            return collection.recordType
-        }
-        return valueType as? any Record.Type
     }
 }
 
@@ -273,20 +276,13 @@ extension RecordStore {
             return nil
         }
         var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
-        for field in R.cachedSchema.fields where field.name != "id" && field.inverse == nil && field.timestamp != .synced {
+        for field in R.cachedSchema.fields where field.name != "id" && field.isStored && field.timestamp != .synced {
             fields[field.name] = nil
-            if Self.relationTarget(field) != nil {
-                let join = R.table + "." + field.name
-                let targets = tableExists(join)
-                    ? try db.run("SELECT target FROM \(quoted(join)) WHERE owner = ? ORDER BY position", [id])
-                        .map { try ValueCoding.decode(UUID.self, from: $0["target"] ?? .null) }
-                    : []
-                fields[field.name] = .ids(targets)
-            } else if field.isAsset {
+            if field.isAsset {
                 if case .text(let name)? = row[field.name] {
                     fields[field.name] = .url(assetURL(named: name))
                 }
-            } else if field.parent != nil {
+            } else if field.isPointer {
                 if let value = row[field.name], value != .null {
                     fields[field.name] = .reference(try ValueCoding.decode(UUID.self, from: value), action: field.action)
                 }
@@ -353,18 +349,14 @@ extension RecordStore {
         let sqlID = try ValueCoding.encode(id)
         var known: Set<String> = ["id"]
         var columns: [(name: String, value: SQLiteValue)] = []
-        var links: [(field: RecordSchema<R>.Field, target: any Record.Type, ids: [SQLiteValue])] = []
         var assets: [String: Asset] = [:]
         do {
             for field in R.cachedSchema.fields where field.name != "id" {
                 known.insert(field.name)
                 known.formUnion(field.previousNames)
-                guard field.inverse == nil, field.timestamp != .synced else { continue }
+                guard field.isStored, field.timestamp != .synced else { continue }
                 let value = fields[field.name] ?? field.previousNames.lazy.compactMap { fields[$0] }.first
-                if let target = Self.relationTarget(field) {
-                    guard case .ids(let ids) = value ?? .ids([]) else { throw RecordsError.incompatibleRecord(type: R.table, id: id) }
-                    links.append((field, target, try ids.map { try ValueCoding.encode($0) }))
-                } else if field.isAsset {
+                if field.isAsset {
                     switch value {
                     case .url(let url)?: assets[field.name] = Asset(storedName: url.lastPathComponent, url: url)
                     case nil: break
@@ -380,9 +372,6 @@ extension RecordStore {
 
         columns += try storeAssets(of: R.self, id: sqlID, assets: assets)
         try writeRow(R.self, id: sqlID, columns: columns)
-        for (field, target, ids) in links {
-            try link(try ensureRelation(R.self, field: field, target: target), ownerID: sqlID, targets: ids)
-        }
         let extra = fields.filter { !known.contains($0.key) }
         if extra.isEmpty {
             try db.run("UPDATE \"_records_meta\" SET extra = NULL WHERE record_table = ? AND record_id = ?", [.text(R.table), sqlID])
@@ -501,11 +490,11 @@ extension RecordStore {
         }
     }
 
-    /// A server's fields with each child reference as a `.reference`, whichever form the provider handed
-    /// back, so it compares equal to the same reference sent from here.
+    /// A server's fields with each pointer as a `.reference`, whichever form the provider handed back, so
+    /// it compares equal to the same reference sent from here.
     private static func normalizingReferences<R: Record>(of type: R.Type, in fields: SyncFields) -> SyncFields {
         var fields = fields
-        for field in R.cachedSchema.fields where field.parent != nil {
+        for field in R.cachedSchema.fields where field.isPointer {
             switch fields[field.name] {
             case .uuid(let id)?: fields[field.name] = .reference(id, action: field.action)
             case .string(let text)?: fields[field.name] = UUID(uuidString: text).map { .reference($0, action: field.action) }

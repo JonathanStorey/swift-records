@@ -7,7 +7,7 @@ struct Draft {
     var id = UUID.ordered()
     var title = ""
     var tags: Set<String> = []
-    var steps: [DraftStep] = []
+    @Reference(to: DraftStep.self) var steps: [DraftStep] = []
     @Asset(fileExtension: "png") var image: Data?
     @Timestamped var modified: Date?
 }
@@ -16,7 +16,7 @@ struct Draft {
 struct DraftStep {
     var id = UUID.ordered()
     var text = ""
-    @Reference(from: \Draft.steps) var drafts: Set<Draft.ID>
+    @Reference(to: \Draft.steps) var drafts: Set<Draft.ID>
 }
 
 @MainActor
