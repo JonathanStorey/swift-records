@@ -253,6 +253,31 @@ final class RecordStore: @unchecked Sendable {
         }
     }
 
+    /// Saves an edit that started from `base`, the record's stored fields when the edit began. A field
+    /// that changed in the store since then, by another save or a sync, keeps that change unless the edit
+    /// changed it too, and then the edit wins as the later one. A record deleted since then stays deleted.
+    /// Without a base the edit is saved whole.
+    func save<R: Record>(_ record: R, base: SyncFields?) throws {
+        guard let base else { return try save(record) }
+        try registerForJournal(R.self)
+        try transaction {
+            let id = try record.sqlID
+            guard let stored = try syncFields(R.self, id: id) else { return }
+            var visited: Set<RowKey> = []
+            try saveRecord(record, visited: &visited)
+            guard stored != base, let ours = try syncFields(R.self, id: id) else { return }
+            let merged = SyncMerge.merge(local: ours, server: stored, base: base, localIsLater: true)
+            if merged != ours {
+                try applySyncFields(R.self, id: record.id, fields: merged)
+            }
+        }
+    }
+
+    /// A stored record's fields, the base an edit starting now merges against, or `nil` if it isn't stored.
+    func storedFields<R: Record>(_ type: R.Type, id: R.ID) throws -> SyncFields? {
+        try locked { try syncFields(R.self, id: try ValueCoding.encode(id)) }
+    }
+
     /// Saves one record and the records its `@Reference(to:)` properties hold. `parent` sets a child's
     /// pointer, for a child saved through its parent's array.
     private func saveRecord<R: Record>(

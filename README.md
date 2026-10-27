@@ -395,6 +395,8 @@ The async `save()` sends. The synchronous `save()` only commits, and its changes
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
 errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
 the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
+`context.unsynced` names those records in the context's zone, `$notes.unsynced` narrows it to a
+`@Records` list, and `$note.isSynced` says whether one `@Recordable` record is saved and confirmed.
 
 Besides pushes, the one sync the context starts on its own is when the app becomes active after being
 away for `resumeSyncInterval`, five minutes by default. It downloads and sends what's already saved,
@@ -499,6 +501,10 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   copy of it can't pull a child back.
 - **Saving an older copy keeps what arrived since.** A fetched array remembers what it held, so saving
   it removes only what was taken out of it, and children and links another device added stay.
+- **An unsaved edit keeps what arrived while you typed.** A context remembers the stored copy each
+  record's first unsaved edit started from. Saving writes only the properties the edit changed, so a
+  property another device changed in the meantime keeps that change, and a property both changed goes
+  to the edit. A record deleted elsewhere in the meantime stays deleted.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.
@@ -609,11 +615,14 @@ struct ContentView: View {
     @Environment(\.recordContext) private var context
 
     var body: some View {
-        List($todos, editActions: .all) { $todo in
-            TextField("Title", text: $todo.title)
+        List {
+            ForEach($todos) { $todo in
+                TextField("Title", text: $todo.title)
+            }
+            .onDelete(perform: $todos.delete(atOffsets:))
         }
         .toolbar {
-            Button("Add") { $todos.wrappedValue.append(ToDo(title: "New")) }   // shows at once
+            Button("Add") { $todos.insert(ToDo(title: "New")) }   // shows at once
             Button("Save") { try? context.save() }
         }
     }
@@ -656,8 +665,10 @@ Unsaved new records still count toward it, so the view never shows more than the
 `@Records("pantry", descriptor)`, to pin it.
 
 `todos` is a plain `[ToDo]`, and `$todos` is a `Binding<Records<ToDo>.Results>`. `Results` is a
-random-access, mutable, range-replaceable collection, so `List($todos, editActions: .delete)` and `ForEach($todos)` work as
-they do on an array's binding. Writes insert, update and delete through the main context, and commit
+random-access, mutable collection, so `ForEach($todos)` binds each row as it does on an array's binding,
+and editing a row updates its record. It has no positions to insert at, since the sort decides the order,
+so records come and go by `$todos.insert(todo)`, `$todos.delete(todo)` and, for `onDelete`,
+`$todos.delete(atOffsets:)`. Writes insert, update and delete through the main context, and commit
 with its next `save()`, or `$todos.save()`. Every view reading the same records shows the change at
 once, before it saves, and so do changes
 made through `@Environment(\.recordContext)`, such as `context.insert(todo)`. A new or edited record
@@ -672,7 +683,10 @@ the page size you chose:
 ```swift
 @Records(RecordDescriptor<ToDo>(sortBy: [SortDescriptor(\.title)], fetchLimit: 20)) var todos: [ToDo]
 
-List($todos, editActions: .delete) { $todo in TextField("Title", text: $todo.title) }
+List {
+    ForEach($todos) { $todo in TextField("Title", text: $todo.title) }
+        .onDelete(perform: $todos.delete(atOffsets:))
+}
     .refreshable { try? await $todos.refresh() }           // saves, picks up other processes, syncs
     .toolbar {
         Button("Previous") { $todos.previousPage() }.disabled(!$todos.hasPreviousPage)

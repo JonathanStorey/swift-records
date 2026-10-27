@@ -8,14 +8,17 @@ import SwiftUI
 /// ```swift
 /// @Records var todos: [ToDo]
 ///
-/// List($todos, editActions: .all) { $todo in
-///     TextField("Title", text: $todo.title)
+/// List {
+///     ForEach($todos) { $todo in
+///         TextField("Title", text: $todo.title)
+///     }
+///     .onDelete(perform: $todos.delete(atOffsets:))
 /// }
 /// ```
 ///
-/// `todos` is a plain array, and `$todos` a `Binding<Records<ToDo>.Results>` that `List` and `ForEach`
-/// edit as they would an array's. Writing to it inserts, updates and deletes records through the
-/// container's `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
+/// `todos` is a plain array, and `$todos` a `Binding<Records<ToDo>.Results>` whose rows `ForEach` binds
+/// as it would an array's. Editing a row updates its record, and `$todos.insert(_:)`, `delete(_:)` and
+/// `delete(atOffsets:)` add and remove records, all through the container's `mainContext`. Records come sorted as `@Query` sorts them, and by ID without a sort:
 ///
 /// ```swift
 /// @Records(sort: \.servings, order: .reverse) var recipes: [Recipe]
@@ -112,10 +115,12 @@ public struct Records<R: Record>: DynamicProperty {
                 MainActor.assumeIsolated {
                     let elements = Self.value(context: context, cache: cache, query: query, zone: choice)
                     let page = cache.key?.page ?? query.page
+                    let unsynced = context.map { $0.unsynced(in: choice.zone(in: $0)) } ?? []
                     return RecordResults(
                         elements, page: page,
                         totalCount: page.isPaged ? cache.totalCount : nil,
-                        hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false, pager: cache
+                        hasChanges: context?.hasPendingChanges(from: ObjectIdentifier(cache)) ?? false,
+                        unsynced: unsynced.isEmpty ? [] : unsynced.intersection(elements.map(\.id)), pager: cache
                     )
                 }
             },
@@ -323,6 +328,8 @@ extension Binding where Value: RecordResultsProtocol {
     public var hasPreviousPage: Bool { wrappedValue.hasPreviousPage }
     /// Whether edits made through this list are still waiting to save.
     public var hasChanges: Bool { wrappedValue.hasChanges }
+    /// The list's records whose saved changes the sync server hasn't confirmed.
+    public var unsynced: Set<UUID> { wrappedValue.unsynced }
 
     /// Shows the next page, if there is one.
     public func nextPage() {
@@ -347,6 +354,25 @@ extension Binding where Value: RecordResultsProtocol {
     /// Saves the context's pending changes.
     public func save() throws {
         try wrappedValue.save()
+    }
+}
+
+/// Adding and removing records through `$todos`, which shows the change at once and commits it with the
+/// context's next save.
+extension Binding {
+    /// Inserts the record, or replaces the one with the same ID. It takes its place in the list's sort.
+    public func insert<R>(_ record: R) where Value == RecordResults<R> {
+        wrappedValue.insert(record)
+    }
+
+    /// Deletes the record, applying its delete rules.
+    public func delete<R>(_ record: R) where Value == RecordResults<R> {
+        wrappedValue.delete(record)
+    }
+
+    /// Deletes the records at these offsets from the list's first row: `.onDelete(perform: $todos.delete(atOffsets:))`.
+    public func delete<R>(atOffsets offsets: IndexSet) where Value == RecordResults<R> {
+        wrappedValue.delete(atOffsets: offsets)
     }
 }
 

@@ -21,8 +21,11 @@ private struct WrapperUses: View {
 
     /// `$todos` edits and pages like an array's binding.
     var body: some View {
-        List($firstOpen, editActions: .delete) { $todo in
-            TextField("Title", text: $todo.title)
+        List {
+            ForEach($firstOpen) { $todo in
+                TextField("Title", text: $todo.title)
+            }
+            .onDelete(perform: $firstOpen.delete(atOffsets:))
         }
         .refreshable { try? await $firstOpen.refresh() }
         .toolbar {
@@ -30,6 +33,9 @@ private struct WrapperUses: View {
             Button("More") { $firstOpen.appendNextPage() }
             Button("First") { $firstOpen.page = 0 }
             Text("\($firstOpen.totalCount) in \($firstOpen.pageCount) pages")
+            Text("\($firstOpen.unsynced.count) waiting to sync")
+            Button("Add") { $todos.insert(ToDo(title: "New")) }
+            ForEach(todos) { todo in Button("Delete \(todo.title)") { $todos.delete(todo) } }
             ForEach($todos) { $todo in Toggle(todo.title, isOn: $todo.done) }
         }
     }
@@ -54,6 +60,7 @@ private struct ToDoDetail: View {
         Button("Rename") { todo.title = "Renamed" }
         Button("Delete") { $todo.delete() }.disabled($todo.isDeleted)
         Button("Save") { try? $todo.save() }.disabled(!$todo.hasChanges)
+        Image(systemName: $todo.isSynced ? "checkmark.icloud" : "icloud.slash")
         ToDoRow(todo: $todo.binding)
     }
 }

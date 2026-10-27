@@ -566,6 +566,23 @@ struct Device {
         #expect(local.mainContext.unsyncedChanges == 0)
     }
 
+    @Test func unsyncedNamesTheRecordsTheServerLacks() async throws {
+        let phone = try Device(server)
+        server.isOnline = false
+        let soup = SyncRecipe(title: "Soup")
+        phone.context.insert(soup)
+        // An unsaved edit isn't waiting on the server yet.
+        #expect(phone.context.unsynced.isEmpty)
+        try await phone.context.save()
+        await phone.settle()
+        #expect(phone.context.unsynced == [soup.id])
+
+        server.isOnline = true
+        try await phone.context.refresh()
+        await phone.settle()
+        #expect(phone.context.unsynced.isEmpty)
+    }
+
     @Test func statusFollowsTheServer() async throws {
         let phone = try Device(server)
         server.isOnline = false
