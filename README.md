@@ -542,24 +542,10 @@ change tag. A change with no tag is a new record. Downloaded asset files are nam
 `downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
 `deletion(of:type:zone:)`.
 
-`CKRecordEncoder` turns a record struct into its `CKRecord` from the struct alone, with no container and
-no sync metadata, so the result is a new record with no change tag. It maps fields by the same table:
-
-```swift
-let record = try CKRecordEncoder().encode(recipe)                     // CloudKit's default zone
-let other = try CKRecordEncoder().encode(recipe, zone: "recipes")       // the CloudKit zone "recipes"
-let update = try CKRecordEncoder().encode(recipe, systemFields: archived) // on top of the server's last copy
-```
-
-Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, and the result
-carries its change tag so it saves as an update. A synced change's `tag` is exactly these. System fields that name another record, type or zone
-throw `RecordsError.mismatchedSystemFields`.
-
-A recipe has no `steps` field: each step encodes separately with its `recipe` reference, which is
-whatever the struct holds and which saving it through its parent sets. `links(of:zone:)` encodes a
-record's many-to-many links as `RecordLink` records. An asset still in memory
-is written to a temporary file for its `CKAsset`. It throws `RecordsError.invalidValue` when a property
-won't encode, and `RecordsError.unsyncedZone` for `.inMemory` or `.localOnly`, which never sync.
+A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and each
+many-to-many link is a `RecordLink` record. Build `CKRecord`s from the container's changes rather than
+from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
+a newer app version added.
 
 ### Syncing through iCloud files
 

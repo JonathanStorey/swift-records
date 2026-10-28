@@ -19,7 +19,7 @@ extension RecordContainer {
         guard let fields = change.fields else { return nil }
         let store = try storage(for: change.zone).store
         let record = try change.tag.map {
-            try CKRecordEncoder.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
+            try Self.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
         } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
         record.fill(fields) { store.assetURL(named: $0) }
         return record
@@ -132,67 +132,10 @@ extension CKRecord {
     }
 }
 
-/// Turns a record into the `CKRecord` it is in CloudKit, from the struct alone: no container, no stored
-/// row and no sync metadata, so the result is a new record with no change tag.
-///
-/// ```swift
-/// let ckRecord = try CKRecordEncoder().encode(recipe)                   // CloudKit's default zone
-/// let pantryRecord = try CKRecordEncoder().encode(item, zone: "pantry") // the CloudKit zone "pantry"
-/// ```
-///
-/// Fields map as they do when the container syncs. Every stored property is a field of the same name, and
-/// the record holds only its own values. A `@Reference(from:)` pointer is a `CKRecord.Reference` with its
-/// action, and the first with `.deleteSelf` is also the record's `parent`. A `@Reference(to:)` array isn't
-/// a field: each child is its own `CKRecord` holding its pointer, so encode it separately, and each pair in
-/// a many-to-many is a `RecordLink` record, which `links(of:zone:)` encodes. Lists of strings, numbers and
-/// dates are CloudKit lists, an asset is a `CKAsset`, and any other `Codable` value is its JSON as `Data`.
-/// `@Timestamped(.synced)` isn't stored.
-public struct CKRecordEncoder {
-    public init() {}
-
-    /// `zone` is the zone the record goes in. `.default` is CloudKit's default zone, and any other zone is
-    /// the CloudKit zone of the same name.
-    ///
-    /// Pass the server's last copy as `systemFields`, archived with `encodeSystemFields(with:)`, so the record
-    /// carries its change tag and saves as an update. Without them it's a new record.
-    ///
-    /// Throws `RecordsError.unsyncedZone` when `zone` is `.inMemory` or `.localOnly`, which never sync,
-    /// `RecordsError.mismatchedSystemFields` when the system fields name another record, type or zone, and
-    /// `RecordsError.invalidValue` when a property doesn't encode, such as a custom `encode(to:)` that throws.
-    public func encode<R: Record>(_ record: R, zone: Zone = .default, systemFields: Data? = nil) throws -> CKRecord {
-        guard zone.canSync else { throw RecordsError.unsyncedZone(zone) }
-        let zoneID = zone == .default ? CKRecordZone.default().zoneID : CKRecordZone.ID(zoneName: zone.name, ownerName: CKCurrentUserDefaultName)
-        let (values, files) = try RecordStore.recordValues(of: record)
-        let ckRecord: CKRecord
-        if let systemFields {
-            ckRecord = try Self.record(fromSystemFields: systemFields, type: R.table, id: record.id, zoneID: zoneID)
-        } else {
-            ckRecord = CKRecord(recordType: R.table, recordID: RecordContainer.recordID(for: record.id, in: zoneID))
-        }
-        ckRecord.fill(values) { files[$0] }
-        return ckRecord
-    }
-
-    /// The `RecordLink` records for each pair a record's many-to-many arrays hold, as new records. A link's
-    /// name is hashed from the relationship and both ends, so it matches the one the container syncs.
-    public func links<R: Record>(of record: R, zone: Zone = .default) throws -> [CKRecord] {
-        let encoded = try RecordEncoder.encode(record)
-        let now = Date()
-        var links: [CKRecord] = []
-        for relation in encoded.relations {
-            guard let field = R.cachedSchema.field(named: relation.name), case .links? = field.relationship else { continue }
-            let name = RecordStore.relationNames(R.self, field: field)[0]
-            for (index, target) in relation.targets.enumerated() {
-                let link = _RecordLink(relation: name, from: record.id, to: target.id, created: now.addingTimeInterval(Double(index) / 1000))
-                links.append(try encode(link, zone: zone))
-            }
-        }
-        return links
-    }
-
+extension RecordContainer {
     /// The server's last copy, rebuilt from its archived system fields, if they belong to this record. The
     /// zone's owner isn't compared, since a shared zone's records name their real owner.
-    static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
+    private static func record(fromSystemFields data: Data, type: String, id: UUID, zoneID: CKRecordZone.ID) throws -> CKRecord {
         let mismatch = RecordsError.mismatchedSystemFields(type: type, id: id)
         guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { throw mismatch }
         coder.requiresSecureCoding = true

@@ -73,45 +73,6 @@ import Testing
         #expect(back.fields == change.fields)
     }
 
-    @Test func structsMapAsStoredRecordsDo() async throws {
-        let phone = try Device(server)
-        var recipe = SyncRecipe(
-            title: "Soup", servings: 4, tags: ["winter", "hot"], updated: Date(timeIntervalSince1970: 1_000.123),
-            steps: [SyncStep(text: "Chop"), SyncStep(text: "Simmer")], cooks: [SyncCook(name: "Ana")]
-        )
-        recipe.photo = Data([1, 2, 3])
-        let plain = try RecordStore.recordValues(of: recipe)
-
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        let stored = try #require(server.record("SyncRecipe", recipe.id)?.fields)
-        // The asset is a file in each case, just not the same file.
-        #expect(plain.values.filter { $0.key != "photo" } == stored.filter { $0.key != "photo" })
-        guard case .asset(let id)? = plain.values["photo"], let file = plain.files[id] else {
-            Issue.record("The photo isn't an asset")
-            return
-        }
-        #expect(try Data(contentsOf: file) == Data([1, 2, 3]))
-
-        // A step holds its parent once saved through it, and then maps as the stored step does.
-        var step = recipe.steps[0]
-        step.recipe = recipe.id
-        #expect(try RecordStore.recordValues(of: step).values == server.record("SyncStep", step.id)?.fields)
-    }
-
-    @Test func aStructNeverSavedMapsFromItsValuesAlone() throws {
-        let recipe = SyncRecipe(title: "Toast")
-        #expect(try RecordStore.recordValues(of: recipe).values == [
-            "title": .string("Toast"), "servings": .int(1), "summary": .string(""), "tags": .strings([]),
-        ])
-        // A child that isn't linked yet has no reference.
-        #expect(try RecordStore.recordValues(of: SyncStep(text: "Chop")).values == ["text": .string("Chop")])
-    }
-
-    @Test func aPropertyThatWontEncodeThrows() {
-        #expect(throws: RecordsError.self) { try RecordStore.recordValues(of: Unencodable()) }
-    }
-
     @Test func valuesEncodeAsSingleKeyObjects() throws {
         let id = UUID()
         let values: [String: RecordValue] = [
@@ -121,19 +82,6 @@ import Testing
         #expect(json == #"{"a":{"string":"Soup"},"b":{"int":4},"c":{"action":"deleteSelf","reference":"\#(id)"},"d":{"reference":"\#(id)"}}"#)
         #expect(try WireJSON.decoder.decode([String: RecordValue].self, from: Data(json.utf8)) == values)
     }
-}
-
-/// A value whose `encode(to:)` always fails.
-struct Refusing: Codable, Sendable {
-    func encode(to encoder: Encoder) throws {
-        throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Refused"))
-    }
-}
-
-@Record
-struct Unencodable {
-    var id = UUID()
-    var value = Refusing()
 }
 
 #if canImport(CloudKit)
@@ -193,83 +141,36 @@ import CloudKit
         #expect(throws: RecordsError.self) { try phone.container.ckRecord(for: change, in: zoneID) }
     }
 
-    @Test func structsEncodeWithoutAContainer() throws {
-        var recipe = SyncRecipe(title: "Soup", servings: 4, tags: ["winter"], steps: [SyncStep(text: "Chop")])
-        recipe.photo = Data([1, 2, 3])
-        let custom = CKRecordZone.ID(zoneName: "recipes", ownerName: CKCurrentUserDefaultName)
-
-        let record = try CKRecordEncoder().encode(recipe, zone: "recipes")
-        #expect(record.recordID == CKRecord.ID(recordName: recipe.id.uuidString, zoneID: custom))
-        #expect(record.recordType == "SyncRecipe")
-        #expect(record.recordChangeTag == nil)
-        #expect(record["title"] as? String == "Soup")
-        #expect(record["servings"] as? Int64 == 4)
-        #expect(record["tags"] as? [String] == ["winter"])
-        #expect(record["steps"] == nil)
-        let asset = try #require(record["photo"] as? CKAsset)
-        let file = try #require(asset.fileURL)
-        #expect(try Data(contentsOf: file) == Data([1, 2, 3]))
-        #expect(record["cook"] == nil)
-
-        var step = recipe.steps[0]
-        step.recipe = recipe.id
-        let reference = try #require(try CKRecordEncoder().encode(step)["recipe"] as? CKRecord.Reference)
-        #expect(reference.recordID.recordName == recipe.id.uuidString)
-        #expect(reference.recordID.zoneID == CKRecordZone.default().zoneID)
-        #expect(reference.action == .deleteSelf)
-    }
-
-    @Test func linksEncodeAsRecordsOfTheirOwn() throws {
-        let recipe = SyncRecipe(title: "Soup", cooks: [SyncCook(name: "Ana"), SyncCook(name: "Ben")])
-        let links = try CKRecordEncoder().links(of: recipe)
-        #expect(links.map(\.recordType) == ["RecordLink", "RecordLink"])
-        #expect(try CKRecordEncoder().encode(recipe)["cooks"] == nil)
-
-        let first = links[0]
-        let linkID = _RecordLink.id(relation: "SyncRecipe.cooks", from: recipe.id, to: recipe.cooks[0].id)
-        #expect(first.recordID.recordName == linkID.uuidString)
-        #expect(first["relation"] as? String == "SyncRecipe.cooks")
-        #expect((first["from"] as? CKRecord.Reference)?.recordID.recordName == recipe.id.uuidString)
-        #expect((first["to"] as? CKRecord.Reference)?.recordID.recordName == recipe.cooks[0].id.uuidString)
-        #expect((first["to"] as? CKRecord.Reference)?.action == .deleteSelf)
-        // Made in one call, the links keep the array's order by their creation dates.
-        let created = links.compactMap { $0["created"] as? Date }
-        #expect(created.count == 2 && created[0] < created[1])
-    }
-
     @Test func systemFieldsMakeAnUpdate() throws {
-        var recipe = SyncRecipe(title: "Soup")
-        let home = CKRecordZone.default().zoneID
-        let server = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: home))
-        server["title"] = "Soup"
-        server["summary"] = "Gone"
-        let archived = Self.systemFields(of: server)
+        let phone = try Device(server)
+        let id = UUID()
+        let copy = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+        copy["title"] = "Soup"
+        copy["summary"] = "Gone"
+        let change = RecordChangeData(id: id, zone: .default, type: "SyncRecipe", fields: ["title": .string("Stew")], tag: Self.systemFields(of: copy))
 
-        recipe.title = "Stew"
-        let record = try CKRecordEncoder().encode(recipe, systemFields: archived)
-        #expect(record.recordID == server.recordID)
+        let record = try #require(try phone.container.ckRecord(for: change, in: zoneID))
+        #expect(record.recordID == copy.recordID)
         #expect(record["title"] as? String == "Stew")
         // System fields carry no values, so nothing of the server's copy survives but its identity.
-        #expect(record["summary"] as? String == "")
-        #expect(try CKRecordEncoder().encode(recipe, systemFields: nil).recordID == server.recordID)
+        #expect(record["summary"] == nil)
     }
 
-    @Test func systemFieldsForAnotherRecordThrow() {
-        let recipe = SyncRecipe(title: "Soup")
-        let home = CKRecordZone.default().zoneID
-        let other = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: UUID().uuidString, zoneID: home))
-        let wrongType = CKRecord(recordType: "SyncStep", recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: home))
+    @Test func systemFieldsForAnotherRecordThrow() throws {
+        let phone = try Device(server)
+        let id = UUID()
+        let other = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID))
+        let wrongType = CKRecord(recordType: "SyncStep", recordID: CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
         let wrongZone = CKRecord(
             recordType: "SyncRecipe",
-            recordID: CKRecord.ID(recordName: recipe.id.uuidString, zoneID: CKRecordZone.ID(zoneName: "elsewhere", ownerName: CKCurrentUserDefaultName))
+            recordID: CKRecord.ID(recordName: id.uuidString, zoneID: CKRecordZone.ID(zoneName: "elsewhere", ownerName: CKCurrentUserDefaultName))
         )
-        for server in [other, wrongType, wrongZone] {
-            #expect(throws: RecordsError.mismatchedSystemFields(type: "SyncRecipe", id: recipe.id)) {
-                try CKRecordEncoder().encode(recipe, systemFields: Self.systemFields(of: server))
+        let tags = [other, wrongType, wrongZone].map { Self.systemFields(of: $0) } + [Data("not an archive".utf8)]
+        for tag in tags {
+            let change = RecordChangeData(id: id, zone: .default, type: "SyncRecipe", fields: [:], tag: tag)
+            #expect(throws: RecordsError.mismatchedSystemFields(type: "SyncRecipe", id: id)) {
+                try phone.container.ckRecord(for: change, in: zoneID)
             }
-        }
-        #expect(throws: RecordsError.mismatchedSystemFields(type: "SyncRecipe", id: recipe.id)) {
-            try CKRecordEncoder().encode(recipe, systemFields: Data("not an archive".utf8))
         }
     }
 
@@ -278,12 +179,6 @@ import CloudKit
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()
         return coder.encodedData
-    }
-
-    @Test func zonesThatNeverSyncThrow() {
-        for zone in [Zone.inMemory, .localOnly] {
-            #expect(throws: RecordsError.unsyncedZone(zone)) { try CKRecordEncoder().encode(SyncRecipe(title: "Soup"), zone: zone) }
-        }
     }
 }
 #endif
