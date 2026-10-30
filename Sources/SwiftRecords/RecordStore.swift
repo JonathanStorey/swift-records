@@ -266,7 +266,7 @@ final class RecordStore: @unchecked Sendable {
             var visited: Set<RowKey> = []
             try saveRecord(record, visited: &visited)
             guard stored != base, let ours = try syncFields(R.self, id: id) else { return }
-            let merged = SyncMerge.merge(local: ours, server: stored, base: base, localIsLater: true)
+            let merged = mergeFields(R.self, local: ours, server: stored, base: base, localIsLater: true)
             if merged != ours {
                 try applySyncFields(R.self, id: record.id, fields: merged)
             }

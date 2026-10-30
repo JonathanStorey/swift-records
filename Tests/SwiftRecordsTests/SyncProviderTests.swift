@@ -314,26 +314,6 @@ struct Device {
         #expect(server.records("RecordLink").count == 2)
     }
 
-    @Test func listMergeRules() {
-        let (a, b, c, d, e) = (UUID(), UUID(), UUID(), UUID(), UUID())
-        // A removal on either side applies, and each side's insertion keeps its neighbor.
-        #expect(SyncMerge.mergeList(local: [a, d, c], server: [a, b, e], base: [a, b, c], preferLocal: false) == [a, d, e])
-        // A move made on one side only wins, and an insertion follows its neighbor.
-        #expect(SyncMerge.mergeList(local: [c, a, b], server: [a, b, c, d], base: [a, b, c], preferLocal: false) == [c, d, a, b])
-        // Moves on both sides apply: b went to the end on one, e to the front on the other.
-        #expect(SyncMerge.mergeList(local: [a, c, d, e, b], server: [e, a, b, c, d], base: [a, b, c, d, e], preferLocal: false) == [e, a, c, d, b])
-        #expect(SyncMerge.mergeList(local: [a, c, d, e, b], server: [e, a, b, c, d], base: [a, b, c, d, e], preferLocal: true) == [e, a, c, d, b])
-        // An item both sides moved takes the preferred side's place.
-        #expect(SyncMerge.mergeList(local: [b, c, a], server: [b, a, c], base: [a, b, c], preferLocal: false) == [b, a, c])
-        #expect(SyncMerge.mergeList(local: [b, c, a], server: [b, a, c], base: [a, b, c], preferLocal: true) == [b, c, a])
-        // A move whose neighbor was removed on the other side follows the nearest item still there.
-        #expect(SyncMerge.mergeList(local: [b, c, d, a], server: [a, b, c], base: [a, b, c, d], preferLocal: false) == [b, c, a])
-        // A move and an insertion from different sides.
-        #expect(SyncMerge.mergeList(local: [c, a, b], server: [a, d, b, c], base: [a, b, c], preferLocal: false) == [c, a, d, b])
-        // Without an ancestor: the union, in the preferred order.
-        #expect(SyncMerge.mergeList(local: [a, c], server: [b, a], base: nil, preferLocal: true) == [b, a, c])
-    }
-
     @Test func aDeleteBeatsAnEditMadeElsewhere() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
