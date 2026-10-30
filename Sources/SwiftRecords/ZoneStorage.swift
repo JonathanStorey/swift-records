@@ -103,6 +103,10 @@ extension ZoneStorage {
         try store.storedFields(type, id: id)
     }
 
+    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields)? {
+        try store.rebase(edit, base: base)
+    }
+
     package func delete<R: Record>(_ record: R) throws {
         try store.delete(record)
     }

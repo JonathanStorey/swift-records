@@ -36,6 +36,45 @@ extension RecordStore {
         }
     }
 
+    /// Brings an unsaved edit up to date with the stored record when a save or a sync elsewhere changed it
+    /// after the edit started from `base`. A field only the store changed takes the stored value, and one
+    /// both changed merges favoring the edit, as the save would. The returned base is what's stored now,
+    /// so the save merges only what changes after this, and `@Merged(.sum)` doesn't count a change twice.
+    /// Pointers, assets and timestamps keep the old base and merge at save, as before. Returns `nil` when
+    /// nothing changed since `base` or the record is no longer stored.
+    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields)? {
+        guard let stored = try storedFields(R.self, id: edit.id), stored != base else { return nil }
+        let fields = R.cachedSchema.fields.filter {
+            $0.name != "id" && $0.isStored && $0.timestamp == nil && !$0.isPointer && !$0.isAsset
+        }
+        let ours = try syncFields(of: edit)
+        var local = base
+        var newBase = base
+        for field in fields {
+            local[field.name] = ours[field.name]
+            newBase[field.name] = stored[field.name]
+        }
+        let merged = mergeFields(R.self, local: local, server: stored, base: base, localIsLater: true)
+        let changed = fields.filter { merged[$0.name] != ours[$0.name] }
+        guard !changed.isEmpty else { return (edit, newBase) }
+        let source = try record(R.self, from: merged)
+        var rebased = edit
+        for field in changed {
+            guard Self.copy(field.keyPath, from: source, into: &rebased) else { return nil }
+        }
+        return (rebased, newBase)
+    }
+
+    /// Copies one property's value, or returns `false` when the property can't be set.
+    private static func copy<R>(_ keyPath: PartialKeyPath<R>, from source: R, into target: inout R) -> Bool {
+        func set<Value>(_ value: Value) -> Bool {
+            guard let writable = keyPath as? WritableKeyPath<R, Value> else { return false }
+            target[keyPath: writable] = value
+            return true
+        }
+        return _openExistential(source[keyPath: keyPath], do: set)
+    }
+
     /// Merges with the type's own merge when it's `Mergeable`, and otherwise, or when that throws, node by
     /// node with every clash going to the favored side.
     private static func merge<R: Record>(_ ours: R, _ theirs: R, base: R?, favoringOurs: Bool) -> R {
