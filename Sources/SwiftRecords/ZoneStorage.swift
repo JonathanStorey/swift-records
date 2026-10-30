@@ -103,7 +103,7 @@ extension ZoneStorage {
         try store.storedFields(type, id: id)
     }
 
-    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields)? {
+    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
         try store.rebase(edit, base: base)
     }
 

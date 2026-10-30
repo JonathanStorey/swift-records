@@ -40,9 +40,10 @@ extension RecordStore {
     /// after the edit started from `base`. A field only the store changed takes the stored value, and one
     /// both changed merges favoring the edit, as the save would. The returned base is what's stored now,
     /// so the save merges only what changes after this, and `@Merged(.sum)` doesn't count a change twice.
-    /// Pointers, assets and timestamps keep the old base and merge at save, as before. Returns `nil` when
-    /// nothing changed since `base` or the record is no longer stored.
-    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields)? {
+    /// Pointers, assets and timestamps keep the old base and merge at save, as before. `clashes` names the
+    /// fields where the edit's value won over the stored one. Returns `nil` when nothing changed since
+    /// `base` or the record is no longer stored.
+    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
         guard let stored = try storedFields(R.self, id: edit.id), stored != base else { return nil }
         let fields = R.cachedSchema.fields.filter {
             $0.name != "id" && $0.isStored && $0.timestamp == nil && !$0.isPointer && !$0.isAsset
@@ -55,18 +56,28 @@ extension RecordStore {
             newBase[field.name] = stored[field.name]
         }
         let merged = mergeFields(R.self, local: local, server: stored, base: base, localIsLater: true)
+        // A field clashed when the merge had to pick a side: favoring the stored copy instead ends
+        // differently. A strategy such as `.sum` that combines both sides ends the same either way.
+        let bothChanged = fields.filter {
+            local[$0.name] != base[$0.name] && stored[$0.name] != base[$0.name] && local[$0.name] != stored[$0.name]
+        }
+        var clashes: Set<String> = []
+        if !bothChanged.isEmpty {
+            let theirs = mergeFields(R.self, local: local, server: stored, base: base, localIsLater: false)
+            clashes = Set(bothChanged.filter { merged[$0.name] != theirs[$0.name] }.map(\.name))
+        }
         let changed = fields.filter { merged[$0.name] != ours[$0.name] }
-        guard !changed.isEmpty else { return (edit, newBase) }
+        guard !changed.isEmpty else { return (edit, newBase, clashes) }
         let source = try record(R.self, from: merged)
         var rebased = edit
         for field in changed {
             guard Self.copy(field.keyPath, from: source, into: &rebased) else { return nil }
         }
-        return (rebased, newBase)
+        return (rebased, newBase, clashes)
     }
 
     /// Copies one property's value, or returns `false` when the property can't be set.
-    private static func copy<R>(_ keyPath: PartialKeyPath<R>, from source: R, into target: inout R) -> Bool {
+    static func copy<R>(_ keyPath: PartialKeyPath<R>, from source: R, into target: inout R) -> Bool {
         func set<Value>(_ value: Value) -> Bool {
             guard let writable = keyPath as? WritableKeyPath<R, Value> else { return false }
             target[keyPath: writable] = value

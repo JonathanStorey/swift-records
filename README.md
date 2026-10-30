@@ -549,8 +549,26 @@ a record whose copies don't decode merges property by property.
 
 The same merge runs while you edit. A change that arrives for a record with an unsaved edit merges into
 the edit, favoring it, so what's on screen stays current and the save that follows doesn't count a
-`@Merged(.sum)` change twice. Edit through `@Recordable`, or the copy the context hands back, rather than
-a copy kept in `@State`, which never sees what arrived.
+`@Merged(.sum)` change twice. Edit through `@Recordable` or `@Records`, whose bindings read the merged
+copy, rather than a copy kept in `@State`, which never sees what arrived.
+
+When the change that arrives clashes with the edit, both having changed a field to different values, the
+edit keeps its value and the record has a conflict until the edit saves. An editor can offer the choice:
+
+```swift
+if let other = $contact.conflict {
+    Text("Changed on another device: \(other.name)")
+    Button("Use theirs") { $contact.resolve(favoring: .theirs) }
+    Button("Keep mine") { $contact.resolve(favoring: .ours) }
+}
+TextField("Name", text: $contact.name)
+    .foregroundStyle($contact.conflict(at: \.name) ? .orange : .primary)
+```
+
+`conflict` is the record as stored, the version that arrived. `.theirs` takes its values at the fields
+that clashed and keeps the rest of the edit. Saving without choosing keeps the edit. For a row of
+`@Records`, `context.conflict(Contact.self, for: id)` and `context.resolveConflict(_:for:favoring:)` do
+the same. A clash at sync, with no edit open, is settled by the rules above and isn't reported.
 
 ### CloudKit records
 
