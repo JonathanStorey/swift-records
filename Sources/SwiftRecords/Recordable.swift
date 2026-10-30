@@ -112,6 +112,39 @@ public struct Recordable<R: Record>: DynamicProperty {
             && !context.unsynced(in: zone.zone(in: context)).contains(tracker.value.id)
     }
 
+    /// The record as stored, when a change from elsewhere clashed with this record's unsaved edit: a sync
+    /// or another view changed a field the edit had also changed, and the edit kept its value. `nil` when
+    /// there's no conflict, and once the edit saves, rolls back, or is resolved.
+    ///
+    /// ```swift
+    /// if let other = $note.conflict {
+    ///     Text("Changed on another device: \(other.title)")
+    ///     Button("Use theirs") { $note.resolve(favoring: .theirs) }
+    ///     Button("Keep mine") { $note.resolve(favoring: .ours) }
+    /// }
+    /// ```
+    public var conflict: R? {
+        guard let context else { return nil }
+        _ = value
+        return context.conflict(R.self, for: cache.tracker.value.id, in: zone.zone(in: context))
+    }
+
+    /// Whether the unsaved edit clashed with a change from elsewhere at this property, such as to mark the
+    /// field: `$note.conflict(at: \.title)`.
+    public func conflict(at keyPath: PartialKeyPath<R>) -> Bool {
+        guard let context else { return false }
+        _ = value
+        return context.conflict(R.self, for: cache.tracker.value.id, at: keyPath, in: zone.zone(in: context))
+    }
+
+    /// Settles the conflict: `.ours` keeps the edit's values, and `.theirs` takes the other version's at
+    /// the fields that clashed. The edit stays unsaved until the context saves.
+    public func resolve(favoring side: MergeSide) {
+        guard let context else { return }
+        context.resolveConflict(R.self, for: cache.tracker.value.id, favoring: side, in: zone.zone(in: context))
+        withAnimation(animation) { cache.version += 1 }
+    }
+
     /// Deletes the record when the context saves, applying its delete rules.
     public func delete() {
         guard let context else { return }
