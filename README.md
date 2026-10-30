@@ -485,12 +485,11 @@ an account.
 
 Children, many-to-many arrays and their read-only other sides aren't sent. The container owns the rules:
 
-- **Conflicts merge.** When the server's copy and an unsent local edit meet, a property only one side
-  changed keeps that change, using a snapshot of the record as last synced. Every child and every link
-  is its own record, so steps added on two devices both survive, and so do links. Only a property both sides changed goes to
-  the latest edit, by the copies' `@Timestamped(.modified)` dates, which each device stamps as it saves. A
-  type without one has no edit dates to compare, so the server's copy wins, the same answer on every
-  device.
+- **Conflicts merge.** When the server's copy and an unsent local edit meet, whatever only one side
+  changed keeps that change, down to a single field of a nested struct, using a snapshot of the record as
+  last synced. Every child and every link is its own record, so steps added on two devices both survive,
+  and so do links. Only a value both sides changed differently goes to the latest edit. [Merging](#merging)
+  has the details.
 - **A delete beats an edit made elsewhere**, whichever side made it. A `.deleteSelf` child added on
   one device while its parent was deleted on another goes too, and an older copy saved after a delete
   doesn't bring back the record, its children or its links.
@@ -502,9 +501,8 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
 - **Saving an older copy keeps what arrived since.** A fetched array remembers what it held, so saving
   it removes only what was taken out of it, and children and links another device added stay.
 - **An unsaved edit keeps what arrived while you typed.** A context remembers the stored copy each
-  record's first unsaved edit started from. Saving writes only the properties the edit changed, so a
-  property another device changed in the meantime keeps that change, and a property both changed goes
-  to the edit. A record deleted elsewhere in the meantime stays deleted.
+  record's first unsaved edit started from. Saving merges the edit with what's stored now, so a value
+  another device changed in the meantime keeps that change, and a value both changed goes to the edit. A record deleted elsewhere in the meantime stays deleted.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.
@@ -513,6 +511,39 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   its own, so one person's records never reach another's server data. Records made before any sign-in
   upload with the first account. When the server loses its copy, the device keeps its records and
   uploads them all again. An app that wants records gone at sign-out calls `deleteAllData(in:)`.
+
+### Merging
+
+Records merge with no setup. Each property merges against the copy both sides started from, using
+[swift-merging](https://github.com/JonathanStorey/swift-merging), which `import SwiftRecords` brings in:
+
+- A value only one side changed keeps that change. A nested struct merges property by property, an
+  array element by element, a `Set` by what each side added and removed, and a `Dictionary` key by key.
+- A value both sides changed differently goes to the later edit, and the rest of the record still merges.
+  At a sync, the later edit is the copy with the later `@Timestamped(.modified)` date. A type without one
+  has no edit dates to compare, so the server's copy wins. At a save, the edit being saved wins.
+
+A `@Timestamped(.modified)` property is what lets an offline edit win a clash it made last, so it's worth
+adding to any record that syncs:
+
+```swift
+@Record
+struct Contact {
+    var id = UUID()
+    var name = ""
+    var address = Address()                       // street and city merge separately
+    var tags: Set<String> = []                    // additions and removals from both devices apply
+    @Merged(.sum) var visits = 0                  // both devices' increments count
+    @Merged(.keep(.theirs)) var cachedTotal = 0   // always the other side's when both changed it
+    @Timestamped(.modified) var modified: Date?   // breaks ties: the later edit wins
+}
+```
+
+`@Merged` picks how one property merges when both sides changed it, from the strategies swift-merging
+provides or one of your own. A record that conforms to `Mergeable` and writes `merging(with:from:)`
+merges itself, with the whole record in view. If it throws, the usual merge decides, so a save or sync
+never stops. Pointers, assets and fields this version of the app doesn't know merge as whole values, and
+a record whose copies don't decode merges property by property.
 
 ### CloudKit records
 

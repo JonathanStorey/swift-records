@@ -1,6 +1,15 @@
 {
-  "originHash" : "d4a5274dad49bfd72b994c15f7bbfc1e99f6983dd22266dd0965d2eac76a608d",
+  "originHash" : "fdddd6dfccf93efd6f1c6cf6044a52805f95ac3040e4e9301ea9be2d1b158190",
   "pins" : [
+    {
+      "identity" : "swift-merging",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JonathanStorey/swift-merging.git",
+      "state" : {
+        "revision" : "5967dc3e6ea2df779190e2ca8646879bee6a2441",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "swift-syntax",
       "kind" : "remoteSourceControl",

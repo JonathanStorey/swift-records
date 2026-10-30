@@ -636,8 +636,8 @@ extension RecordStore {
             }
             let local = try syncFields(table: table, id: id) ?? [:]
             let localIsLater = Self.isLocalLater(type, local: local, server: server)
-            let merged = SyncMerge.merge(
-                local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), localIsLater: localIsLater
+            let merged = mergeFields(
+                type, local: local, server: server, base: SyncFields.decoded(sync?["snapshot"]), localIsLater: localIsLater
             )
             // The server's copy is the ancestor of whatever is sent next.
             try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
