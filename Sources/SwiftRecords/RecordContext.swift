@@ -394,6 +394,11 @@ public final class RecordContext {
         enqueueSave(record, in: zone, source: source)
     }
 
+    /// Inserts an edit made away from the context, such as a draft's, that began from `base`.
+    func insert<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier?, base: SyncFields?) {
+        enqueueSave(record, in: zone, source: source, startingFrom: .some(base))
+    }
+
     public func delete<R: Record>(_ record: R) {
         delete(record, in: zone)
     }
@@ -914,11 +919,15 @@ public final class RecordContext {
     /// started from, and later edits keep that base until the save, so the save merges three-way: fields
     /// another save or a sync changed in the meantime keep their change unless the edit changed them too.
     /// A record not yet stored has no base, and saves whole.
-    private func enqueueSave<R: Record>(_ record: R, in zone: Zone, source: ObjectIdentifier?) {
+    private func enqueueSave<R: Record>(
+        _ record: R, in zone: Zone, source: ObjectIdentifier?, startingFrom given: SyncFields?? = nil
+    ) {
         let key = Self.key(record, in: zone)
         let base: SyncFields?
         let earlierClashes = pending[key]?.clashes
-        if let earlier = pending[key] ?? inFlight[key] {
+        if let given {
+            base = given
+        } else if let earlier = pending[key] ?? inFlight[key] {
             // A later edit, even one made while the earlier edit saves, started from the same copy.
             base = earlier.base
         } else {

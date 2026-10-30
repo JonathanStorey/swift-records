@@ -23,6 +23,10 @@ import SwiftUI
 /// A record the store hasn't seen, such as `@Recordable var todo = ToDo()` in a form for a new one, is new
 /// until its first edit inserts it, and `$todo.startNew()` starts another.
 ///
+/// `@Recordable(.draft) var todo: ToDo` holds edits in the wrapper instead, for a form with Save and Cancel:
+/// `$todo.save()` commits them and `$todo.rollback()` drops them. Changes from elsewhere still merge into
+/// the fields the draft left alone.
+///
 /// It follows the context's `zone`. To pin one, initialize the wrapper in the view's initializer:
 /// `_todo = Recordable(wrappedValue: todo, "pantry")`. Once the record is deleted, `todo` keeps its last
 /// value, `$todo.isDeleted` turns true, and edits are ignored, so a late keystroke can't bring it back.
@@ -42,12 +46,20 @@ public struct Recordable<R: Record>: DynamicProperty {
     /// Tracks the record, in the context's zone unless you pass one. Changes animate with the default
     /// animation unless you pass another, or `nil` for none.
     public init(wrappedValue: @autoclosure @escaping @MainActor () -> R, _ zone: Zone? = nil, animation: Animation? = .default) {
+        self.init(wrappedValue: wrappedValue(), .live, zone, animation: animation)
+    }
+
+    /// Tracks the record, holding edits as a draft until `save()` with `.draft`: `@Recordable(.draft)`.
+    public init(
+        wrappedValue: @autoclosure @escaping @MainActor () -> R, _ editing: RecordEditing, _ zone: Zone? = nil,
+        animation: Animation? = .default
+    ) {
         let initial = wrappedValue()
         self.initial = initial
         makeInitial = wrappedValue
         self.zone = ZoneChoice(zone)
         self.animation = animation
-        _cache = State(initialValue: Cache(initial))
+        _cache = State(initialValue: Cache(initial, editing: editing))
     }
 
     /// The record as the context holds it, with unsaved edits. Setting it writes through the context.
@@ -126,7 +138,7 @@ public struct Recordable<R: Record>: DynamicProperty {
     public var conflict: R? {
         guard let context else { return nil }
         _ = value
-        return context.conflict(R.self, for: cache.tracker.value.id, in: zone.zone(in: context))
+        return cache.tracker.conflict(context: context, zone: zone.zone(in: context))
     }
 
     /// Whether the unsaved edit clashed with a change from elsewhere at this property, such as to mark the
@@ -134,14 +146,14 @@ public struct Recordable<R: Record>: DynamicProperty {
     public func conflict(at keyPath: PartialKeyPath<R>) -> Bool {
         guard let context else { return false }
         _ = value
-        return context.conflict(R.self, for: cache.tracker.value.id, at: keyPath, in: zone.zone(in: context))
+        return cache.tracker.conflict(at: keyPath, context: context, zone: zone.zone(in: context))
     }
 
     /// Settles the conflict: `.ours` keeps the edit's values, and `.theirs` takes the other version's at
     /// the fields that clashed. The edit stays unsaved until the context saves.
     public func resolve(favoring side: MergeSide) {
         guard let context else { return }
-        context.resolveConflict(R.self, for: cache.tracker.value.id, favoring: side, in: zone.zone(in: context))
+        cache.tracker.resolve(favoring: side, context: context, zone: zone.zone(in: context))
         withAnimation(animation) { cache.version += 1 }
     }
 
@@ -167,9 +179,11 @@ public struct Recordable<R: Record>: DynamicProperty {
         withAnimation(animation) { cache.version += 1 }
     }
 
-    /// Saves the context's pending changes.
+    /// Saves the context's pending changes, including this wrapper's draft.
     public func save() throws {
-        try context?.save()
+        guard let context else { return }
+        cache.tracker.commit(context: context, zone: zone.zone(in: context))
+        try context.save()
     }
 
     private var context: RecordContext? { mainContext(of: container) }
@@ -203,8 +217,8 @@ public struct Recordable<R: Record>: DynamicProperty {
         @ObservationIgnored let tracker: RecordTracker<R>
         @ObservationIgnored var animation: Animation?
 
-        init(_ record: R) {
-            tracker = RecordTracker(record)
+        init(_ record: R, editing: RecordEditing) {
+            tracker = RecordTracker(record, editing: editing)
         }
     }
 }

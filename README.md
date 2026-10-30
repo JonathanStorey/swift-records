@@ -550,7 +550,8 @@ a record whose copies don't decode merges property by property.
 The same merge runs while you edit. A change that arrives for a record with an unsaved edit merges into
 the edit, favoring it, so what's on screen stays current and the save that follows doesn't count a
 `@Merged(.sum)` change twice. Edit through `@Recordable` or `@Records`, whose bindings read the merged
-copy, rather than a copy kept in `@State`, which never sees what arrived.
+copy, or `@Recordable(.draft)` for a form with Save and Cancel, rather than a copy kept in `@State`,
+which never sees what arrived.
 
 When the change that arrives clashes with the edit, both having changed a field to different values, the
 edit keeps its value and the record has a conflict until the edit saves. An editor can offer the choice:
@@ -787,6 +788,46 @@ struct NewToDo: View {
 last one saved. The default value is made again each time the view's parent redraws, so the wrapper keeps
 the record it holds and switches only to a record the store already has. It follows `context.zone`. To pin a zone, set it in the view's initializer:
 `_todo = Recordable(wrappedValue: todo, "pantry")`.
+
+#### Live edits and drafts
+
+By default `@Recordable` edits live: each keystroke goes to the context, every list shows it at once, and
+the context's next save commits it, including the save it makes when the app leaves the foreground. That
+suits a detail view with no Save button.
+
+A sheet with Save and Cancel wants the opposite, and `@Recordable(.draft)` gives it. Edits stay in the
+wrapper, so lists keep showing the stored record and no other save commits them. `$todo.save()` commits the
+draft, and `$todo.rollback()` drops it with nothing left behind:
+
+```swift
+struct EditToDo: View {
+    @Recordable(.draft) var todo: ToDo            // EditToDo(todo: todo)
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            TextField("Title", text: $todo.title)
+            Toggle("Done", isOn: $todo.done)
+        }
+        .toolbar {
+            Button("Cancel") { $todo.rollback(); dismiss() }
+            Button("Save") { try? $todo.save(); dismiss() }
+        }
+    }
+}
+```
+
+| | `@Recordable` | `@Recordable(.draft)` |
+| --- | --- | --- |
+| Other views see edits | as you type | after Save |
+| Committed by | any save of the context | `$todo.save()` only |
+| `$todo.rollback()` | drops unsaved edits | drops the draft |
+| Changes from elsewhere | merge into the edit | merge into the draft |
+| `$todo.conflict` | until the edit saves | until Save or Cancel |
+
+Either way, the record the view shows takes in changes that arrive while it's open, in the fields the user
+hasn't touched, and Save merges against the copy the edit began from, so it never overwrites what arrived.
+Prefer a draft to copying the record into `@State`, which sees none of that and overwrites on save.
 
 `@RecordStorage` keeps one record as a setting, the way `@AppStorage` keeps a value, and syncs it:
 
