@@ -329,7 +329,27 @@ public final class RecordContext {
         guard commits != knownCommits[zone] else { return }
         knownCommits[zone] = commits
         lastSaveSource = nil
+        rebasePendingEdits(in: zone, storage: storage)
         didChange()
+    }
+
+    /// Brings unsaved edits in the zone up to date with what was committed elsewhere, so views show the
+    /// fields another save or a sync changed while each edit keeps its own changes.
+    private func rebasePendingEdits(in zone: Zone, storage: ZoneStorage) {
+        for (key, change) in pending where change.zone == zone {
+            guard case .saved(let record)? = change.latest, let rebased = try? Self.rebased(record, change, in: storage) else {
+                continue
+            }
+            pending[key] = rebased
+        }
+    }
+
+    private static func rebased<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) throws -> Change? {
+        guard let base = change.base, let (edit, newBase) = try storage.rebase(record, base: base) else { return nil }
+        return Change(
+            zone: change.zone, table: change.table, sequence: change.sequence, source: change.source,
+            latest: .saved(edit), base: newBase
+        ) { try $0.save(edit, base: newBase) }
     }
 
     /// Calls `run` after each change that views may need to show, for as long as `owner` is alive.
@@ -637,8 +657,12 @@ public final class RecordContext {
         var outside = false
         for (zone, base) in commit.bases {
             let commits = observed[zone]?.storage.commitCount ?? base + 1
-            outside = outside || base != knownCommits[zone] || commits > base + 1
+            let fromElsewhere = base != knownCommits[zone] || commits > base + 1
+            outside = outside || fromElsewhere
             knownCommits[zone] = commits
+            if fromElsewhere, let storage = observed[zone]?.storage {
+                rebasePendingEdits(in: zone, storage: storage)
+            }
         }
         let sources = Set(batch.changes.map(\.source))
         lastSaveSource = !outside && sources.count == 1 && !commit.changedStructure ? sources.first! : nil

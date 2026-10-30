@@ -500,9 +500,11 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   copy of it can't pull a child back.
 - **Saving an older copy keeps what arrived since.** A fetched array remembers what it held, so saving
   it removes only what was taken out of it, and children and links another device added stay.
-- **An unsaved edit keeps what arrived while you typed.** A context remembers the stored copy each
-  record's first unsaved edit started from. Saving merges the edit with what's stored now, so a value
-  another device changed in the meantime keeps that change, and a value both changed goes to the edit. A record deleted elsewhere in the meantime stays deleted.
+- **An unsaved edit shows what arrives while you type.** When a sync or another context changes a
+  record you're editing, the change merges into your unsaved edit right away, so `@Recordable` and
+  `@Records` show the new values in the fields you left alone, and a value both changed keeps your edit.
+  Saving then merges only what changed after that. A record deleted elsewhere in the meantime stays
+  deleted when you save.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.
@@ -544,6 +546,11 @@ provides or one of your own. A record that conforms to `Mergeable` and writes `m
 merges itself, with the whole record in view. If it throws, the usual merge decides, so a save or sync
 never stops. Pointers, assets and fields this version of the app doesn't know merge as whole values, and
 a record whose copies don't decode merges property by property.
+
+The same merge runs while you edit. A change that arrives for a record with an unsaved edit merges into
+the edit, favoring it, so what's on screen stays current and the save that follows doesn't count a
+`@Merged(.sum)` change twice. Edit through `@Recordable`, or the copy the context hands back, rather than
+a copy kept in `@State`, which never sees what arrived.
 
 ### CloudKit records
 
