@@ -99,22 +99,6 @@ extension ZoneStorage {
         try store.save(record, base: base)
     }
 
-    func storedFields<R: Record>(_ type: R.Type, id: R.ID) throws -> SyncFields? {
-        try store.storedFields(type, id: id)
-    }
-
-    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
-        try store.rebase(edit, base: base)
-    }
-
-    func merge<R: Record>(_ edit: R, into other: R, base: SyncFields) throws -> R {
-        try store.merge(edit, into: other, base: base)
-    }
-
-    func remainingClashes<R: Record>(of edit: R, in clashes: Set<String>) throws -> Set<String> {
-        try store.remainingClashes(of: edit, in: clashes)
-    }
-
     package func delete<R: Record>(_ record: R) throws {
         try store.delete(record)
     }

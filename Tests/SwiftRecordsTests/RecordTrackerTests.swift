@@ -253,7 +253,7 @@ import Testing
         #expect(try stored(contact.id).place.city == "Bergen")
     }
 
-    @Test func aClashInTheDraftIsAConflict() async throws {
+    @Test func aConflictInTheDraftShows() async throws {
         let contact = MergeContact()
         try container.save(contact)
         let (tracker, read) = track(contact)

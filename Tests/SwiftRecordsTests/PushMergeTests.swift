@@ -109,10 +109,33 @@ import Testing
         #expect(try context.container.fetch(MergeContact.self, id: contact.id) == nil)
     }
 
+    @Test func theStoreKnowsWhichRowsEachCommitWrote() async throws {
+        let store = context.container.initialStorage.store
+        let first = MergeContact()
+        try context.container.save(first)
+        let start = store.commitCount
+        let second = MergeContact()
+        try context.container.save(second)
+        // An edit of any other record has nothing to merge, so the context reads only these.
+        #expect(store.rowsChanged(after: start) == [RowKey(table: MergeContact.table, id: try second.sqlID)])
+        #expect(store.rowsChanged(after: store.commitCount) == [])
+        // A delete can remove more than it names, so every edit is checked.
+        try context.container.delete(first)
+        #expect(store.rowsChanged(after: start) == nil)
+    }
+
+    @Test func aChangeToAnotherRecordLeavesTheConflict() async throws {
+        let contact = try await conflictingEdit()
+        try context.container.save(MergeContact(name: "Di"))
+        for _ in 0..<20 { await Task.yield() }
+        #expect(context.conflict(MergeContact.self, for: contact.id, at: \.name))
+        #expect(try context.record(MergeContact.self, for: contact.id)?.place.city == "Bergen")
+    }
+
     // MARK: Conflicts
 
     /// An edit of the name, then a push that also changes it, and the city.
-    private func clash() async throws -> MergeContact {
+    private func conflictingEdit() async throws -> MergeContact {
         var contact = MergeContact()
         try saved(contact)
         contact.name = "Bo"
@@ -124,8 +147,8 @@ import Testing
         return contact
     }
 
-    @Test func aClashLeavesAConflictWithTheStoredCopy() async throws {
-        let contact = try await clash()
+    @Test func aConflictKeepsTheStoredCopy() async throws {
+        let contact = try await conflictingEdit()
         let other = try #require(context.conflict(MergeContact.self, for: contact.id))
         #expect(other.name == "Cy")
         #expect(context.conflict(MergeContact.self, for: contact.id, at: \.name))
@@ -146,8 +169,8 @@ import Testing
         #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
     }
 
-    @Test func resolvingForTheirsTakesTheClashedValuesOnly() async throws {
-        var contact = try await clash()
+    @Test func resolvingForTheirsTakesTheConflictingValuesOnly() async throws {
+        var contact = try await conflictingEdit()
         contact = try #require(try context.record(MergeContact.self, for: contact.id))
         contact.tags.insert("work")
         context.insert(contact)
@@ -167,7 +190,7 @@ import Testing
     }
 
     @Test func resolvingForOursKeepsTheEdit() async throws {
-        let contact = try await clash()
+        let contact = try await conflictingEdit()
         context.resolveConflict(MergeContact.self, for: contact.id, favoring: .ours)
         #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
         try commit()
@@ -175,7 +198,7 @@ import Testing
     }
 
     @Test func savingClearsTheConflict() async throws {
-        let contact = try await clash()
+        let contact = try await conflictingEdit()
         try commit()
         #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
         #expect(try stored(contact.id).name == "Bo")
@@ -183,7 +206,7 @@ import Testing
     }
 
     @Test func aConflictClearsOnceTheEditAgreesWithTheStoredCopy() async throws {
-        var contact = try await clash()
+        var contact = try await conflictingEdit()
         contact = try #require(try context.record(MergeContact.self, for: contact.id))
         contact.name = "Cy"
         context.insert(contact)

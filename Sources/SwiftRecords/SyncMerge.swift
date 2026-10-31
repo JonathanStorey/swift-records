@@ -4,7 +4,7 @@ import Foundation
 /// type.
 enum SyncMerge {
     /// Merges two copies of a record's fields. With `base`, the values both last synced from, a property
-    /// only one side changed keeps that change. Without it, any difference is a clash. A clash goes to the
+    /// only one side changed keeps that change. Without it, any difference is a conflict. A conflict goes to the
     /// later edit, which is the server's copy unless `localIsLater`.
     static func merge(local: SyncFields, server: SyncFields, base: SyncFields?, localIsLater: Bool) -> SyncFields {
         var merged: SyncFields = [:]

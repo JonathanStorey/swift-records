@@ -272,12 +272,22 @@ extension RecordStore {
     }
 
     func syncFields<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> SyncFields? {
+        guard let fields = try localFields(R.self, id: id) else { return nil }
+        guard var all = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) else { return fields }
+        for field in R.cachedSchema.fields where field.name != "id" && field.isStored && field.timestamp != .synced {
+            all[field.name] = fields[field.name]
+        }
+        return all
+    }
+
+    /// A stored record's own fields, without the fields from newer app versions that sync keeps beside it.
+    /// It's one query, for merges of local edits, which never change those.
+    func localFields<R: Record>(_ type: R.Type, id: SQLiteValue) throws -> SyncFields? {
         guard tableExists(R.table), let row = try db.run("SELECT * FROM \(quoted(R.table)) WHERE id = ?", [id]).first else {
             return nil
         }
-        var fields = SyncFields.decoded(try syncRow(R.table, id: id)?["extra"]) ?? [:]
+        var fields: SyncFields = [:]
         for field in R.cachedSchema.fields where field.name != "id" && field.isStored && field.timestamp != .synced {
-            fields[field.name] = nil
             if field.isAsset {
                 if case .text(let name)? = row[field.name] {
                     fields[field.name] = .url(assetURL(named: name))
@@ -665,7 +675,7 @@ extension RecordStore {
         )
     }
 
-    /// Whether the local copy's edit is later than the server copy's, for a clash, by the
+    /// Whether the local copy's edit is later than the server copy's, for a conflict, by the
     /// type's `@Timestamped(.modified)` property. Without one, or without a date on both sides, the server's
     /// copy is kept.
     private static func isLocalLater<R: Record>(_ type: R.Type, local: SyncFields, server: SyncFields) -> Bool {

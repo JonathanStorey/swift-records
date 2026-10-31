@@ -30,6 +30,13 @@ final class RecordStore: @unchecked Sendable {
     /// Goes up with each committed transaction that changed data.
     private var commits = 0
     private var commitObservers: [UUID: @Sendable () -> Void] = [:]
+    /// Rows each open transaction wrote, innermost last, including ones a sync applied unlogged.
+    private var touched: [Set<RowKey>] = []
+    /// `structuralChanges` when the outermost open transaction began.
+    private var structureAtStart = 0
+    /// The rows each recent commit wrote, oldest first, or `nil` for one that did more than write rows,
+    /// such as a delete, a moved pointer or another process's commit.
+    private var recentCommits: [(commit: Int, rows: Set<RowKey>?)] = []
     /// Record types whose renames and indexes have been applied.
     private var prepared: Set<ObjectIdentifier> = []
     /// Each table's `@Timestamped(.created)` and `@Timestamped(.modified)` columns, which a local change stamps.
@@ -156,6 +163,10 @@ final class RecordStore: @unchecked Sendable {
         try locked {
             fileChanges.append(([], []))
             logged.append([:])
+            touched.append([])
+            if fileChanges.count == 1 {
+                structureAtStart = structuralChanges
+            }
             do {
                 let result = try db.transaction {
                     let result = try body()
@@ -166,21 +177,25 @@ final class RecordStore: @unchecked Sendable {
                 }
                 let changes = fileChanges.removeLast()
                 let records = logged.removeLast()
+                let rows = touched.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
                     if changedData {
                         changedData = false
                         commits += 1
+                        noteCommit(rows: structuralChanges == structureAtStart ? rows : nil)
                         commitObservers.values.forEach { $0() }
                     }
                 } else {
                     fileChanges[fileChanges.count - 1].created += changes.created
                     fileChanges[fileChanges.count - 1].released += changes.released
                     logged[logged.count - 1].merge(records) { $1 }
+                    touched[touched.count - 1].formUnion(rows)
                 }
                 return result
             } catch {
                 logged.removeLast()
+                touched.removeLast()
                 if fileChanges.count == 1 {
                     changedData = false
                     orphans = []
@@ -228,7 +243,30 @@ final class RecordStore: @unchecked Sendable {
         prepared = []
         structuralChanges += 1
         commits += 1
+        noteCommit(rows: nil)
         commitObservers.values.forEach { $0() }
+    }
+
+    private func noteCommit(rows: Set<RowKey>?) {
+        recentCommits.append((commits, rows))
+        if recentCommits.count > 32 {
+            recentCommits.removeFirst()
+        }
+    }
+
+    /// The rows written by the commits after `commit`, or `nil` when one of them did more than write rows
+    /// or is too long ago to know.
+    func rowsChanged(after commit: Int) -> Set<RowKey>? {
+        locked {
+            guard commit < commits else { return [] }
+            guard let oldest = recentCommits.first, oldest.commit <= commit + 1 else { return nil }
+            var rows: Set<RowKey> = []
+            for entry in recentCommits where entry.commit > commit {
+                guard let written = entry.rows else { return nil }
+                rows.formUnion(written)
+            }
+            return rows
+        }
     }
 
     /// Checks for changes other processes made to the file. Every access to the store also does this.
@@ -262,7 +300,7 @@ final class RecordStore: @unchecked Sendable {
         try registerForJournal(R.self)
         try transaction {
             let id = try record.sqlID
-            guard let stored = try syncFields(R.self, id: id) else { return }
+            guard let stored = try localFields(R.self, id: id) else { return }
             var visited: Set<RowKey> = []
             try saveRecord(record, visited: &visited)
             guard stored != base, let ours = try syncFields(R.self, id: id) else { return }
@@ -275,7 +313,7 @@ final class RecordStore: @unchecked Sendable {
 
     /// A stored record's fields, the base an edit starting now merges against, or `nil` if it isn't stored.
     func storedFields<R: Record>(_ type: R.Type, id: R.ID) throws -> SyncFields? {
-        try locked { try syncFields(R.self, id: try ValueCoding.encode(id)) }
+        try locked { try localFields(R.self, id: try ValueCoding.encode(id)) }
     }
 
     /// Saves one record and the records its `@Reference(to:)` properties hold. `parent` sets a child's
@@ -333,6 +371,9 @@ final class RecordStore: @unchecked Sendable {
         try ensureTable(R.table)
         try prepare(R.self)
         try ensureColumns(columns.map(\.name), in: R.table)
+        if !touched.isEmpty {
+            touched[touched.count - 1].insert(RowKey(table: R.table, id: id))
+        }
         let pointers = R.cachedSchema.fields.filter { $0.isPointer }.map(\.name)
         let before = pointers.isEmpty ? nil : try db.run(
             "SELECT \(pointers.map(quoted).joined(separator: ", ")) FROM \(quoted(R.table)) WHERE id = ?", [id]

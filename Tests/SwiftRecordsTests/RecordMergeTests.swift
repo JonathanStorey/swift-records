@@ -18,7 +18,7 @@ struct MergeContact {
     @Timestamped(.modified) var modified: Date?
 }
 
-/// Merges itself: a confirmed booking wins every clash.
+/// Merges itself: a confirmed booking wins every conflict.
 @Record
 struct MergeBooking: Mergeable {
     var id = UUID.ordered()
@@ -30,7 +30,7 @@ struct MergeBooking: Mergeable {
     }
 }
 
-/// Merges itself, but gives up on a clash, so the usual merge decides.
+/// Merges itself, but gives up on a conflict, so the usual merge decides.
 @Record
 struct MergeTicket: Mergeable {
     var id = UUID.ordered()
@@ -43,7 +43,7 @@ struct MergeTicket: Mergeable {
 }
 
 /// Records edited on two devices merge as their type: nested values node by node, with `@Merged`
-/// strategies, and a clash going to the later edit.
+/// strategies, and a conflict going to the later edit.
 @MainActor
 @Suite struct RecordMergeTests {
     let server = TestServer()
@@ -134,7 +134,7 @@ struct MergeTicket: Mergeable {
         }
     }
 
-    @Test func aClashGoesToTheLaterEditAndTheRestStillMerges() async throws {
+    @Test func aConflictGoesToTheLaterEditAndTheRestStillMerges() async throws {
         let original = MergeContact()
         let (phone, tablet) = try await devices(original)
         var mine = original
