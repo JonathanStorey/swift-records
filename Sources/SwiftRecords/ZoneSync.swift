@@ -251,6 +251,29 @@ final class ZoneSync: @unchecked Sendable {
         } catch {
             fail(Self.recordsError(error))
         }
+        placeFiles(of: changes)
+    }
+
+    /// Copies in the asset files that came inside records, while they still exist. A file a record here
+    /// already has, or that no record uses, is skipped. Views hear once any file lands.
+    private func placeFiles(of changes: [RecordChangeData]) {
+        let manager = FileManager.default
+        var landed = false
+        for change in changes {
+            for (id, file) in change.assetFiles where !manager.fileExists(atPath: store.assetURL(named: id).path) {
+                let copy = manager.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
+                guard (try? manager.copyItem(at: file, to: copy)) != nil else { continue }
+                if (try? store.placeDownloadedAsset(at: copy, id: id)) == true {
+                    landed = true
+                } else {
+                    try? manager.removeItem(at: copy)
+                }
+            }
+        }
+        if landed {
+            let transferChanged = transferChanged
+            Task { await transferChanged(nil, true) }
+        }
     }
 
     /// Records to fetch whole, because a partial change built on a copy this device doesn't hold. They're

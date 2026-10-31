@@ -17,7 +17,8 @@ import SwiftRecords
 ///
 /// The app needs the iCloud capability with CloudKit on, and Background Modes with remote notifications,
 /// so pushes start fetches. A field-level change sets only its changed keys on the `CKRecord`, built on
-/// the server copy's system fields, so an unchanged asset or long field never uploads again.
+/// the server copy's system fields, so an unchanged asset or long field never uploads again. Asset files
+/// travel inside their records as `CKAsset`s and land as the records do, with no separate transfer.
 public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @unchecked Sendable {
     public let ckContainer: CKContainer
     public let scopes: Set<Zone.Scope>
@@ -31,7 +32,6 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     private var createdZones: Set<Zone> = []
     /// How many fetches the container started, so the engines' fetch events can say they were manual.
     private var manualFetches = 0
-    private let assetCache: URL
 
     /// - Parameters:
     ///   - container: The CloudKit container, `CKContainer.default()` unless the app uses another.
@@ -41,10 +41,6 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         ckContainer = container
         scopes = sharedDatabase ? [.private, .shared] : [.private]
         self.automaticallySync = automaticallySync
-        let name = container.containerIdentifier ?? "default"
-        assetCache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SwiftRecordsCloudKit", isDirectory: true)
-            .appendingPathComponent(name, isDirectory: true)
     }
 
     public var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
@@ -131,8 +127,6 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
             await engine.cancelOperations()
         }
     }
-
-    public var assetTransfer: (any AssetTransfer)? { AssetCache(directory: assetCache) }
 
     private func engine(_ scope: Zone.Scope) -> CKSyncEngine? {
         lock.withLock { engines[scope] }
@@ -305,13 +299,12 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         FetchContext(reason: lock.withLock { manualFetches > 0 } ? .manual : .scheduled, options: FetchOptions(scope: .database(scope)))
     }
 
-    /// A record from the server as a change, with its asset files copied out of CloudKit's temporary
-    /// location before the event ends.
+    /// A record from the server as a change. Its `CKAsset` files ride along in `assetFiles`, and the
+    /// container copies them in before the event ends and CloudKit removes them.
     private func received(_ record: CKRecord, scope: Zone.Scope) -> RecordChangeData? {
         guard let container = lock.withLock({ self.container }),
               let zone = Self.zone(for: record.recordID.zoneID, scope: scope),
-              let (change, assets) = try? container.change(from: record, zone: zone) else { return nil }
-        AssetCache(directory: assetCache).keep(assets)
+              let (change, _) = try? container.change(from: record, zone: zone) else { return nil }
         return change
     }
 
@@ -447,32 +440,4 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     }
 }
 
-/// Holds asset files from fetched records until the container asks for them. CloudKit removes its own copy
-/// once the fetch event ends, and uploads files inside their records, so there is nothing to upload here.
-private final class AssetCache: AssetTransfer, @unchecked Sendable {
-    let directory: URL
-
-    init(directory: URL) {
-        self.directory = directory
-    }
-
-    func keep(_ assets: [RecordAssetData]) {
-        let manager = FileManager.default
-        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        for asset in assets {
-            let destination = directory.appendingPathComponent(asset.id)
-            guard !manager.fileExists(atPath: destination.path) else { continue }
-            try? manager.copyItem(at: asset.file, to: destination)
-        }
-    }
-
-    func uploadAssets(_ assets: [RecordAssetData]) async throws {}
-
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
-        let cached = self.directory.appendingPathComponent(id)
-        let destination = directory.appendingPathComponent(id)
-        try FileManager.default.moveItem(at: cached, to: destination)
-        return destination
-    }
-}
 #endif

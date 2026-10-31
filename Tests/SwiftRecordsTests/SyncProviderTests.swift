@@ -1125,3 +1125,50 @@ private actor Seen {
         #expect(throws: RecordsError.self) { try Zone("family", sharedBy: "") }
     }
 }
+
+@MainActor
+@Suite struct FilesInRecordsTests {
+    let server: TestServer = {
+        let server = TestServer()
+        server.filesTravelWithRecords = true
+        return server
+    }()
+
+    @Test func filesTravelInsideTheirRecords() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        let assetID = try #require(server.assetID("SyncRecipe", recipe.id, "photo"))
+        // The file went up with the record, not on its own.
+        #expect(server.asset(assetID) == Data([1, 2, 3]))
+        #expect(phone.provider.sentAssets.isEmpty)
+        let sent = try #require(phone.provider.sentBatches.first?.first { $0.id == recipe.id })
+        #expect(sent.assetFiles[assetID] != nil)
+
+        // It lands as the record does, with no separate download.
+        try await tablet.context.refresh()
+        await tablet.settle()
+        let received = try #require(try await tablet.recipes().first)
+        #expect(received.photo == Data([1, 2, 3]))
+        #expect(received.$photo.url?.lastPathComponent == assetID)
+        #expect(tablet.context.assetProgress == nil)
+    }
+
+    @Test func anUnchangedFileIsntNamedAsChanged() async throws {
+        let phone = try Device(server)
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        var renamed = try #require(try await phone.recipes().first)
+        renamed.title = "Photo again"
+        phone.context.insert(renamed)
+        try await phone.context.save()
+        let sent = try #require(phone.provider.sentBatches.last?.first { $0.id == recipe.id })
+        // CloudKit sets only the changed keys, so the photo's CKAsset doesn't go up again.
+        #expect(sent.changedKeys == ["title"])
+    }
+}
