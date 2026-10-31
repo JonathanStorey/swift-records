@@ -22,16 +22,17 @@ import Testing
     }
 
     @Test func itSavesOnceEditsPause() async throws {
-        context.autosave = .after(.milliseconds(50))
+        context.autosave = .after(.milliseconds(300))
         var todo = ToDo(title: "First")
         context.insert(todo)
-        try await Task.sleep(for: .milliseconds(20))
+        try await Task.sleep(for: .milliseconds(100))
         // Another edit before the pause ends starts it again.
         todo.title = "Second"
         context.insert(todo)
-        try await Task.sleep(for: .milliseconds(30))
+        try await Task.sleep(for: .milliseconds(100))
         #expect(try stored(todo) == nil)
-        for _ in 0..<50 where context.hasChanges {
+        // The save runs off the main actor, so wait for it to land rather than for pending changes to clear.
+        for _ in 0..<100 where try stored(todo)?.title != "Second" {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(try stored(todo)?.title == "Second")
