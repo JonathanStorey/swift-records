@@ -1,70 +1,352 @@
 import Foundation
 
-/// Moves a zone's records to and from a server, such as CloudKit, a central database or a folder of files.
-/// Pass one to `RecordContainer(for:directory:syncProvider:)`, which keeps it for the container's life.
+/// A sync engine: CloudKit's `CKSyncEngine`, or anything shaped like it. The container is its delegate.
 ///
-/// The provider is transport only, and each call returns what happened. The container decides what is
-/// pending, merges conflicts, applies account changes and sets its contexts' `status`. A pass checks the
-/// account, uploads pending changes in batches, then downloads until the server has nothing more.
-///
-/// The unit of sync is a whole record, `RecordChangeData`. The server can give each copy it accepts a `tag`,
-/// its own data that the container stores without reading and sends back with the record's next upload,
-/// such as a CloudKit record's archived system fields or a version number. That lets the server tell when
-/// someone else changed the record first. Throw `SyncError` when a whole call fails.
+/// The provider owns scheduling, retries, pushes, change tokens and the account. The container owns the
+/// records: it tells the engine what is pending, builds each batch the engine asks for, and applies what
+/// the engine reports in `SyncEvent`s. Each requirement names the `CKSyncEngine` API it mirrors, so a
+/// CloudKit provider is a thin wrapper. A server without an engine of its own uses `PollingSyncEngine`
+/// with a `SyncTransport`.
 public protocol SyncProvider: AnyObject, Sendable {
-    /// A stable ID for the signed-in user, or `nil` when signed out. Called at the start of every pass.
-    func userID() async throws -> String?
-
-    /// Saves and deletes these changes. Returns one result per change, in any order. A change left out
-    /// stays pending and goes again with the next pass.
-    ///
-    /// A server that versions records accepts a save only when its `tag` matches the server's copy, or it
-    /// is `nil` and the server has no copy, and otherwise returns the server's copy as a conflict, including
-    /// a deletion.
-    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult]
-
-    /// Returns the zone's changes after `cursor`, oldest first, with each record's latest change only.
-    /// `nil` starts from the beginning. The container stores the new cursor together with the changes.
-    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload
-
-    /// Uploads asset files the server doesn't have yet. Called in the background after records sync, so a
-    /// record can reach the server, and other devices, before its file does.
-    func uploadAssets(_ assets: [RecordAssetData]) async throws
-
-    /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
-    /// have it yet, and it's asked for again after the next pass.
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
-
-    /// Zones the server says have changed, such as from a push notification, so the container downloads
-    /// them without waiting for a refresh. Called once for each zone that syncs: return a new stream each
-    /// time, and send every push to all of them. `nil`, the default, means the provider can't tell.
-    func pushedChanges() -> AsyncStream<[Zone]>?
-
-    /// Names the server this provider talks to, such as its URL. When it differs from the one a zone last
-    /// synced with, the container treats the new server as empty: it uploads every local record and
-    /// downloads from the beginning, and keeps local data even when the account differs. The default
-    /// is the provider's type name, so return something more specific when one type can reach several
-    /// servers.
+    /// Names the server, such as `"cloudkit:iCloud.com.example.app"`. When it differs from the one a zone
+    /// last synced with, the container treats the new server as empty and uploads every local record.
     var identifier: String { get }
 
-    /// Whether to sync a zone, asked once as it opens. Return `false` to keep a zone on this device, such as
-    /// drafts. `.inMemory` and `.localOnly` never sync and aren't asked. The default syncs every zone.
-    func syncs(_ zone: Zone) -> Bool
+    /// The databases this provider serves. CloudKit serves `.private` and `.shared`.
+    var scopes: Set<Zone.Scope> { get }
 
-    /// Whether a zone is one everyone shares, such as a public CloudKit database, asked once as it opens.
-    /// The server records who created each of its records and refuses changes from anyone else, signing out
-    /// or switching accounts never deletes them, and they download without an account. The default is `false`.
-    func isPublic(_ zone: Zone) -> Bool
+    /// ≈ `CKSyncEngine(_:)`. Called once per scope as the container opens, with the state from the last
+    /// `.stateUpdate` for that scope, or `nil` the first time.
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
+
+    /// ≈ `state.add(pendingRecordZoneChanges:)`. Tells the engine these records have changes to send.
+    func addPending(_ changes: [PendingRecordChange])
+
+    /// ≈ `state.remove(pendingRecordZoneChanges:)`.
+    func removePending(_ changes: [PendingRecordChange])
+
+    /// ≈ `state.add(pendingDatabaseChanges:)`. Zones to create or delete on the server.
+    func addPending(_ changes: [PendingZoneChange])
+
+    /// ≈ `state.remove(pendingDatabaseChanges:)`.
+    func removePending(_ changes: [PendingZoneChange])
+
+    /// ≈ `sendChanges(_:)`. Sends now rather than when the engine would. Throws `SyncFailure` when the
+    /// whole send fails, such as `.networkUnavailable`.
+    func sendChanges(_ options: SendOptions) async throws
+
+    /// ≈ `fetchChanges(_:)`. Fetches now rather than when the engine would.
+    func fetchChanges(_ options: FetchOptions) async throws
+
+    /// ≈ `cancelOperations()`.
+    func cancelOperations() async
+
+    /// Moves asset files apart from their records, for a server that stores them separately. `nil`, the
+    /// default, means assets need no separate transfer.
+    var assetTransfer: (any AssetTransfer)? { get }
 }
 
 extension SyncProvider {
-    public func pushedChanges() -> AsyncStream<[Zone]>? { nil }
+    public var scopes: Set<Zone.Scope> { [.private] }
 
-    public func syncs(_ zone: Zone) -> Bool { true }
+    public var assetTransfer: (any AssetTransfer)? { nil }
 
-    public func isPublic(_ zone: Zone) -> Bool { false }
+    public func removePending(_ changes: [PendingRecordChange]) {}
 
-    public var identifier: String { String(reflecting: Self.self) }
+    public func addPending(_ changes: [PendingZoneChange]) {}
+
+    public func removePending(_ changes: [PendingZoneChange]) {}
+
+    public func cancelOperations() async {}
+}
+
+/// The engine's delegate. The container implements it, and apps never do. ≈ `CKSyncEngineDelegate`.
+public protocol SyncDelegate: AnyObject, Sendable {
+    /// ≈ `handleEvent(_:syncEngine:)`. Events for one engine arrive one at a time, in order.
+    func handle(_ event: SyncEvent) async
+
+    /// ≈ `nextRecordZoneChangeBatch(_:syncEngine:)`. The next changes to send, or `nil` when nothing in the
+    /// context's scope is left to send in this operation.
+    func nextBatch(_ context: SendContext) async -> RecordBatch?
+
+    /// ≈ `nextFetchChangesOptions(_:syncEngine:)`. Lets the container put the zones on screen first.
+    func nextFetchOptions(_ context: FetchContext) async -> FetchOptions
+}
+
+/// Something that happened in the engine. ≈ `CKSyncEngine.Event`, one case each.
+public enum SyncEvent: Sendable {
+    /// The engine's state changed. The container stores it and hands it back to `start`.
+    case stateUpdate(Zone.Scope, Data)
+    case accountChange(AccountChange)
+    case fetchedZoneChanges(modified: [Zone], deleted: [ZoneDeletion])
+    case fetchedRecordChanges(saved: [RecordChangeData], deleted: [RecordDeletion])
+    case sentZoneChanges(SentZoneChanges)
+    case sentRecordChanges(SentRecordChanges)
+    case willFetchChanges(FetchContext)
+    case willFetchZoneChanges(Zone)
+    case didFetchZoneChanges(Zone, SyncFailure?)
+    case didFetchChanges(FetchContext)
+    case willSendChanges(SendContext)
+    case didSendChanges(SendContext)
+}
+
+extension Zone {
+    /// Which database a zone lives in. ≈ `CKDatabase.Scope` without the public database, which
+    /// `CKSyncEngine` doesn't support.
+    public enum Scope: String, Sendable, Hashable, Codable {
+        /// The signed-in person's own data.
+        case `private`
+        /// Zones other people shared with them.
+        case shared
+    }
+
+    /// The database the zone lives in. Every zone is private until sharing arrives.
+    public var scope: Scope { .private }
+}
+
+/// A record with changes to send. ≈ `CKSyncEngine.PendingRecordZoneChange`.
+public enum PendingRecordChange: Sendable, Hashable, Codable {
+    case save(UUID, Zone)
+    case delete(UUID, Zone)
+
+    public var id: UUID {
+        switch self {
+        case .save(let id, _), .delete(let id, _): id
+        }
+    }
+
+    public var zone: Zone {
+        switch self {
+        case .save(_, let zone), .delete(_, let zone): zone
+        }
+    }
+}
+
+/// A zone to create or delete on the server. ≈ `CKSyncEngine.PendingDatabaseChange`.
+public enum PendingZoneChange: Sendable, Hashable, Codable {
+    case save(Zone)
+    case delete(Zone)
+
+    public var zone: Zone {
+        switch self {
+        case .save(let zone), .delete(let zone): zone
+        }
+    }
+}
+
+/// Which records or zones an operation covers. ≈ `CKSyncEngine.SendChangesOptions.Scope`.
+public enum ChangeScope: Sendable, Hashable {
+    case all
+    case zones(Set<Zone>)
+    case excludingZones(Set<Zone>)
+    case records(Set<UUID>)
+
+    /// Whether the scope covers a zone at all.
+    public func contains(_ zone: Zone) -> Bool {
+        switch self {
+        case .all, .records: true
+        case .zones(let zones): zones.contains(zone)
+        case .excludingZones(let zones): !zones.contains(zone)
+        }
+    }
+}
+
+/// ≈ `CKSyncEngine.SendChangesOptions`.
+public struct SendOptions: Sendable, Hashable {
+    public var scope: ChangeScope
+
+    public init(scope: ChangeScope = .all) {
+        self.scope = scope
+    }
+}
+
+/// ≈ `CKSyncEngine.FetchChangesOptions`.
+public struct FetchOptions: Sendable, Hashable {
+    public var scope: ChangeScope
+    /// Zones to fetch before the others, such as the one on screen.
+    public var prioritizedZones: [Zone]
+
+    public init(scope: ChangeScope = .all, prioritizedZones: [Zone] = []) {
+        self.scope = scope
+        self.prioritizedZones = prioritizedZones
+    }
+}
+
+/// Why the engine is syncing. ≈ `CKSyncEngine.SyncReason`.
+public enum SyncReason: Sendable, Hashable {
+    /// The engine decided to, such as after a push or a change.
+    case scheduled
+    /// Someone called `sendChanges(_:)` or `fetchChanges(_:)`.
+    case manual
+}
+
+/// ≈ `CKSyncEngine.SendChangesContext`.
+public struct SendContext: Sendable, Hashable {
+    public let reason: SyncReason
+    public let options: SendOptions
+
+    public init(reason: SyncReason, options: SendOptions) {
+        self.reason = reason
+        self.options = options
+    }
+}
+
+/// ≈ `CKSyncEngine.FetchChangesContext`.
+public struct FetchContext: Sendable, Hashable {
+    public let reason: SyncReason
+    public let options: FetchOptions
+
+    public init(reason: SyncReason, options: FetchOptions) {
+        self.reason = reason
+        self.options = options
+    }
+}
+
+/// Changes to send in one request. ≈ `CKSyncEngine.RecordZoneChangeBatch`.
+public struct RecordBatch: Sendable, Hashable {
+    public var saves: [RecordChangeData]
+    public var deletes: [RecordDeletion]
+    /// Whether all of a zone's changes in the batch succeed or fail together. The container sends `false`,
+    /// so one conflict fails only its own record.
+    public var atomicByZone: Bool
+
+    public init(saves: [RecordChangeData] = [], deletes: [RecordDeletion] = [], atomicByZone: Bool = false) {
+        self.saves = saves
+        self.deletes = deletes
+        self.atomicByZone = atomicByZone
+    }
+
+    public var isEmpty: Bool { saves.isEmpty && deletes.isEmpty }
+
+    /// Every change in the batch, saves first, as a server that takes one list would want them.
+    public var changes: [RecordChangeData] {
+        saves + deletes.map { RecordChangeData(id: $0.id, zone: $0.zone, type: $0.type, fields: nil, tag: $0.tag) }
+    }
+}
+
+/// A record deleted, or to delete. ≈ a `CKRecord.ID` with its record type.
+public struct RecordDeletion: Sendable, Hashable, Codable {
+    public let id: UUID
+    public let zone: Zone
+    public let type: String
+    /// The tag of the copy the deletion is based on, for a server that checks it. CloudKit doesn't.
+    public var tag: Data?
+
+    public init(id: UUID, zone: Zone, type: String, tag: Data? = nil) {
+        self.id = id
+        self.zone = zone
+        self.type = type
+        self.tag = tag
+    }
+}
+
+/// What happened to a batch. ≈ `CKSyncEngine.Event.SentRecordZoneChanges`.
+public struct SentRecordChanges: Sendable, Hashable {
+    /// The server's copies of the saved records, with their new tags and save times. Their fields may be
+    /// left out.
+    public var saved: [RecordChangeData]
+    public var failed: [FailedSave]
+    public var deleted: [RecordDeletion]
+    public var failedDeletes: [FailedDelete]
+
+    public init(saved: [RecordChangeData] = [], failed: [FailedSave] = [], deleted: [RecordDeletion] = [], failedDeletes: [FailedDelete] = []) {
+        self.saved = saved
+        self.failed = failed
+        self.deleted = deleted
+        self.failedDeletes = failedDeletes
+    }
+}
+
+/// What happened to zone changes. ≈ `CKSyncEngine.Event.SentDatabaseChanges`.
+public struct SentZoneChanges: Sendable, Hashable {
+    public var saved: [Zone]
+    public var failed: [FailedZoneChange]
+    public var deleted: [Zone]
+
+    public init(saved: [Zone] = [], failed: [FailedZoneChange] = [], deleted: [Zone] = []) {
+        self.saved = saved
+        self.failed = failed
+        self.deleted = deleted
+    }
+}
+
+/// ≈ `CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave`.
+public struct FailedSave: Sendable, Hashable {
+    public let change: RecordChangeData
+    public let failure: SyncFailure
+
+    public init(change: RecordChangeData, failure: SyncFailure) {
+        self.change = change
+        self.failure = failure
+    }
+}
+
+public struct FailedDelete: Sendable, Hashable {
+    public let deletion: RecordDeletion
+    public let failure: SyncFailure
+
+    public init(deletion: RecordDeletion, failure: SyncFailure) {
+        self.deletion = deletion
+        self.failure = failure
+    }
+}
+
+public struct FailedZoneChange: Sendable, Hashable {
+    public let zone: Zone
+    public let failure: SyncFailure
+
+    public init(zone: Zone, failure: SyncFailure) {
+        self.zone = zone
+        self.failure = failure
+    }
+}
+
+/// ≈ `CKSyncEngine.Event.AccountChange.ChangeType`, with user IDs as text.
+public enum AccountChange: Sendable, Hashable {
+    /// Someone signed in, or the engine learned who is signed in for the first time.
+    case signIn(user: String)
+    /// The person signed out. `nil` when the engine never knew anyone, as on a device that was never signed in.
+    case signOut(previousUser: String?)
+    case switchAccounts(from: String, to: String)
+}
+
+/// A zone the server no longer has. ≈ `CKSyncEngine.Event.FetchedDatabaseChanges.Deletion`.
+public struct ZoneDeletion: Sendable, Hashable {
+    public enum Reason: Sendable, Hashable {
+        /// Deleted, such as by the app on another device. Local data goes too.
+        case deleted
+        /// The person deleted the app's data, such as in Settings. Local data goes too.
+        case purged
+        /// The server lost the keys to the person's encrypted data. Local data is kept and uploaded again.
+        case encryptedDataReset
+    }
+
+    public let zone: Zone
+    public let reason: Reason
+
+    public init(zone: Zone, reason: Reason) {
+        self.zone = zone
+        self.reason = reason
+    }
+}
+
+/// Why a change, or a whole operation, failed. ≈ the `CKError` codes sync has to act on.
+public enum SyncFailure: Error, Sendable, Hashable {
+    /// The server holds a newer copy, which the container merges and sends again.
+    case serverRecordChanged(RecordChangeData)
+    /// The record is gone from the server.
+    case unknownItem
+    /// The zone doesn't exist on the server yet.
+    case zoneNotFound
+    /// The account is out of storage.
+    case quotaExceeded
+    /// The network or server can't be reached. Changes stay pending.
+    case networkUnavailable
+    /// The record is too large to store.
+    case limitExceeded
+    /// The server refuses the change for good, such as a record someone else owns.
+    case permissionFailure
+    case other(String)
 }
 
 /// One record as it crosses to or from a server, shaped like a `CKRecord`: its values in `fields`, and the
@@ -169,32 +451,6 @@ extension RecordValue: Codable {
     }
 }
 
-/// What happened to one uploaded change.
-public enum UploadResult: Sendable, Hashable {
-    /// Accepted, with the saved copy's new `tag` and, if the server says, when it saved it. The tag goes
-    /// back with the record's next upload.
-    case saved(id: UUID, tag: Data? = nil, synced: Date? = nil)
-    /// The server holds a newer copy, which may be a deletion. The container merges it and uploads again.
-    case conflict(RecordChangeData)
-    /// Refused for good, such as a record too large or one owned by someone else.
-    case rejected(id: UUID)
-}
-
-/// A page of a zone's changes from the server.
-public struct RecordDownload: Sendable, Hashable {
-    public var changes: [RecordChangeData]
-    /// Where the next download starts, such as a `CKServerChangeToken` or the newest save time.
-    public var cursor: Data?
-    /// Whether more changes are waiting after this page.
-    public var hasMore: Bool
-
-    public init(changes: [RecordChangeData], cursor: Data?, hasMore: Bool = false) {
-        self.changes = changes
-        self.cursor = cursor
-        self.hasMore = hasMore
-    }
-}
-
 /// An asset file as it crosses to or from a server. Its `id` is the file's unique name, which a record's
 /// JSON holds. A file never changes once stored, so an asset can't conflict: a new photo is a new ID.
 public struct RecordAssetData: Sendable, Hashable, Codable {
@@ -210,13 +466,14 @@ public struct RecordAssetData: Sendable, Hashable, Codable {
     }
 }
 
-/// Why a whole provider call failed. Any other error counts as `offline`.
-public enum SyncError: Error, Sendable, Hashable {
-    /// The network or server can't be reached. Changes stay pending, and the context shows `.offline`.
-    case offline
-    /// The account is out of storage.
-    case storageFull
-    /// The server's copy of the zone is gone, for example because the person deleted it in Settings. The
-    /// container keeps its records, uploads them all again and downloads from the beginning.
-    case serverReset
+/// Moves asset files apart from their records, for a server that stores them separately, such as a
+/// folder of files. CloudKit sends a record's files inside it and doesn't use this.
+public protocol AssetTransfer: AnyObject, Sendable {
+    /// Uploads asset files the server doesn't have yet. Called after records sync, so a record can reach
+    /// other devices before its file does.
+    func uploadAssets(_ assets: [RecordAssetData]) async throws
+
+    /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
+    /// have it yet, and it's asked for again after the next sync.
+    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
 }

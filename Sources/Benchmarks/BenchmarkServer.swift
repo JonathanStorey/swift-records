@@ -3,7 +3,7 @@ import SwiftRecords
 
 /// A sync server in memory, so sync timings measure the local database rather than a network or files.
 /// Each upload and download costs a dictionary lookup per record.
-final class BenchmarkServer: SyncProvider, @unchecked Sendable {
+final class BenchmarkServer: SyncTransport, @unchecked Sendable {
     let identifier: String
     private let lock = NSLock()
     private var online = false
@@ -17,6 +17,11 @@ final class BenchmarkServer: SyncProvider, @unchecked Sendable {
         identifier = "BenchmarkServer.\(name)"
     }
 
+    /// An engine for one device that syncs only when asked, so timings cover only the work they name.
+    func makeEngine() -> PollingSyncEngine {
+        PollingSyncEngine(transport: self, automaticallySync: false)
+    }
+
     var isOnline: Bool {
         get { lock.withLock { online } }
         set { lock.withLock { online = newValue } }
@@ -25,21 +30,23 @@ final class BenchmarkServer: SyncProvider, @unchecked Sendable {
     var count: Int { lock.withLock { latest.values.filter { !$0.change.isDeletion }.count } }
 
     private func check() throws {
-        guard isOnline else { throw SyncError.offline }
+        guard isOnline else { throw SyncFailure.networkUnavailable }
     }
 
-    func userID() async throws -> String? {
+    func currentUser() async throws -> String? {
         try check()
         return "benchmark"
     }
 
-    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] {
+    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         try check()
         return lock.withLock {
-            changes.map { change in
+            var result = SentRecordChanges()
+            for change in batch.changes {
                 let key = "\(change.zone)|\(change.type)|\(change.id)"
                 if !change.isDeletion, let current = latest[key]?.change, current.tag != change.tag {
-                    return .conflict(current)
+                    result.failed.append(FailedSave(change: change, failure: .serverRecordChanged(current)))
+                    continue
                 }
                 let sequence = log.count + 1
                 var stored = change
@@ -47,30 +54,40 @@ final class BenchmarkServer: SyncProvider, @unchecked Sendable {
                 stored.synced = Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
                 latest[key] = (stored, sequence)
                 log.append((key, sequence))
-                return .saved(id: change.id, tag: stored.tag, synced: stored.synced)
+                if change.isDeletion {
+                    result.deleted.append(RecordDeletion(id: change.id, zone: change.zone, type: change.type))
+                } else {
+                    result.saved.append(stored)
+                }
             }
+            return result
         }
     }
 
-    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
+    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
+        try check()
+        let zones = lock.withLock { Set(latest.values.map(\.change.zone)) }
+        return DatabaseChanges(modified: zones.sorted { $0.name < $1.name }, token: nil)
+    }
+
+    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
         try check()
         return lock.withLock {
-            var position = cursor.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
-            var changes: [RecordChangeData] = []
-            while position < log.count, changes.count < pageSize {
+            var position = token.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+            var saved: [RecordChangeData] = []
+            var deleted: [RecordDeletion] = []
+            while position < log.count, saved.count + deleted.count < pageSize {
                 let entry = log[position]
                 position += 1
                 if let stored = latest[entry.key], stored.sequence == entry.sequence, stored.change.zone == zone {
-                    changes.append(stored.change)
+                    if stored.change.isDeletion {
+                        deleted.append(RecordDeletion(id: stored.change.id, zone: zone, type: stored.change.type))
+                    } else {
+                        saved.append(stored.change)
+                    }
                 }
             }
-            return RecordDownload(changes: changes, cursor: Data(String(position).utf8), hasMore: position < log.count)
+            return ZoneChanges(saved: saved, deleted: deleted, token: Data(String(position).utf8), moreComing: position < log.count)
         }
-    }
-
-    func uploadAssets(_ assets: [RecordAssetData]) async throws {}
-
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
-        throw SyncError.offline
     }
 }

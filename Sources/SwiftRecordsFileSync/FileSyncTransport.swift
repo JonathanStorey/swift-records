@@ -5,13 +5,15 @@ import SwiftRecords
 /// between the person's devices. No server code is needed.
 ///
 /// ```swift
-/// let container = try RecordContainer(for: [Recipe.self], syncProvider: FileSyncProvider())
+/// let engine = PollingSyncEngine(transport: FileSyncTransport())
+/// let container = try RecordContainer(for: [Recipe.self], syncProvider: engine)
 /// ```
 ///
 /// Each record is one readable JSON file, at `Records/<zone>/<type>/<id>.json`, and each asset is a plain
 /// file in `Records/<zone>/_assets/`. A deletion stays behind as a small file so other devices hear of it.
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
-/// can't miss each other's changes. Deleting a zone's folder counts as a server reset.
+/// can't miss each other's changes. Deleting a zone's folder deletes the zone, and its records leave
+/// every device.
 ///
 /// Other devices' changes arrive without a refresh. In iCloud an `NSMetadataQuery` watches the folder, and
 /// App Group and other folders are watched for changes. A network drive may not report its changes, so
@@ -22,7 +24,7 @@ import SwiftRecords
 ///
 /// iCloud needs the iCloud capability with iCloud Documents turned on. While the person is signed out of
 /// iCloud, the container reports `signedOut`.
-public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
+public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
     /// Where the files live.
     public enum Location: Sendable, Hashable {
         /// The app's iCloud container, hidden from the Files app.
@@ -116,12 +118,12 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    // MARK: SyncProvider
+    // MARK: SyncTransport
 
     /// The location, so moving to another folder uploads everything to it.
-    public var identifier: String { "FileSyncProvider.\(location)" }
+    public var identifier: String { "FileSyncTransport.\(location)" }
 
-    public func userID() async throws -> String? {
+    public func currentUser() async throws -> String? {
         guard location.isICloud else { return "local" }
         #if canImport(Darwin)
         // The token changes with the iCloud account, and is nil while signed out.
@@ -135,34 +137,57 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         #endif
     }
 
-    public func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] {
+    public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         let root = try root()
+        let changes = batch.changes
         defer { mark(Set(changes.map(\.zone)), in: root) }
         return try lock.withLock {
-            try changes.map { change in
+            var result = SentRecordChanges()
+            for change in changes {
                 let file = Self.recordFile(change.type, change.id, in: root.appendingPathComponent(change.zone.name))
                 let current = try Self.read(file)
                 if !change.isDeletion, let current, current.tag != change.tag {
-                    return .conflict(current)
+                    result.failed.append(FailedSave(change: change, failure: .serverRecordChanged(current)))
+                    continue
                 }
                 // Each save gets a strictly later time, and its milliseconds are the new tag.
                 var stored = change
                 stored.synced = Self.stamp(after: current?.synced)
                 stored.tag = stored.synced.map(Self.tag)
                 try Self.write(stored, to: file)
-                return .saved(id: change.id, tag: stored.tag, synced: stored.synced)
+                if change.isDeletion {
+                    result.deleted.append(RecordDeletion(id: change.id, zone: change.zone, type: change.type))
+                } else {
+                    result.saved.append(stored)
+                }
             }
+            return result
         }
     }
 
-    public func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
-        let folder = try root().appendingPathComponent(zone.name, isDirectory: true)
-        var state = cursor.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
-        let epoch = try Self.epoch(of: folder)
-        if let seen = state.epoch, seen != epoch {
-            throw SyncError.serverReset
+    /// Every zone folder, so each is checked for new files, and the zones whose folders were deleted or
+    /// replaced since `token`, which holds each folder's identity.
+    public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
+        let root = try root()
+        let known = token.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        var epochs: [String: String] = [:]
+        var modified: [Zone] = []
+        for name in names.sorted() {
+            guard let zone = Self.zone(named: name) else { continue }
+            epochs[name] = try Self.epoch(of: root.appendingPathComponent(name, isDirectory: true))
+            modified.append(zone)
         }
-        state.epoch = epoch
+        let deleted = known.compactMap { name, epoch -> ZoneDeletion? in
+            guard epochs[name] != epoch, let zone = Self.zone(named: name) else { return nil }
+            return ZoneDeletion(zone: zone, reason: .deleted)
+        }
+        return DatabaseChanges(modified: modified, deleted: deleted.sorted { $0.zone.name < $1.zone.name }, token: try JSONEncoder().encode(epochs))
+    }
+
+    public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
+        let folder = try root().appendingPathComponent(zone.name, isDirectory: true)
+        var state = token.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
         var found: [(key: String, change: RecordChangeData)] = []
         for file in Self.recordFiles(in: folder) {
             guard let change = try? Self.read(file), let tag = change.tag else { continue }
@@ -178,8 +203,11 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         for (key, change) in page {
             state.seen[key] = change.tag
         }
-        return RecordDownload(
-            changes: page.map { $0.change }, cursor: try JSONEncoder().encode(state), hasMore: found.count > page.count
+        let changes = page.map(\.change)
+        return ZoneChanges(
+            saved: changes.filter { !$0.isDeletion },
+            deleted: changes.filter(\.isDeletion).map { RecordDeletion(id: $0.id, zone: $0.zone, type: $0.type) },
+            token: try JSONEncoder().encode(state), moreComing: found.count > page.count
         )
     }
 
@@ -208,14 +236,14 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         let source = try root().appendingPathComponent(zone.name)
             .appendingPathComponent(Self.assetsFolder, isDirectory: true).appendingPathComponent(id)
         let destination = directory.appendingPathComponent(id)
-        guard Self.isAvailable(source) else { throw SyncError.offline }
+        guard Self.isAvailable(source) else { throw SyncFailure.networkUnavailable }
         try Self.coordinate(reading: source) { url in
             try FileManager.default.copyItem(at: url, to: destination)
         }
         return destination
     }
 
-    public func pushedChanges() -> AsyncStream<[Zone]>? {
+    public func changeNotifications() -> AsyncStream<[Zone]>? {
         let (stream, continuation) = AsyncStream<[Zone]>.makeStream()
         let id = UUID()
         lock.withLock { pushes[id] = continuation }
@@ -407,12 +435,11 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
 
     /// Every record file seen, by type and ID, with the change tag it was seen at.
     private struct Cursor: Codable {
-        var epoch: String?
         var seen: [String: Data] = [:]
     }
 
     private func root() throws -> URL {
-        guard let directory else { throw SyncError.offline }
+        guard let directory else { throw SyncFailure.networkUnavailable }
         return directory
     }
 
@@ -457,7 +484,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         // A folder whose identity iCloud hasn't downloaded yet isn't new.
         if FileManager.default.fileExists(atPath: zone.appendingPathComponent(".\(epochFile).icloud").path) {
             startDownloading(file)
-            throw SyncError.offline
+            throw SyncFailure.networkUnavailable
         }
         if let data = try? coordinatedData(at: file),
            let epoch = try? JSONDecoder().decode([String: String].self, from: data)["epoch"] {
@@ -576,12 +603,12 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
         #endif
     }
 
-    /// Turns a full disk into `storageFull`.
+    /// Turns a full disk into `quotaExceeded`.
     private static func mapping<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
         } catch let error as CocoaError where error.code == .fileWriteOutOfSpace {
-            throw SyncError.storageFull
+            throw SyncFailure.quotaExceeded
         }
     }
 
@@ -595,7 +622,7 @@ public final class FileSyncProvider: SyncProvider, @unchecked Sendable {
     }
 }
 
-extension FileSyncProvider.Location {
+extension FileSyncTransport.Location {
     var isICloud: Bool {
         switch self {
         case .iCloud, .iCloudDrive: true
