@@ -29,7 +29,10 @@ import SwiftUI
 ///
 /// It follows the context's `zone`. To pin one, initialize the wrapper in the view's initializer:
 /// `_todo = Recordable(wrappedValue: todo, "pantry")`. Once the record is deleted, `todo` keeps its last
-/// value, `$todo.isDeleted` turns true, and edits are ignored, so a late keystroke can't bring it back.
+/// value and `$todo.isDeleted` turns true. After `$todo.delete()`, edits are ignored, so a late keystroke
+/// can't bring it back. After a delete from elsewhere, such as another device, the edit on screen is kept:
+/// `$todo.save()` brings the record back as shown, and `$todo.rollback()` or `$todo.delete()` lets the delete
+/// stand. Dismiss the view on `isDeleted` to make deletes final.
 @MainActor
 @propertyWrapper
 @dynamicMemberLookup
@@ -95,7 +98,8 @@ public struct Recordable<R: Record>: DynamicProperty {
         )
     }
 
-    /// Whether the record has been deleted, here or anywhere else.
+    /// Whether the record has been deleted, here or anywhere else. When it was deleted elsewhere while the
+    /// view had edits, `save()` restores it with them.
     public var isDeleted: Bool {
         _ = value
         return cache.tracker.isDeleted
@@ -124,7 +128,7 @@ public struct Recordable<R: Record>: DynamicProperty {
             && !context.unsynced(in: zone.zone(in: context)).contains(tracker.value.id)
     }
 
-    /// The record as stored, when a change from elsewhere clashed with this record's unsaved edit: a sync
+    /// The record as stored, when a change from elsewhere conflicted with this record's unsaved edit: a sync
     /// or another view changed a field the edit had also changed, and the edit kept its value. `nil` when
     /// there's no conflict, and once the edit saves, rolls back, or is resolved.
     ///
@@ -141,7 +145,7 @@ public struct Recordable<R: Record>: DynamicProperty {
         return cache.tracker.conflict(context: context, zone: zone.zone(in: context))
     }
 
-    /// Whether the unsaved edit clashed with a change from elsewhere at this property, such as to mark the
+    /// Whether the unsaved edit conflicted with a change from elsewhere at this property, such as to mark the
     /// field: `$note.conflict(at: \.title)`.
     public func conflict(at keyPath: PartialKeyPath<R>) -> Bool {
         guard let context else { return false }
@@ -150,7 +154,7 @@ public struct Recordable<R: Record>: DynamicProperty {
     }
 
     /// Settles the conflict: `.ours` keeps the edit's values, and `.theirs` takes the other version's at
-    /// the fields that clashed. The edit stays unsaved until the context saves.
+    /// the fields in conflict. The edit stays unsaved until the context saves.
     public func resolve(favoring side: MergeSide) {
         guard let context else { return }
         cache.tracker.resolve(favoring: side, context: context, zone: zone.zone(in: context))

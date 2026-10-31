@@ -503,8 +503,8 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
 - **An unsaved edit shows what arrives while you type.** When a sync or another context changes a
   record you're editing, the change merges into your unsaved edit right away, so `@Recordable` and
   `@Records` show the new values in the fields you left alone, and a value both changed keeps your edit.
-  Saving then merges only what changed after that. A record deleted elsewhere in the meantime stays
-  deleted when you save.
+  Saving then merges only what changed after that. A record deleted elsewhere in the meantime turns
+  `isDeleted` on at once, and the editor decides: saving brings it back, and cancelling lets it go.
 - **Newer app versions are safe.** Fields this version doesn't know are kept and sent back with the
   next edit, and `@Renamed` properties read their old names. A record that won't decode is kept and
   tried again after an update.
@@ -525,8 +525,9 @@ Records merge with no setup. Each property merges against the copy both sides st
   At a sync, the later edit is the copy with the later `@Timestamped(.modified)` date. A type without one
   has no edit dates to compare, so the server's copy wins. At a save, the edit being saved wins.
 
-A `@Timestamped(.modified)` property is what lets an offline edit win a clash it made last, so it's worth
-adding to any record that syncs:
+A `@Timestamped(.modified)` property is what lets an offline edit win a conflict it made last, so it's
+worth adding to any record that syncs. The date is set when the edit saves, not as it's typed, since the
+save is when the change is committed:
 
 ```swift
 @Record
@@ -543,8 +544,9 @@ struct Contact {
 
 `@Merged` picks how one property merges when both sides changed it, from the strategies swift-merging
 provides or one of your own. A record that conforms to `Mergeable` and writes `merging(with:from:)`
-merges itself, with the whole record in view. If it throws, the usual merge decides, so a save or sync
-never stops. Pointers, assets and fields this version of the app doesn't know merge as whole values, and
+merges itself, with the whole record in view, and its result is final, so it never reports a conflict.
+If it throws, the usual merge decides, so a save or sync never stops, and an open editor sees a conflict
+at each value both sides changed. Pointers, assets and fields this version of the app doesn't know merge as whole values, and
 a record whose copies don't decode merges property by property.
 
 The same merge runs while you edit. A change that arrives for a record with an unsaved edit merges into
@@ -553,8 +555,9 @@ the edit, favoring it, so what's on screen stays current and the save that follo
 copy, or `@Recordable(.draft)` for a form with Save and Cancel, rather than a copy kept in `@State`,
 which never sees what arrived.
 
-When the change that arrives clashes with the edit, both having changed a field to different values, the
-edit keeps its value and the record has a conflict until the edit saves. An editor can offer the choice:
+When the change that arrives conflicts with the edit, both having changed a field to different values,
+the edit keeps its value and the record has a conflict until the edit saves. A field drops out of the
+conflict once the edit comes to agree with the stored value. An editor can offer the choice:
 
 ```swift
 if let other = $contact.conflict {
@@ -567,9 +570,16 @@ TextField("Name", text: $contact.name)
 ```
 
 `conflict` is the record as stored, the version that arrived. `.theirs` takes its values at the fields
-that clashed and keeps the rest of the edit. Saving without choosing keeps the edit. For a row of
+in conflict and keeps the rest of the edit. Saving without choosing keeps the edit. For a row of
 `@Records`, `context.conflict(Contact.self, for: id)` and `context.resolveConflict(_:for:favoring:)` do
-the same. A clash at sync, with no edit open, is settled by the rules above and isn't reported.
+the same. A conflict at sync, with no edit open, is settled by the rules above and isn't reported, so an
+offline device without `@Timestamped(.modified)` loses its conflicts to the server without notice.
+
+A delete is never a conflict: it wins. When a record is deleted elsewhere while an editor has unsaved
+changes, `$contact.isDeleted` turns true and the editor keeps what's on screen. `$contact.save()` brings
+the record back as shown, without the children deleted with it, and `$contact.rollback()` lets the delete
+stand. To make deletes final, dismiss on `isDeleted`. A record deleted with no edit open stays deleted,
+and so does one deleted through `$contact.delete()`.
 
 ### CloudKit records
 
@@ -824,6 +834,7 @@ struct EditToDo: View {
 | `$todo.rollback()` | drops unsaved edits | drops the draft |
 | Changes from elsewhere | merge into the edit | merge into the draft |
 | `$todo.conflict` | until the edit saves | until Save or Cancel |
+| Deleted elsewhere | `isDeleted` at once, Save restores | `isDeleted` at once, Save restores |
 
 Either way, the record the view shows takes in changes that arrive while it's open, in the fields the user
 hasn't touched, and Save merges against the copy the edit began from, so it never overwrites what arrived.

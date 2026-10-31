@@ -285,3 +285,114 @@ import Testing
         #expect(try stored(contact.id).name == "Bo")
     }
 }
+
+/// A delete from elsewhere reaches an open editor at once, and the person's save can bring the record back.
+@MainActor
+@Suite struct DeletedWhileEditingTests {
+    let container = try! RecordContainer(for: [MergeContact.self], inMemory: true)
+    var context: RecordContext { container.mainContext }
+
+    private func track(_ contact: MergeContact, _ editing: RecordEditing) -> (RecordTracker<MergeContact>, () -> MergeContact) {
+        let tracker = RecordTracker(contact, editing: editing)
+        return (tracker, { [context] in tracker.update(context: context, initial: contact, zone: .default) {} })
+    }
+
+    private func deleteElsewhere(_ contact: MergeContact) async throws {
+        try container.delete(contact)
+        for _ in 0..<20 { await Task.yield() }
+    }
+
+    private func commit() throws {
+        try context.save()
+    }
+
+    private func edited(_ tracker: RecordTracker<MergeContact>, _ read: () -> MergeContact, name: String) {
+        var record = read()
+        record.name = name
+        tracker.write(record, context: context, zone: .default)
+    }
+
+    @Test(arguments: [RecordEditing.live, .draft])
+    func theEditorHearsAtOnceAndSavingRestores(_ editing: RecordEditing) async throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact, editing)
+        edited(tracker, read, name: "Bo")
+
+        try await deleteElsewhere(contact)
+        #expect(read().name == "Bo")
+        #expect(tracker.isDeleted)
+        // The edit no longer waits in the context, so no other save brings the record back.
+        #expect(!context.hasChanges)
+        try commit()
+        #expect(try container.fetch(MergeContact.self, id: contact.id) == nil)
+
+        // Typing goes on, and saving restores the record as shown.
+        edited(tracker, read, name: "Bob")
+        tracker.commit(context: context, zone: .default)
+        try commit()
+        #expect(try container.fetch(MergeContact.self, id: contact.id)?.name == "Bob")
+        #expect(!tracker.isDeleted)
+    }
+
+    @Test(arguments: [RecordEditing.live, .draft])
+    func rollingBackLetsTheDeleteStand(_ editing: RecordEditing) async throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact, editing)
+        edited(tracker, read, name: "Bo")
+
+        try await deleteElsewhere(contact)
+        _ = read()
+        tracker.rollback(context: context, zone: .default)
+        _ = read()
+        #expect(tracker.isDeleted)
+        #expect(!tracker.hasChanges(in: context))
+        edited(tracker, read, name: "Late")
+        tracker.commit(context: context, zone: .default)
+        try commit()
+        #expect(try container.fetch(MergeContact.self, id: contact.id) == nil)
+    }
+
+    @Test func anOwnDeleteStillIgnoresLateKeystrokes() throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact, .live)
+        _ = read()
+        tracker.delete(context: context, zone: .default)
+        try commit()
+        var late = read()
+        late.name = "Late"
+        #expect(!tracker.write(late, context: context, zone: .default))
+    }
+
+    @Test func aRecordWithNoEditIsSimplyDeleted() async throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact, .live)
+        _ = read()
+        try await deleteElsewhere(contact)
+        _ = read()
+        #expect(tracker.isDeleted)
+        #expect(!tracker.hasChanges(in: context))
+    }
+
+    @Test func aSavedDraftMergesIntoAnotherViewsUnsavedEdit() throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (draft, readDraft) = track(contact, .draft)
+        var mine = readDraft()
+        mine.name = "Bo"
+        draft.write(mine, context: context, zone: .default)
+        // Another view edits the same record live.
+        var other = contact
+        other.place.city = "Bergen"
+        context.insert(other)
+
+        draft.commit(context: context, zone: .default)
+        try commit()
+        let saved = try #require(try container.fetch(MergeContact.self, id: contact.id))
+        #expect(saved.name == "Bo")
+        #expect(saved.place.city == "Bergen")
+    }
+}

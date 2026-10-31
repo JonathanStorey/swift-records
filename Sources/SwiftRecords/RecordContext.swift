@@ -336,14 +336,23 @@ public final class RecordContext {
     }
 
     /// Brings unsaved edits in the zone up to date with what was committed elsewhere, so views show the
-    /// fields another save or a sync changed while each edit keeps its own changes.
+    /// fields another save or a sync changed while each edit keeps its own changes. An edit of a record
+    /// deleted elsewhere is dropped, since a delete wins. A `@Recordable` showing it keeps the edit for
+    /// its user to save again or let go.
     private func rebasePendingEdits(in zone: Zone, storage: ZoneStorage) {
         for (key, change) in pending where change.zone == zone {
-            guard case .saved(let record)? = change.latest, let rebased = try? Self.rebased(record, change, in: storage) else {
-                continue
+            guard case .saved(let record)? = change.latest else { continue }
+            if Self.isGone(record, change, in: storage) {
+                pending[key] = nil
+            } else if let rebased = try? Self.rebased(record, change, in: storage) {
+                pending[key] = rebased
             }
-            pending[key] = rebased
         }
+    }
+
+    /// Whether the record was stored when its edit began and no longer is.
+    private static func isGone<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) -> Bool {
+        change.base != nil && (try? storage.storedFields(R.self, id: record.id)) == .some(nil)
     }
 
     private static func rebased<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) throws -> Change? {
@@ -749,20 +758,20 @@ public final class RecordContext {
         }
     }
 
-    /// The stored copy of a record whose unsaved edit clashed with a change from elsewhere, or `nil` when
+    /// The stored copy of a record whose unsaved edit conflicted with a change from elsewhere, or `nil` when
     /// there's no conflict. A sync or another context changed a field the edit had also changed, and the
     /// edit kept its value. The conflict lasts until the edit saves, is rolled back, or is resolved.
     public func conflict<R: Record>(_ type: R.Type = R.self, for id: R.ID) -> R? {
         conflict(type, for: id, in: zone)
     }
 
-    /// Whether the record's unsaved edit clashed with a change from elsewhere at this property.
+    /// Whether the record's unsaved edit conflicted with a change from elsewhere at this property.
     public func conflict<R: Record>(_ type: R.Type = R.self, for id: R.ID, at keyPath: PartialKeyPath<R>) -> Bool {
         conflict(type, for: id, at: keyPath, in: zone)
     }
 
     /// Settles a record's conflict. `.ours` keeps the edit's values, and `.theirs` takes the stored copy's
-    /// values at the fields that clashed. Either way the edit stays unsaved and the conflict clears.
+    /// values at the fields in conflict. Either way the edit stays unsaved and the conflict clears.
     public func resolveConflict<R: Record>(_ type: R.Type = R.self, for id: R.ID, favoring side: MergeSide) {
         resolveConflict(type, for: id, favoring: side, in: zone)
     }
@@ -925,20 +934,31 @@ public final class RecordContext {
         let key = Self.key(record, in: zone)
         let base: SyncFields?
         let earlierClashes = pending[key]?.clashes
+        var record = record
         if let given {
-            base = given
+            // An edit made away from the context, such as a draft, merges into another view's unsaved edit
+            // of the record rather than replace it.
+            if let given, let earlier = pending[key], case .saved(let other as R)? = earlier.latest,
+               let merged = try? storage(for: zone).merge(record, into: other, base: given) {
+                record = merged
+                base = earlier.base
+            } else {
+                base = given
+            }
         } else if let earlier = pending[key] ?? inFlight[key] {
             // A later edit, even one made while the earlier edit saves, started from the same copy.
             base = earlier.base
         } else {
             base = try? storage(for: zone).storedFields(R.self, id: record.id)
         }
-        enqueue(key: key, zone: zone, table: R.table, source: source, latest: .saved(record), base: base) {
-            try $0.save(record, base: base)
+        let saving = record
+        enqueue(key: key, zone: zone, table: R.table, source: source, latest: .saved(saving), base: base) {
+            try $0.save(saving, base: base)
         }
-        // A later edit keeps the earlier edit's conflict until it saves or is resolved.
-        if let clashes = earlierClashes {
-            pending[key]?.clashes = clashes
+        // A later edit keeps the earlier edit's conflict, except at fields it has come to agree with the
+        // stored copy, until it saves or is resolved.
+        if let clashes = earlierClashes, !clashes.isEmpty {
+            pending[key]?.clashes = (try? storage(for: zone).remainingClashes(of: saving, in: clashes)) ?? clashes
         }
     }
 

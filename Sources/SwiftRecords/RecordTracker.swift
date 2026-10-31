@@ -17,6 +17,9 @@ final class RecordTracker<R: Record> {
     /// The record as the view shows it, or its last value once it's deleted.
     private(set) var value: R
     private(set) var isDeleted = false
+    /// Whether the record was deleted somewhere else. The view keeps its edit, held as a draft, so saving
+    /// brings the record back.
+    private var deletedElsewhere = false
     /// Whether the record hasn't been inserted yet, here or anywhere else.
     private(set) var isNew = true
     /// The record when tracking began, which a rollback of a new record returns to.
@@ -77,6 +80,8 @@ final class RecordTracker<R: Record> {
         let key = Key(id: value.id, zone: zone)
         let changeCount = context.changeCount
         let refetches = self.key != key || self.changeCount != changeCount
+        let previous = stored?.first
+        let wasDeleted = isDeleted
         if self.key == key, changeCount == self.changeCount + 1, context.lastSaveSource == source {
             // The save only wrote this tracker's own edit, which the value already shows.
             stored = isDeleted ? [] : [value]
@@ -95,6 +100,15 @@ final class RecordTracker<R: Record> {
             overlay(context, zone: zone)
         }
         sequence = context.sequence
+        if isDeleted, !wasDeleted, let previous {
+            // Deleted elsewhere. An edit the user made stays as a draft with nothing to merge against, so
+            // `save()` restores the record whole and a rollback lets the delete stand. Without an edit there's
+            // nothing to keep, and later keystrokes are ignored.
+            if draft != nil || !StructuralEquality.equal(value, previous) {
+                deletedElsewhere = true
+                draft = Draft(record: draft?.record ?? value, base: nil)
+            }
+        }
         if draft != nil {
             if refetches {
                 rebaseDraft(context: context, zone: zone)
@@ -136,13 +150,19 @@ final class RecordTracker<R: Record> {
     /// changes nothing, or it names another record. Returns whether it wrote.
     @discardableResult
     func write(_ record: R, context: RecordContext, zone: Zone) -> Bool {
-        guard !isDeleted, record.id == value.id, !StructuralEquality.equal(record, value) else { return false }
+        guard !isDeleted || deletedElsewhere, record.id == value.id, !StructuralEquality.equal(record, value) else {
+            return false
+        }
         value = record
-        if editing == .draft {
+        if editing == .draft || deletedElsewhere {
             if draft == nil {
-                draft = Draft(record: record, base: isNew ? nil : try? context.storage(for: zone).storedFields(R.self, id: record.id))
+                let base = isNew || deletedElsewhere ? nil : try? context.storage(for: zone).storedFields(R.self, id: record.id)
+                draft = Draft(record: record, base: base)
             }
             draft?.record = record
+            if let clashes = draft?.clashes, !clashes.isEmpty {
+                draft?.clashes = (try? context.storage(for: zone).remainingClashes(of: record, in: clashes)) ?? clashes
+            }
             return true
         }
         isNew = false
@@ -155,10 +175,12 @@ final class RecordTracker<R: Record> {
         guard let draft else { return }
         self.draft = nil
         isNew = false
+        isDeleted = false
+        deletedElsewhere = false
         context.insert(draft.record, in: zone, source: source, base: draft.base)
     }
 
-    /// The stored copy when an edit clashed with a change from elsewhere.
+    /// The stored copy when an edit conflicted with a change from elsewhere.
     func conflict(context: RecordContext, zone: Zone) -> R? {
         guard editing == .draft else { return context.conflict(R.self, for: value.id, in: zone) }
         guard draft?.clashes.isEmpty == false else { return nil }
@@ -186,6 +208,12 @@ final class RecordTracker<R: Record> {
 
     /// Deletes the record. A new record was never inserted, so there's nothing to remove.
     func delete(context: RecordContext, zone: Zone) {
+        if deletedElsewhere {
+            // Lets the delete from elsewhere stand.
+            draft = nil
+            deletedElsewhere = false
+            return
+        }
         guard !isDeleted else { return }
         draft = nil
         isDeleted = true
@@ -209,6 +237,11 @@ final class RecordTracker<R: Record> {
     func rollback(context: RecordContext, zone: Zone) {
         draft = nil
         context.rollback(source: source)
+        if deletedElsewhere {
+            // The delete from elsewhere stands.
+            deletedElsewhere = false
+            return
+        }
         if (try? context.storage(for: zone).fetch(R.self, id: value.id)) == nil {
             value = original
             isNew = true
