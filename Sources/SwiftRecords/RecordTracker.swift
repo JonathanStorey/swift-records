@@ -1,5 +1,14 @@
 import Foundation
 
+/// How `@Recordable` writes edits.
+public enum RecordEditing: Sendable {
+    /// Each edit goes to the context at once, so other views show it and the context's next save commits it.
+    case live
+    /// Edits stay in the wrapper until `save()`, and `rollback()` drops them, for a form with Save and Cancel.
+    /// Changes from elsewhere still merge into the fields the draft left alone.
+    case draft
+}
+
 /// Keeps one record current for `@Recordable`: the stored copy with the context's unsaved change laid
 /// over it, read again by primary key only after a commit this tracker didn't make. A record the store
 /// has never held is new until its first edit inserts it.
@@ -21,13 +30,25 @@ final class RecordTracker<R: Record> {
     /// The context's last change number this tracker has seen.
     private var sequence = 0
     private weak var context: RecordContext?
+    private let editing: RecordEditing
+    /// A draft's edits, which reach the context only when it commits.
+    private var draft: Draft?
+
+    private struct Draft {
+        var record: R
+        /// The stored fields when the draft's first edit was made, which its commit merges against.
+        var base: SyncFields?
+        /// The fields where the draft kept its value over a change from elsewhere.
+        var clashes: Set<String> = []
+    }
 
     struct Key: Equatable {
         let id: R.ID
         let zone: Zone
     }
 
-    init(_ value: R) {
+    init(_ value: R, editing: RecordEditing = .live) {
+        self.editing = editing
         self.value = value
         original = value
         lastInitialID = value.id
@@ -55,6 +76,7 @@ final class RecordTracker<R: Record> {
         lastInitialID = initial.id
         let key = Key(id: value.id, zone: zone)
         let changeCount = context.changeCount
+        let refetches = self.key != key || self.changeCount != changeCount
         if self.key == key, changeCount == self.changeCount + 1, context.lastSaveSource == source {
             // The save only wrote this tracker's own edit, which the value already shows.
             stored = isDeleted ? [] : [value]
@@ -73,7 +95,25 @@ final class RecordTracker<R: Record> {
             overlay(context, zone: zone)
         }
         sequence = context.sequence
+        if draft != nil {
+            if refetches {
+                rebaseDraft(context: context, zone: zone)
+            }
+            if let draft {
+                value = draft.record
+            }
+        }
         return value
+    }
+
+    /// Merges what changed in the store since the draft began into the fields it left alone, as the context
+    /// does for an unsaved edit.
+    private func rebaseDraft(context: RecordContext, zone: Zone) {
+        guard let base = draft?.base, let record = draft?.record,
+              let (edit, newBase, clashes) = try? context.storage(for: zone).rebase(record, base: base) else { return }
+        draft?.record = edit
+        draft?.base = newBase
+        draft?.clashes.formUnion(clashes)
     }
 
     private func overlay(_ context: RecordContext, zone: Zone) {
@@ -98,14 +138,56 @@ final class RecordTracker<R: Record> {
     func write(_ record: R, context: RecordContext, zone: Zone) -> Bool {
         guard !isDeleted, record.id == value.id, !StructuralEquality.equal(record, value) else { return false }
         value = record
+        if editing == .draft {
+            if draft == nil {
+                draft = Draft(record: record, base: isNew ? nil : try? context.storage(for: zone).storedFields(R.self, id: record.id))
+            }
+            draft?.record = record
+            return true
+        }
         isNew = false
         context.insert(record, in: zone, source: source)
         return true
     }
 
+    /// Hands a draft's edits to the context, to merge against the stored copy the draft began from.
+    func commit(context: RecordContext, zone: Zone) {
+        guard let draft else { return }
+        self.draft = nil
+        isNew = false
+        context.insert(draft.record, in: zone, source: source, base: draft.base)
+    }
+
+    /// The stored copy when an edit clashed with a change from elsewhere.
+    func conflict(context: RecordContext, zone: Zone) -> R? {
+        guard editing == .draft else { return context.conflict(R.self, for: value.id, in: zone) }
+        guard draft?.clashes.isEmpty == false else { return nil }
+        return try? context.storage(for: zone).fetch(R.self, id: value.id)
+    }
+
+    func conflict(at keyPath: PartialKeyPath<R>, context: RecordContext, zone: Zone) -> Bool {
+        guard editing == .draft else { return context.conflict(R.self, for: value.id, at: keyPath, in: zone) }
+        guard let clashes = draft?.clashes, !clashes.isEmpty else { return false }
+        return R.cachedSchema.fields.contains { $0.keyPath == keyPath && clashes.contains($0.name) }
+    }
+
+    func resolve(favoring side: MergeSide, context: RecordContext, zone: Zone) {
+        guard editing == .draft else { return context.resolveConflict(R.self, for: value.id, favoring: side, in: zone) }
+        guard var draft, !draft.clashes.isEmpty else { return }
+        if side == .theirs, let stored = try? context.storage(for: zone).fetch(R.self, id: value.id) {
+            for field in R.cachedSchema.fields where draft.clashes.contains(field.name) {
+                _ = RecordStore.copy(field.keyPath, from: stored, into: &draft.record)
+            }
+        }
+        draft.clashes = []
+        self.draft = draft
+        value = draft.record
+    }
+
     /// Deletes the record. A new record was never inserted, so there's nothing to remove.
     func delete(context: RecordContext, zone: Zone) {
         guard !isDeleted else { return }
+        draft = nil
         isDeleted = true
         if !isNew {
             context.delete(value, in: zone, source: source)
@@ -125,6 +207,7 @@ final class RecordTracker<R: Record> {
 
     /// Drops this tracker's unsaved edits and delete. A new record that hasn't saved goes back to new.
     func rollback(context: RecordContext, zone: Zone) {
+        draft = nil
         context.rollback(source: source)
         if (try? context.storage(for: zone).fetch(R.self, id: value.id)) == nil {
             value = original
@@ -137,6 +220,6 @@ final class RecordTracker<R: Record> {
 
     /// Whether edits made through this tracker are still waiting to save.
     func hasChanges(in context: RecordContext) -> Bool {
-        context.hasPendingChanges(from: source)
+        draft != nil || context.hasPendingChanges(from: source)
     }
 }

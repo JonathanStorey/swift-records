@@ -170,3 +170,118 @@ import Testing
         #expect(!context.hasChanges)
     }
 }
+
+/// A draft holds its edits until it commits, and still takes in changes from elsewhere.
+@MainActor
+@Suite struct DraftTrackerTests {
+    let container = try! RecordContainer(for: [MergeContact.self], inMemory: true)
+    var context: RecordContext { container.mainContext }
+
+    private func track(_ contact: MergeContact) -> (RecordTracker<MergeContact>, () -> MergeContact) {
+        let tracker = RecordTracker(contact, editing: .draft)
+        return (tracker, { [context] in tracker.update(context: context, initial: contact, zone: .default) {} })
+    }
+
+    private func stored(_ id: UUID) throws -> MergeContact {
+        try #require(try container.fetch(MergeContact.self, id: id))
+    }
+
+    /// Saves a change from elsewhere and lets the context hear of it.
+    private func push(_ id: UUID, _ change: (inout MergeContact) -> Void) async throws {
+        var other = try stored(id)
+        change(&other)
+        try container.save(other)
+        for _ in 0..<20 { await Task.yield() }
+    }
+
+    private func commit() throws {
+        try context.save()
+    }
+
+    @Test func editsStayInTheDraftUntilItCommits() throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact)
+        var edited = read()
+        edited.name = "Bo"
+        #expect(tracker.write(edited, context: context, zone: .default))
+        #expect(read().name == "Bo")
+        #expect(tracker.hasChanges(in: context))
+        #expect(!context.hasChanges)
+        #expect(try context.record(MergeContact.self, for: contact.id)?.name == "Ann")
+
+        tracker.commit(context: context, zone: .default)
+        try commit()
+        #expect(try stored(contact.id).name == "Bo")
+        #expect(!tracker.hasChanges(in: context))
+    }
+
+    @Test func rollingBackLeavesNothingBehind() throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact)
+        var edited = read()
+        edited.name = "Bo"
+        tracker.write(edited, context: context, zone: .default)
+        tracker.rollback(context: context, zone: .default)
+        #expect(read().name == "Ann")
+        #expect(!tracker.hasChanges(in: context))
+    }
+
+    @Test func changesFromElsewhereMergeIntoTheDraft() async throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact)
+        var edited = read()
+        edited.name = "Bo"
+        edited.plays += 2
+        tracker.write(edited, context: context, zone: .default)
+
+        try await push(contact.id) {
+            $0.place.city = "Bergen"
+            $0.plays += 3
+        }
+        let current = read()
+        #expect(current.name == "Bo")
+        #expect(current.place.city == "Bergen")
+        #expect(current.plays == 5)
+        #expect(tracker.conflict(context: context, zone: .default) == nil)
+
+        tracker.commit(context: context, zone: .default)
+        try commit()
+        #expect(try stored(contact.id).plays == 5)
+        #expect(try stored(contact.id).place.city == "Bergen")
+    }
+
+    @Test func aClashInTheDraftIsAConflict() async throws {
+        let contact = MergeContact()
+        try container.save(contact)
+        let (tracker, read) = track(contact)
+        var edited = read()
+        edited.name = "Bo"
+        tracker.write(edited, context: context, zone: .default)
+
+        try await push(contact.id) { $0.name = "Cy" }
+        #expect(read().name == "Bo")
+        #expect(tracker.conflict(context: context, zone: .default)?.name == "Cy")
+        #expect(tracker.conflict(at: \.name, context: context, zone: .default))
+        // The draft never reached the context.
+        #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
+
+        tracker.resolve(favoring: .theirs, context: context, zone: .default)
+        #expect(read().name == "Cy")
+        #expect(tracker.conflict(context: context, zone: .default) == nil)
+    }
+
+    @Test func aNewRecordDraftSavesWhole() throws {
+        let contact = MergeContact()
+        let (tracker, read) = track(contact)
+        var edited = read()
+        edited.name = "Bo"
+        tracker.write(edited, context: context, zone: .default)
+        #expect(try container.fetch(MergeContact.self, id: contact.id) == nil)
+        tracker.commit(context: context, zone: .default)
+        try commit()
+        #expect(try stored(contact.id).name == "Bo")
+    }
+}
