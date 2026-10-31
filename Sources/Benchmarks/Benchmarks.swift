@@ -215,6 +215,66 @@ struct Run {
             try await tabletContext.refresh()
         }
 
+        // MARK: Merging
+
+        // Edits that meet changes from elsewhere: a background save under unsaved edits, the save of an edit
+        // that started before it, and two devices editing the same records.
+        let mergeIDs = try context.fetch(RecordDescriptor<Recipe>(fetchLimit: 1_000, fetchOffset: remaining / 2)).map(\.id)
+        let backgroundEdit: (Int) async throws -> Void = { round in
+            try await phone!.performBackgroundTask { background in
+                var batch: [Recipe] = []
+                for id in mergeIDs {
+                    guard var recipe = try background.record(Recipe.self, for: id) else { continue }
+                    recipe.title += " (bg \(round))"
+                    recipe.rating += 0.1
+                    batch.append(recipe)
+                }
+                try background.transaction { try background.insert(batch) }
+            }
+            // Let the main context handle the commit, as it would before the next frame.
+            await Task.yield()
+            await Task.yield()
+        }
+        try await measure("Background edit of 1,000, nothing unsaved", records: 1_000) {
+            try await backgroundEdit(1)
+        }
+        for id in mergeIDs {
+            guard var recipe = try context.record(Recipe.self, for: id) else { continue }
+            recipe.title += " (mine)"
+            recipe.servings += 1
+            context.insert(recipe)
+        }
+        try await measure("Background edit of 1,000 under unsaved edits", records: 1_000) {
+            try await backgroundEdit(2)
+        }
+        try await measure("Save 1,000 edits made before that edit", records: 1_000) {
+            try Self.commit(context)
+        }
+
+        // Both devices change the title, so the merge decodes each record, and each adds one more field.
+        server.isOnline = false
+        for id in mergeIDs {
+            guard var recipe = try context.record(Recipe.self, for: id) else { continue }
+            recipe.title += " (phone)"
+            recipe.servings += 1
+            context.insert(recipe)
+        }
+        try Self.commit(context)
+        server.isOnline = true
+        try await tabletContext.refresh()
+        for id in mergeIDs {
+            guard var recipe = try tabletContext.record(Recipe.self, for: id) else { continue }
+            recipe.title += " (tablet)"
+            recipe.rating += 0.2
+            tabletContext.insert(recipe)
+        }
+        try await tabletContext.refresh()
+        try await measure("Reconcile 1,000 records both devices edited", records: 1_000) {
+            try await context.refresh()
+        }
+        try expect(try context.record(Recipe.self, for: mergeIDs[0])?.title.hasSuffix("(phone)") == true
+            || context.record(Recipe.self, for: mergeIDs[0])?.title.hasSuffix("(tablet)") == true, "a side won the title")
+
         // A server the store hasn't synced with gets every record, as after moving to a new backend.
         phone = nil
         let newServer = BenchmarkServer(name: "second")
