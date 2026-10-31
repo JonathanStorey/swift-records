@@ -72,6 +72,19 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
         }
     }
 
+    /// The zone a stored name refers to in an owner's database, shared when `owner` is set.
+    package init?(stored name: String, owner: String?) {
+        guard let zone = Zone(stored: name) else { return nil }
+        guard let owner else {
+            self = zone
+            return
+        }
+        guard !owner.isEmpty, owner.utf8.count <= 255 else { return nil }
+        self.name = zone.name
+        scope = .shared
+        self.owner = owner
+    }
+
     /// Throws `RecordsError.invalidZoneName` unless the name, once lowercased, is a valid zone name.
     public init(_ name: String) throws {
         let lowercased = name.lowercased()

@@ -86,6 +86,7 @@ import Testing
 
 #if canImport(CloudKit)
 import CloudKit
+import SwiftRecordsCloudKit
 
 @MainActor
 @Suite struct CKRecordTests {
@@ -154,6 +155,41 @@ import CloudKit
         #expect(record["title"] as? String == "Stew")
         // System fields carry no values, so nothing of the server's copy survives but its identity.
         #expect(record["summary"] == nil)
+    }
+
+    @Test func aFieldLevelChangeSetsOnlyItsKeys() throws {
+        let phone = try Device(server)
+        let id = UUID()
+        let copy = CKRecord(recordType: "SyncRecipe", recordID: CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+        let change = RecordChangeData(
+            id: id, zone: .default, type: "SyncRecipe", fields: ["title": .string("Stew"), "servings": .int(4)],
+            tag: Self.systemFields(of: copy), changedKeys: ["title"], clearedKeys: ["summary"]
+        )
+        let record = try #require(try phone.container.ckRecord(for: change, in: zoneID))
+        #expect(Set(record.changedKeys()) == ["title", "summary"])
+        #expect(record["servings"] == nil)
+    }
+
+    @Test func zonesMapToCloudKitZones() {
+        let family: Zone = "family"
+        #expect(CloudKitSyncProvider.zoneID(family) == CKRecordZone.ID(zoneName: "family", ownerName: CKCurrentUserDefaultName))
+        #expect(CloudKitSyncProvider.zoneID(.default).zoneName == "swiftrecords._default")
+        let shared = try! Zone("family", sharedBy: "_owner")
+        #expect(CloudKitSyncProvider.zoneID(shared).ownerName == "_owner")
+        for zone in [family, .default, Zone.settings("theme")] {
+            #expect(CloudKitSyncProvider.zone(for: CloudKitSyncProvider.zoneID(zone), scope: .private) == zone)
+        }
+        #expect(CloudKitSyncProvider.zone(for: CloudKitSyncProvider.zoneID(shared), scope: .shared) == shared)
+        // Zones another app or framework made aren't SwiftRecords'.
+        #expect(CloudKitSyncProvider.zone(for: CKRecordZone.ID(zoneName: "_defaultZone", ownerName: CKCurrentUserDefaultName), scope: .private) == nil)
+    }
+
+    @Test func cloudKitErrorsBecomeFailures() {
+        #expect(CloudKitSyncProvider.failure(CKError(.zoneNotFound)) == .zoneNotFound)
+        #expect(CloudKitSyncProvider.failure(CKError(.quotaExceeded)) == .quotaExceeded)
+        #expect(CloudKitSyncProvider.failure(CKError(.networkFailure)) == .networkUnavailable)
+        #expect(CloudKitSyncProvider.failure(CKError(.unknownItem)) == .unknownItem)
+        #expect(CloudKitSyncProvider.failure(CKError(.permissionFailure)) == .permissionFailure)
     }
 
     @Test func systemFieldsForAnotherRecordThrow() throws {

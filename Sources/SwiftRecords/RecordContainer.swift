@@ -90,6 +90,7 @@ public final class RecordContainer: @unchecked Sendable {
         initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: Self.hub(hub, for: initialZone, syncs))
         storages = [initialZone: initialStorage]
         opener.container = self
+        syncProvider?.attach(self)
         if directory != nil {
             Self.register(self)
         }
@@ -127,6 +128,16 @@ public final class RecordContainer: @unchecked Sendable {
     func syncedStorage(for zone: Zone) -> ZoneStorage? {
         guard Self.hub(syncHub, for: zone, syncs) != nil else { return nil }
         return try? storage(for: zone)
+    }
+
+    /// Where an asset file with this ID is kept in the zone, for a provider that sends files with records.
+    package func assetURL(named name: String, in zone: Zone) throws -> URL {
+        try storage(for: zone).store.assetURL(named: name)
+    }
+
+    /// The extension an asset property gives its files, or "" for none.
+    package func assetExtension(type: String, field: String, in zone: Zone) throws -> String {
+        try storage(for: zone).store.assetExtension(type: type, field: field)
     }
 
     /// The zone's database file, the initial zone's by default, or `nil` in memory.
