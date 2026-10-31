@@ -9,14 +9,14 @@ final class TestServer: @unchecked Sendable {
     private let lock = NSLock()
     /// Each record's latest change, deletions included, with the sequence number it was stored at.
     private var latest: [String: (change: RecordChangeData, sequence: Int)] = [:]
-    /// Who created each record, kept by the server rather than sent by devices.
-    private var creators: [String: String] = [:]
     private var assets: [String: Data] = [:]
     private var sequence = 0
-    /// Goes up with each `reset()`, so providers can tell the zone was deleted.
+    /// Goes up with each `reset(reason:)`, so devices can tell the zones were deleted.
     private(set) var epoch = 0
+    /// Why the last reset happened.
+    private(set) var resetReason = ZoneDeletion.Reason.purged
 
-    /// The signed-in account. Private zones keep each account's records apart.
+    /// The signed-in account. Zones keep each account's records apart.
     var account: String? = "alice"
     var isOnline = true
     var isFull = false
@@ -25,8 +25,6 @@ final class TestServer: @unchecked Sendable {
     var tagsRecords = true
     /// Whether the server says when it saved each copy.
     var datesRecords = true
-    /// Zones every account shares. Only a record's creator can change it.
-    var publicZones: Set<Zone> = []
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -34,9 +32,9 @@ final class TestServer: @unchecked Sendable {
         return try body()
     }
 
-    /// Where a zone's records live: shared for a public zone, otherwise the account's own.
+    /// Where a zone's records live: the account's own.
     private func space(_ zone: Zone, account: String?) -> String {
-        "\(publicZones.contains(zone) ? "public" : account ?? "")|\(zone)|"
+        "\(account ?? "")|\(zone)|"
     }
 
     private func key(_ zone: Zone, _ type: String, _ id: UUID, account: String?) -> String {
@@ -48,26 +46,20 @@ final class TestServer: @unchecked Sendable {
         Date(timeIntervalSince1970: 1_700_000_000 + Double(sequence))
     }
 
-    /// Stores a change from `user`, or answers with the newer copy it conflicts with.
-    func save(_ change: RecordChangeData, by user: String?) -> UploadResult {
+    /// Stores a change from `user`, and returns the stored copy, or the newer copy it conflicts with.
+    func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
         withLock {
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
             if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
-                return .conflict(current)
+                return .failure(.serverRecordChanged(current))
             }
-            // The server, not the device, decides who created a record, and in a public zone only they can change it.
-            let creator = creators[storageKey] ?? user
-            if publicZones.contains(change.zone), creator != user {
-                return .rejected(id: change.id)
-            }
-            creators[storageKey] = creator
             sequence += 1
             var stored = change
             stored.tag = tagsRecords ? Data("tag \(sequence)".utf8) : nil
             stored.synced = datesRecords ? Self.date(sequence) : nil
             latest[storageKey] = (stored, sequence)
-            return .saved(id: change.id, tag: stored.tag, synced: stored.synced)
+            return .success(stored)
         }
     }
 
@@ -83,9 +75,12 @@ final class TestServer: @unchecked Sendable {
         }
     }
 
-    /// Who created a record the current account can see.
-    func creator(_ type: String, _ id: UUID, zone: Zone = .default) -> String? {
-        withLock { creators[key(zone, type, id, account: account)] }
+    /// The zones `user` has records in, those with changes after `cursor`, and the latest sequence number.
+    func zones(for user: String?, changedAfter cursor: Int) -> (all: Set<Zone>, changed: Set<Zone>, sequence: Int) {
+        withLock {
+            let own = latest.filter { $0.key.hasPrefix("\(user ?? "")|") }.values
+            return (Set(own.map(\.change.zone)), Set(own.filter { $0.sequence > cursor }.map(\.change.zone)), sequence)
+        }
     }
 
     /// The zone's latest changes for `user` after `cursor`, oldest first, at most `limit`, and the new cursor.
@@ -135,24 +130,24 @@ final class TestServer: @unchecked Sendable {
         withLock { assets[id] }
     }
 
-    /// Deletes everything, as when a person deletes the app's data in Settings.
-    func reset() {
+    /// Deletes everything, as when a person deletes the app's data in Settings, or for `.encryptedDataReset`,
+    /// when the server loses it.
+    func reset(reason: ZoneDeletion.Reason = .purged) {
         withLock {
             latest = [:]
-            creators = [:]
             assets = [:]
             epoch += 1
+            resetReason = reason
         }
     }
 }
 
-/// A provider that talks to a `TestServer`.
-final class TestProvider: SyncProvider, @unchecked Sendable {
+/// A transport that talks to a `TestServer`, as one device.
+final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
     let server: TestServer
     private let lock = NSLock()
     private var batches: [[RecordChangeData]] = []
     private var uploadedAssets: [String] = []
-    private var epoch: Int
     /// Saves on the server without answering, as if the app quit before hearing back.
     var dropsAcknowledgements = false
     /// Signs this device in as someone other than the server's account, `.some(nil)` for signed out.
@@ -166,12 +161,9 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     var identifier: String { server.name }
 
-    func isPublic(_ zone: Zone) -> Bool { server.withLock { server.publicZones.contains(zone) } }
-
     init(server: TestServer, account: String?? = nil) {
         self.server = server
         self.account = account
-        epoch = server.withLock { server.epoch }
     }
 
     /// Every batch the container asked to upload.
@@ -186,42 +178,80 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     /// Throws what a real server would before doing any work.
     private func check() throws {
-        let (online, current) = server.withLock { (server.isOnline, server.epoch) }
-        guard online else { throw SyncError.offline }
-        let reset = lock.withLock {
-            defer { epoch = current }
-            return epoch != current
-        }
-        if reset { throw SyncError.serverReset }
+        guard server.withLock({ server.isOnline }) else { throw SyncFailure.networkUnavailable }
     }
 
-    func userID() async throws -> String? {
+    func currentUser() async throws -> String? {
         user
     }
 
-    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] {
+    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
+        let changes = batch.changes
         lock.withLock { batches.append(changes) }
         try check()
         let (full, rejected) = server.withLock { (server.isFull, server.rejectedTypes) }
-        guard !full else { throw SyncError.storageFull }
+        guard !full else { throw SyncFailure.quotaExceeded }
         let user = user
-        let results: [UploadResult] = changes.map { change in
-            rejected.contains(change.type) ? .rejected(id: change.id) : server.save(change, by: user)
+        var result = SentRecordChanges()
+        for change in changes {
+            if rejected.contains(change.type) {
+                result.failed.append(FailedSave(change: change, failure: .permissionFailure))
+                continue
+            }
+            switch server.save(change, by: user) {
+            case .success(let stored):
+                if change.isDeletion {
+                    result.deleted.append(RecordDeletion(id: change.id, zone: change.zone, type: change.type))
+                } else {
+                    result.saved.append(stored)
+                }
+            case .failure(let failure):
+                result.failed.append(FailedSave(change: change, failure: failure))
+            }
         }
         // Saved, but the app never hears back, however often it sends again.
-        return dropsAcknowledgements ? [] : results
+        return dropsAcknowledgements ? SentRecordChanges() : result
     }
 
-    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
+    /// The token holds the server's epoch, the last sequence seen, and the zones seen, so a reset reads as
+    /// those zones being deleted.
+    private struct DatabaseToken: Codable {
+        var epoch: Int
+        var sequence: Int
+        var zones: [Zone]
+    }
+
+    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
         try check()
-        let start = cursor.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+        let (epoch, reason) = server.withLock { (server.epoch, server.resetReason) }
+        var known = token.flatMap { try? JSONDecoder().decode(DatabaseToken.self, from: $0) }
+        var deleted: [ZoneDeletion] = []
+        if let old = known, old.epoch != epoch {
+            deleted = old.zones.map { ZoneDeletion(zone: $0, reason: reason) }
+            known = nil
+        }
+        let zones = server.zones(for: user, changedAfter: known?.sequence ?? 0)
+        let seen = Set(known?.zones ?? []).union(zones.all)
+        let next = DatabaseToken(epoch: epoch, sequence: zones.sequence, zones: seen.sorted { $0.name < $1.name })
+        return DatabaseChanges(
+            modified: zones.changed.sorted { $0.name < $1.name }, deleted: deleted, token: try JSONEncoder().encode(next)
+        )
+    }
+
+    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
+        try check()
+        let start = token.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
         let page = server.changes(in: zone, for: user, since: start, limit: pageSize)
-        return RecordDownload(changes: page.changes, cursor: Data(String(page.cursor).utf8), hasMore: page.hasMore)
+        return ZoneChanges(
+            saved: page.changes.filter { !$0.isDeletion },
+            deleted: page.changes.filter(\.isDeletion).map { RecordDeletion(id: $0.id, zone: $0.zone, type: $0.type) },
+            token: Data(String(page.cursor).utf8), moreComing: page.hasMore
+        )
     }
 
     func uploadAssets(_ assets: [RecordAssetData]) async throws {
         try check()
-        guard !failsAssetUploads else { throw SyncError.offline }
+        guard !failsAssetUploads else { throw SyncFailure.networkUnavailable }
         for asset in assets {
             server.storeAsset(try Data(contentsOf: asset.file), id: asset.id)
             lock.withLock { uploadedAssets.append(asset.id) }
@@ -231,9 +261,66 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
         await beforeAssetDownload?()
         try check()
-        guard let data = server.asset(id) else { throw SyncError.offline }
+        guard let data = server.asset(id) else { throw SyncFailure.networkUnavailable }
         let file = directory.appendingPathComponent(id)
         try data.write(to: file)
         return file
     }
+}
+
+/// One device's engine on a `TestServer`, which syncs only when asked so tests control each step.
+final class TestProvider: SyncProvider, @unchecked Sendable {
+    let transport: TestTransport
+    private let engine: PollingSyncEngine
+
+    init(server: TestServer, account: String?? = nil, automaticallySync: Bool = false) {
+        transport = TestTransport(server: server, account: account)
+        engine = PollingSyncEngine(transport: transport, automaticallySync: automaticallySync, sendDelay: .milliseconds(10))
+    }
+
+    var server: TestServer { transport.server }
+    var sentBatches: [[RecordChangeData]] { transport.sentBatches }
+    var sentAssets: [String] { transport.sentAssets }
+
+    var dropsAcknowledgements: Bool {
+        get { transport.dropsAcknowledgements }
+        set { transport.dropsAcknowledgements = newValue }
+    }
+
+    var account: String?? {
+        get { transport.account }
+        set { transport.account = newValue }
+    }
+
+    var pageSize: Int {
+        get { transport.pageSize }
+        set { transport.pageSize = newValue }
+    }
+
+    var failsAssetUploads: Bool {
+        get { transport.failsAssetUploads }
+        set { transport.failsAssetUploads = newValue }
+    }
+
+    var beforeAssetDownload: (@Sendable () async -> Void)? {
+        get { transport.beforeAssetDownload }
+        set { transport.beforeAssetDownload = newValue }
+    }
+
+    // MARK: SyncProvider
+
+    var identifier: String { engine.identifier }
+    var assetTransfer: (any AssetTransfer)? { engine.assetTransfer }
+
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
+        await engine.start(scope, state: state, delegate: delegate)
+    }
+
+    func addPending(_ changes: [PendingRecordChange]) { engine.addPending(changes) }
+    func removePending(_ changes: [PendingRecordChange]) { engine.removePending(changes) }
+    func addPending(_ changes: [PendingZoneChange]) { engine.addPending(changes) }
+    func removePending(_ changes: [PendingZoneChange]) { engine.removePending(changes) }
+    func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }
+    func fetchChanges(_ options: FetchOptions) async throws { try await engine.fetchChanges(options) }
+    func cancelOperations() async { await engine.cancelOperations() }
 }

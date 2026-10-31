@@ -53,15 +53,13 @@ struct UnsyncableField {
     var _hidden = ""
 }
 
-/// A provider that is never signed in, for checks that run before any sync.
+/// A provider that never syncs, for checks that run before any sync.
 final class SilentProvider: SyncProvider {
-    func userID() async throws -> String? { nil }
-    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult] { [] }
-    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload {
-        RecordDownload(changes: [], cursor: cursor)
-    }
-    func uploadAssets(_ assets: [RecordAssetData]) async throws {}
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL { throw SyncError.offline }
+    var identifier: String { "silent" }
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {}
+    func addPending(_ changes: [PendingRecordChange]) {}
+    func sendChanges(_ options: SendOptions) async throws {}
+    func fetchChanges(_ options: FetchOptions) async throws {}
 }
 
 @Suite struct SchemaCheckTests {

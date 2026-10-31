@@ -1,6 +1,6 @@
 import Foundation
 
-/// One zone's open database file, its asset files and its sync coordinator. A `RecordContainer` opens one
+/// One zone's open database file, its asset files and its side of sync. A `RecordContainer` opens one
 /// for each zone it uses, and every context of that zone works through it.
 package final class ZoneStorage: @unchecked Sendable {
     let store: RecordStore
@@ -17,34 +17,29 @@ package final class ZoneStorage: @unchecked Sendable {
     var assetsDirectory: URL { store.assetsDirectory }
 
     /// Keeps the zone in step with a server. `nil` for a zone that only stores locally. Set once, in `init`.
-    private(set) nonisolated(unsafe) var sync: SyncCoordinator?
+    private(set) nonisolated(unsafe) var sync: ZoneSync?
 
     /// Where syncing stands, for the main context's `status`.
-    @MainActor private(set) var syncPhase: SyncCoordinator.Phase = .idle {
+    @MainActor private(set) var syncPhase: ZoneSync.Phase = .idle {
         didSet { context?.syncPhaseChanged() }
     }
 
     /// How far the zone's asset files have got moving to and from the server, `nil` when none are.
-    @MainActor private(set) var assetTransfer: SyncCoordinator.Transfer? {
+    @MainActor private(set) var assetTransfer: ZoneSync.Transfer? {
         didSet { context?.assetTransferChanged() }
     }
 
-    /// Downloads whenever the provider pushes word that the zone changed.
-    private var pushTask: Task<Void, Never>?
-
-    init(
-        zone: Zone, store: RecordStore, types: [any Record.Type], syncProvider: (any SyncProvider)?, isPublic: Bool = false
-    ) throws {
+    init(zone: Zone, store: RecordStore, types: [any Record.Type], hub: SyncHub?) throws {
         self.zone = zone
         self.store = store
-        try store.register(types, syncSafe: syncProvider != nil)
+        try store.register(types, syncSafe: hub != nil)
         store.undecodableChanged = { [weak self] error in
             Task { @MainActor in self?.context?.undecodableChanged(error) }
         }
-        guard let syncProvider else { return }
+        guard let hub else { return }
         store.syncEnabled = true
-        let sync = SyncCoordinator(
-            provider: syncProvider, zone: zone, isPublic: isPublic, store: store,
+        let sync = ZoneSync(
+            zone: zone, store: store, hub: hub,
             phaseChanged: { [weak self] phase in
                 Task { @MainActor in self?.syncPhase = phase }
             },
@@ -56,21 +51,11 @@ package final class ZoneStorage: @unchecked Sendable {
                     // The record already points at the file, so only views need to know it's here.
                     if landed { self.context?.assetDidLand(in: zone) }
                 }
-            }
+            },
+            shown: { [weak self] in self?.context != nil }
         )
         self.sync = sync
         Task { await sync.open() }
-        if let pushes = syncProvider.pushedChanges() {
-            pushTask = Task { [weak sync] in
-                for await zones in pushes where zones.contains(zone) {
-                    await sync?.pushed()
-                }
-            }
-        }
-    }
-
-    deinit {
-        pushTask?.cancel()
     }
 
     /// Removes every record and asset file in the zone, along with the change log and sync state.

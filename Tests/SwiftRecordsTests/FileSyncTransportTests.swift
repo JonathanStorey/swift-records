@@ -5,14 +5,15 @@ import Testing
 
 /// Devices that sync through one shared folder, as iCloud would copy it between them.
 @MainActor
-@Suite struct FileSyncProviderTests {
+@Suite struct FileSyncTransportTests {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FileSync-\(UUID().uuidString)")
 
-    private func device(watching mode: FileSyncProvider.WatchMode = .none) throws -> RecordContainer {
-        let provider = FileSyncProvider(location: .other(directory: folder))
-        provider.watchMode = mode
-        let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider)
-        return container
+    /// A device that syncs only when asked, or with a watcher, on its own as changes land.
+    private func device(watching mode: FileSyncTransport.WatchMode = .none) throws -> RecordContainer {
+        let transport = FileSyncTransport(location: .other(directory: folder))
+        transport.watchMode = mode
+        let engine = PollingSyncEngine(transport: transport, automaticallySync: mode != .none, sendDelay: .milliseconds(10))
+        return try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: engine)
     }
 
     private func recipes(_ container: RecordContainer) async throws -> [SyncRecipe] {
@@ -102,7 +103,7 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Records/_default/_assets/\(name)").path))
     }
 
-    @Test func deletingTheFolderIsAReset() async throws {
+    @Test func deletingTheFolderDeletesTheZone() async throws {
         let phone = try device()
         let recipe = SyncRecipe(title: "Soup")
         phone.mainContext.insert(recipe)
@@ -110,11 +111,11 @@ import Testing
         try await phone.mainContext.refresh()
 
         try FileManager.default.removeItem(at: folder.appendingPathComponent("Records/_default"))
-        // The default policy keeps the records here and uploads them again.
+        // The records leave this device too, and nothing goes back up.
         try await phone.mainContext.refresh()
         try await phone.mainContext.refresh()
-        #expect(FileManager.default.fileExists(atPath: recordFile(recipe.id).path))
-        #expect(try await recipes(phone).map(\.title) == ["Soup"])
+        #expect(!FileManager.default.fileExists(atPath: recordFile(recipe.id).path))
+        #expect(try await recipes(phone).isEmpty)
     }
 
     @Test func handWrittenFilesDownload() async throws {
@@ -166,11 +167,11 @@ import Testing
     }
 
     @Test func ownChangesArentPushed() async throws {
-        let provider = FileSyncProvider(location: .other(directory: folder))
-        provider.watchMode = .poll(.milliseconds(10))
-        let other = FileSyncProvider(location: .other(directory: folder))
+        let transport = FileSyncTransport(location: .other(directory: folder))
+        transport.watchMode = .poll(.milliseconds(10))
+        let other = FileSyncTransport(location: .other(directory: folder))
         other.watchMode = .none
-        let pushes = try #require(provider.pushedChanges())
+        let pushes = try #require(transport.changeNotifications())
         let heard = Heard()
         let listener = Task {
             for await zones in pushes {
@@ -179,11 +180,11 @@ import Testing
         }
         defer { listener.cancel() }
         let save = RecordChangeData(id: UUID(), zone: "notes", type: "Note", fields: [:])
-        _ = try await provider.uploadRecordChanges([save])
+        _ = try await transport.modifyRecords(RecordBatch(saves: [save]))
         try await Task.sleep(for: .milliseconds(200))
         #expect(await heard.zones.isEmpty)
 
-        _ = try await other.uploadRecordChanges([RecordChangeData(id: UUID(), zone: "notes", type: "Note", fields: [:])])
+        _ = try await other.modifyRecords(RecordBatch(saves: [RecordChangeData(id: UUID(), zone: "notes", type: "Note", fields: [:])]))
         for _ in 0..<250 where await heard.zones.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -206,15 +207,15 @@ import Testing
     #endif
 
     @Test func eachLocationWatchesItsOwnWay() {
-        #expect(FileSyncProvider(location: .iCloud).watchMode == .metadata)
-        #expect(FileSyncProvider(location: .appGroup("group.test")).watchMode == .folder)
-        #expect(FileSyncProvider(location: .applicationSupport).watchMode == .none)
-        #expect(FileSyncProvider(location: .other(directory: folder)).watchMode == .folder)
+        #expect(FileSyncTransport(location: .iCloud).watchMode == .metadata)
+        #expect(FileSyncTransport(location: .appGroup("group.test")).watchMode == .folder)
+        #expect(FileSyncTransport(location: .applicationSupport).watchMode == .none)
+        #expect(FileSyncTransport(location: .other(directory: folder)).watchMode == .folder)
     }
 
     @Test func iCloudPathsMapToZones() {
         let root = URL(fileURLWithPath: "/tmp/Container/Records")
-        let zones = FileSyncProvider.zones(forPaths: [
+        let zones = FileSyncTransport.zones(forPaths: [
             "/tmp/Container/Records/_default/Recipe/a.json",
             "/tmp/Container/Records/notes/_assets/photo.jpg",
             "/tmp/Container/Records/notes/Note/b.json",
@@ -231,21 +232,21 @@ import Testing
                 synced: milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) }
             )
         }
-        #expect(FileSyncProvider.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)
+        #expect(FileSyncTransport.newest([copy(1_000), copy(3_000), copy(2_000)]) == 1)
         // A tie keeps the current file, and an unreadable version never wins.
-        #expect(FileSyncProvider.newest([copy(3_000), copy(3_000)]) == 0)
-        #expect(FileSyncProvider.newest([nil, copy(nil), copy(5)]) == 2)
+        #expect(FileSyncTransport.newest([copy(3_000), copy(3_000)]) == 0)
+        #expect(FileSyncTransport.newest([nil, copy(nil), copy(5)]) == 2)
     }
 
     @Test func locations() async throws {
-        let provider = FileSyncProvider(location: .other(directory: folder))
-        #expect(provider.directory == folder.appendingPathComponent("Records", isDirectory: true))
-        #expect(try await provider.userID() == "local")
-        #expect(FileSyncProvider().location == .iCloud)
+        let transport = FileSyncTransport(location: .other(directory: folder))
+        #expect(transport.directory == folder.appendingPathComponent("Records", isDirectory: true))
+        #expect(try await transport.currentUser() == "local")
+        #expect(FileSyncTransport().location == .iCloud)
         #if !canImport(Darwin)
         // There is no iCloud on Linux, which reads as signed out.
-        #expect(FileSyncProvider().directory == nil)
-        #expect(try await FileSyncProvider().userID() == nil)
+        #expect(FileSyncTransport().directory == nil)
+        #expect(try await FileSyncTransport().currentUser() == nil)
         #endif
     }
 }

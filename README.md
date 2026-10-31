@@ -388,16 +388,15 @@ written by a background context or a sync provider.
 ## Sync
 
 A `SyncProvider` keeps zones in step with a server. Pass one when the container opens, and it syncs
-every zone except `.inMemory` and `.localOnly`. To keep another zone on the device, return `false` from
-the provider's `syncs(_:)`, which is asked once as each zone opens. The same app code works with or
-without a provider: sync adds to saving, it doesn't replace it.
+every zone except `.inMemory` and `.localOnly`. To keep another zone on the device, pass `syncs:`, which
+is asked once as each zone opens. The same app code works with or without a provider: sync adds to
+saving, it doesn't replace it.
 
 ```swift
-final class MyProvider: SyncProvider {
-    func syncs(_ zone: Zone) -> Bool { zone != "drafts" }      // keep drafts on the device
-    // ...
-}
-let container = try RecordContainer(for: [ToDo.self], syncProvider: MyProvider())
+let container = try RecordContainer(
+    for: [ToDo.self], syncProvider: provider,
+    syncs: { $0 != "drafts" }      // keep drafts on the device
+)
 
 try await context.save()       // commits, then sends what the server doesn't have
 try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
@@ -420,19 +419,71 @@ several servers. When a zone's provider identifier changes, the container treats
 it keeps every local record, uploads them all and downloads from the beginning, even if the account
 looks different, since a new server's user IDs needn't match the old one's.
 
-The provider is transport only, so anyone can write one: a CloudKit provider, a central database or a
-folder of files. Each call returns what happened, and the container drives it:
+### The provider is a sync engine
+
+CloudKit's `CKSyncEngine` is the model. A provider is an engine and the container is its delegate: the
+container tells the engine what is pending, the engine decides when to send and fetch, asks the container
+for each batch, and reports everything that happened as events. A CloudKit provider wraps
+`CKSyncEngine` almost one to one, and its scheduling, push handling, retries and account tracking come
+for free.
 
 ```swift
 public protocol SyncProvider: AnyObject, Sendable {
-    func userID() async throws -> String?
-    func uploadRecordChanges(_ changes: [RecordChangeData]) async throws -> [UploadResult]
-    func downloadRecordChanges(in zone: Zone, after cursor: Data?) async throws -> RecordDownload
-    func uploadAssets(_ assets: [RecordAssetData]) async throws
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
-    func pushedChanges() -> AsyncStream<[Zone]>?      // optional, defaults to nil
+    var identifier: String { get }
+    var scopes: Set<Zone.Scope> { get }                          // .private, later .shared
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
+    func addPending(_ changes: [PendingRecordChange])            // .save(id, zone) or .delete(id, zone)
+    func removePending(_ changes: [PendingRecordChange])
+    func addPending(_ changes: [PendingZoneChange])
+    func removePending(_ changes: [PendingZoneChange])
+    func sendChanges(_ options: SendOptions) async throws
+    func fetchChanges(_ options: FetchOptions) async throws
+    func cancelOperations() async
+}
+
+public protocol SyncDelegate: AnyObject, Sendable {
+    func handle(_ event: SyncEvent) async
+    func nextBatch(_ context: SendContext) async -> RecordBatch?
+    func nextFetchOptions(_ context: FetchContext) async -> FetchOptions
 }
 ```
+
+`SyncEvent` mirrors `CKSyncEngine.Event`: `stateUpdate` (the container stores the engine's serialized
+state per scope and hands it back to `start`), `accountChange`, `fetchedZoneChanges`,
+`fetchedRecordChanges`, `sentZoneChanges`, `sentRecordChanges`, and the will and did events around
+fetches and sends. A failed save comes back as a `SyncFailure`: `.serverRecordChanged` carries the
+server's copy, which the container merges and sends again in the same pass, and `.unknownItem`,
+`.zoneNotFound`, `.quotaExceeded`, `.networkUnavailable`, `.limitExceeded` and `.permissionFailure`
+each have their own handling.
+
+A zone deleted on the server arrives with its reason. `.deleted` and `.purged` remove the zone's records
+from the device, as the person asked. `.encryptedDataReset` keeps them and uploads everything again.
+
+### Servers that aren't CloudKit
+
+Most servers have no engine of their own. `PollingSyncEngine` is one, written once, that drives a
+`SyncTransport`: a handful of calls shaped like CloudKit's operations.
+
+```swift
+public protocol SyncTransport: AnyObject, Sendable {
+    var identifier: String { get }
+    func currentUser() async throws -> String?
+    func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges   // optional
+    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges
+    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges
+    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
+    func changeNotifications() -> AsyncStream<[Zone]>?                                  // optional
+}
+
+let provider = PollingSyncEngine(transport: MyServer())
+```
+
+The engine keeps its tokens and pending changes in the state the container stores, checks the account
+before each operation, fetches the zones a view shows first, and leaves the rest for later. With
+`automaticallySync` on, the default, it sends shortly after each commit and fetches whatever
+`changeNotifications()` names.
+
+### Records
 
 The unit of sync is a whole record, `RecordChangeData`, shaped like a `CKRecord`: its values and its
 sync metadata, kept apart.
@@ -462,38 +513,27 @@ an HTTP ETag works:
 | CloudKit | the record's archived system fields, which carry its `recordChangeTag` |
 | MongoDB | a version number kept in the document |
 | Firestore | the document's `updateTime` |
-| `FileSyncProvider` | the time of the save in milliseconds |
+| `FileSyncTransport` | the time of the save in milliseconds |
 
 A server that versions records accepts a save only when its tag matches the server's copy, and
-otherwise answers `.conflict` with that copy, which the container merges and sends again. A save that
-works returns `.saved(id:tag:synced:)`. A server without tags returns none and every save overwrites.
-`synced` is optional: when a server gives one, `@Timestamped(.synced)` shows it, and otherwise it shows
-when this device heard the save went through. A provider's tags never reach another provider, because
-changing a zone's provider `identifier` clears them and uploads everything again. Throw
-`SyncError.offline`, `.storageFull` or `.serverReset` when a whole call fails.
+otherwise fails it with `.serverRecordChanged` and that copy. A server without tags returns none and
+every save overwrites. `synced` is optional: when a server gives one, `@Timestamped(.synced)` shows it,
+and otherwise it shows when this device heard the save went through. A provider's tags never reach
+another provider, because changing a zone's provider `identifier` clears them and uploads everything again.
 
-A provider that hears about changes, such as from push notifications, returns a stream from
-`pushedChanges()`. The container downloads each zone the stream names, so views update without a
-refresh.
-
-Assets travel on their own, in the background. `refresh()` syncs records only and returns once they're
-stored. After each pass the container uploads files the server doesn't have and downloads the ones
-received records point to, one file at a time. Until a file lands, its record's asset reads `nil` and
-`$image.url` is `nil`, and views refresh when it arrives. A file that fails, such as one whose record
-arrived before its upload finished, is tried again after the next pass. A file never changes once
-stored, so an asset can't conflict, and each one is uploaded once.
+Assets travel on their own, in the background, through the provider's `assetTransfer`.
+`PollingSyncEngine` uses its transport when it conforms to `AssetTransfer`. `refresh()` syncs records
+only and returns once they're stored. After each pass the container uploads files the server doesn't
+have and downloads the ones received records point to, one file at a time. Until a file lands, its
+record's asset reads `nil` and `$image.url` is `nil`, and views refresh when it arrives. A file that
+fails, such as one whose record arrived before its upload finished, is tried again after the next pass.
+A file never changes once stored, so an asset can't conflict, and each one is uploaded once.
 
 ```swift
 if let progress = context.assetProgress {
     ProgressView(value: progress)    // 0 to 1 by file count, nil when nothing is moving
 }
 ```
-
-A provider names the zones everyone shares, such as a public CloudKit database, through `isPublic(_:)`,
-which defaults to `false`. Only the provider knows its server's layout, so it's the one place that decides.
-The server records who created each record in a public zone, and that user owns it:
-the server refuses changes from anyone else, signing out never deletes them, and they download without
-an account.
 
 Children, many-to-many arrays and their read-only other sides aren't sent. The container owns the rules:
 
@@ -524,7 +564,7 @@ Children, many-to-many arrays and their read-only other sides aren't sent. The c
   synced them, and edits wait for it to sign back in. A different account signing in replaces them with
   its own, so one person's records never reach another's server data. Records made before any sign-in
   upload with the first account. When the server loses its copy, the device keeps its records and
-  uploads them all again. An app that wants records gone at sign-out calls `deleteAllData(in:)`.
+  uploads them all again. When the person deletes a zone on the server, it leaves the device too. An app that wants records gone at sign-out calls `deleteAllData(in:)`.
 
 ### Merging
 
@@ -628,15 +668,15 @@ a newer app version added.
 
 ### Syncing through iCloud files
 
-`FileSyncProvider` syncs through a folder, and the system copies the folder between devices. No server
+`FileSyncTransport` syncs through a folder, and the system copies the folder between devices. No server
 is needed. It lives in its own library, `SwiftRecordsFileSync`, so apps that sync another way don't build
 it. Add that product to your target and import it beside `SwiftRecords`. It uses only the public
-`SyncProvider` API, so it doubles as a worked example of a provider.
+`SyncTransport` API, so it doubles as a worked example of a transport.
 
 ```swift
 import SwiftRecordsFileSync
 
-let container = try RecordContainer(for: [Recipe.self], syncProvider: FileSyncProvider())
+let container = try RecordContainer(for: [Recipe.self], syncProvider: PollingSyncEngine(transport: FileSyncTransport()))
 ```
 
 | Location | Folder |
@@ -651,11 +691,11 @@ Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with
 kind, such as `"title":{"string":"Soup"}`, beside its save time, and assets are plain files
 in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
 them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
-can't miss changes. Deleting a zone's folder counts as a server reset. iCloud needs the iCloud
+can't miss changes. Deleting a zone's folder deletes the zone, and its records leave every device. iCloud needs the iCloud
 capability with iCloud Documents on, and while the person is signed out, `status` is `.signedOut`.
 For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder shows in Files.
 
-Other devices' changes arrive on their own through `pushedChanges()`. In iCloud an `NSMetadataQuery`
+Other devices' changes arrive on their own through `changeNotifications()`. In iCloud an `NSMetadataQuery`
 watches the folder, including when another device's file finishes downloading. App Group and other
 folders are watched directly, so an extension's saves reach the app at once. A network drive may not
 report its changes, so they arrive with the sync the context runs as the app returns from a break, or a

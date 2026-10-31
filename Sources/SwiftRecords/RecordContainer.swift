@@ -25,7 +25,10 @@ public final class RecordContainer: @unchecked Sendable {
     public let initialZone: Zone
 
     private let types: [any Record.Type]
-    private let syncProvider: (any SyncProvider)?
+    /// The container's side of sync, the delegate of the provider's engine. `nil` without a provider.
+    let syncHub: SyncHub?
+    /// Whether a zone syncs, asked once as it opens.
+    private let syncs: @Sendable (Zone) -> Bool
     /// The initial zone, opened with the container so `mainContext` can't fail.
     let initialStorage: ZoneStorage
     private var storages: [Zone: ZoneStorage]
@@ -41,9 +44,10 @@ public final class RecordContainer: @unchecked Sendable {
     /// too. A sync provider needs it, because a server's records can arrive before any code has touched their
     /// type.
     ///
-    /// `syncProvider` keeps each zone in step with its zone on the server, except `.inMemory` and `.localOnly`,
-    /// which never sync, and any zone the provider's `syncs(_:)` turns down. The provider decides which zones
-    /// are public. The provider stays fixed for the container's life.
+    /// `syncProvider` is the sync engine, such as `CloudKitSyncProvider` or a `PollingSyncEngine`, and the
+    /// container becomes its delegate. It keeps each zone in step with its zone on the server, except
+    /// `.inMemory` and `.localOnly`, which never sync, and any zone `syncs` turns down, such as drafts. Both
+    /// stay fixed for the container's life.
     ///
     /// `initialZone` is where the main context starts and what methods that take an optional zone use. It
     /// opens with the container, so an error opening it throws here. Switch zones later with
@@ -52,9 +56,12 @@ public final class RecordContainer: @unchecked Sendable {
         for types: [any Record.Type] = [],
         directory: URL? = nil,
         initialZone: Zone = .default,
-        syncProvider: (any SyncProvider)? = nil
+        syncProvider: (any SyncProvider)? = nil,
+        syncs: @escaping @Sendable (Zone) -> Bool = { _ in true }
     ) throws {
-        try self.init(for: types, directory: directory, inMemory: false, initialZone: initialZone, syncProvider: syncProvider)
+        try self.init(
+            for: types, directory: directory, inMemory: false, initialZone: initialZone, syncProvider: syncProvider, syncs: syncs
+        )
     }
 
     /// With `inMemory`, every zone lives only as long as the container, for tests.
@@ -63,7 +70,8 @@ public final class RecordContainer: @unchecked Sendable {
         directory: URL? = nil,
         inMemory: Bool,
         initialZone: Zone = .default,
-        syncProvider: (any SyncProvider)? = nil
+        syncProvider: (any SyncProvider)? = nil,
+        syncs: @escaping @Sendable (Zone) -> Bool = { _ in true }
     ) throws {
         let directory = inMemory ? nil : directory ?? RecordContainer.defaultDirectory
         if let directory {
@@ -72,22 +80,28 @@ public final class RecordContainer: @unchecked Sendable {
         self.directory = directory
         self.initialZone = initialZone
         self.types = types
-        self.syncProvider = syncProvider
-        initialStorage = try Self.open(initialZone, directory: directory, types: types, syncProvider: syncProvider)
+        self.syncs = syncs
+        // The hub opens zones a server's changes arrive for, through the container once it exists.
+        let opener = ZoneOpener()
+        let hub = syncProvider.map { provider in
+            SyncHub(provider: provider, directory: directory, openZone: { opener.container?.syncedStorage(for: $0)?.sync })
+        }
+        syncHub = hub
+        initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: hub != nil && Self.syncing(initialZone, syncs) ? hub : nil)
         storages = [initialZone: initialStorage]
+        opener.container = self
         if directory != nil {
             Self.register(self)
         }
     }
 
-    private static func open(
-        _ zone: Zone, directory: URL?, types: [any Record.Type], syncProvider: (any SyncProvider)?
-    ) throws -> ZoneStorage {
+    private static func syncing(_ zone: Zone, _ syncs: (Zone) -> Bool) -> Bool {
+        zone.canSync && syncs(zone)
+    }
+
+    private static func open(_ zone: Zone, directory: URL?, types: [any Record.Type], hub: SyncHub?) throws -> ZoneStorage {
         let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
-        let provider = zone.canSync && syncProvider?.syncs(zone) == true ? syncProvider : nil
-        return try ZoneStorage(
-            zone: zone, store: store, types: types, syncProvider: provider, isPublic: provider?.isPublic(zone) ?? false
-        )
+        return try ZoneStorage(zone: zone, store: store, types: types, hub: hub)
     }
 
     /// The zone's storage, opening its file the first time.
@@ -97,9 +111,16 @@ public final class RecordContainer: @unchecked Sendable {
         if let storage = storages[zone] {
             return storage
         }
-        let storage = try Self.open(zone, directory: directory, types: types, syncProvider: syncProvider)
+        let hub = syncHub != nil && Self.syncing(zone, syncs) ? syncHub : nil
+        let storage = try Self.open(zone, directory: directory, types: types, hub: hub)
         storages[zone] = storage
         return storage
+    }
+
+    /// The storage of a zone that syncs, opening it for changes a server sent, or `nil` for one that doesn't.
+    func syncedStorage(for zone: Zone) -> ZoneStorage? {
+        guard syncHub != nil, Self.syncing(zone, syncs) else { return nil }
+        return try? storage(for: zone)
     }
 
     /// The zone's database file, the initial zone's by default, or `nil` in memory.
@@ -271,4 +292,9 @@ extension RecordContainer {
     var structureVersion: Int { initialStorage.structureVersion }
     package var url: URL? { initialStorage.url }
     package var assetsDirectory: URL { initialStorage.assetsDirectory }
+}
+
+/// Lets the sync hub reach its container, which is created after it.
+private final class ZoneOpener: @unchecked Sendable {
+    weak var container: RecordContainer?
 }

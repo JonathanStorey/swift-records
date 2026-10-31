@@ -83,7 +83,7 @@ struct Run {
     mutating func all(recipes count: Int, in folder: URL) async throws {
         let server = BenchmarkServer(name: "first")
         var phone: RecordContainer? = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: server
+            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: server.makeEngine()
         )
         let context = phone!.mainContext
         say("Store of \(count) recipes with 5 steps each (\(count * 6) records)\n")
@@ -193,7 +193,7 @@ struct Run {
         try expect(server.count == remaining * 6, "server has \(server.count) of \(remaining * 6) records")
 
         let tablet = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: server
+            for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: server.makeEngine()
         )
         let tabletContext = tablet.mainContext
         _ = try tabletContext.fetchCount(RecordDescriptor<Recipe>())
@@ -279,7 +279,7 @@ struct Run {
         phone = nil
         let newServer = BenchmarkServer(name: "second")
         let moved = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: newServer
+            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: newServer.makeEngine()
         )
         let movedContext = moved.mainContext
         _ = try movedContext.fetchCount(RecordDescriptor<Recipe>())
