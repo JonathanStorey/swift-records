@@ -12,7 +12,8 @@ import Testing
         try container.fetch(ToDo.self, id: todo.id)
     }
 
-    @Test func itIsOffByDefault() async throws {
+    @Test func byDefaultItSavesOnlyWhenInactive() async throws {
+        #expect(context.autosave == .whenInactive)
         let todo = ToDo(title: "Kept")
         context.insert(todo)
         try await Task.sleep(for: .milliseconds(100))
@@ -41,8 +42,24 @@ import Testing
         context.autosave = .after(.milliseconds(50))
         let todo = ToDo(title: "Kept")
         context.insert(todo)
-        context.autosave = .off
+        context.autosave = .whenInactive
         try await Task.sleep(for: .milliseconds(150))
         #expect(try stored(todo) == nil)
+    }
+
+    @Test func theDefaultSavesWhenTheAppBecomesInactive() throws {
+        let todo = ToDo(title: "Kept")
+        context.insert(todo)
+        context.willResignActive()
+        #expect(try stored(todo)?.title == "Kept")
+    }
+
+    @Test func noAutosaveLeavesEverySaveToTheApp() throws {
+        context.autosave = nil
+        let todo = ToDo(title: "Kept")
+        context.insert(todo)
+        context.willResignActive()
+        #expect(try stored(todo) == nil)
+        #expect(context.hasChanges)
     }
 }
