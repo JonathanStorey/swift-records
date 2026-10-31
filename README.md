@@ -656,10 +656,33 @@ the record back as shown, without the children deleted with it, and `$contact.ro
 stand. To make deletes final, dismiss on `isDeleted`. A record deleted with no edit open stays deleted,
 and so does one deleted through `$contact.delete()`.
 
+### Syncing with CloudKit
+
+`CloudKitSyncProvider` is the first-class provider. It wraps one `CKSyncEngine` for the private database
+and another for the shared one, and it lives in its own library, `SwiftRecordsCloudKit`:
+
+```swift
+import SwiftRecordsCloudKit
+
+let provider = CloudKitSyncProvider(container: CKContainer(identifier: "iCloud.com.example.app"))
+let container = try RecordContainer(for: [Recipe.self], syncProvider: provider)
+```
+
+The engines schedule sends after each save, fetch on pushes, retry, split batches and track the account.
+The provider only translates. Each zone is a `CKRecordZone` of the same name, created before its first
+record, and SwiftRecords' own zones such as `.default` become `swiftrecords._default`, since CloudKit
+keeps names that start with an underscore for itself. A shared zone is the owner's zone in the shared
+database. An edit sets only its changed keys on a `CKRecord` rebuilt from the server copy's system fields,
+so an unchanged asset or long field never uploads again, and a stale copy still fails as a conflict and
+merges here. Pass `sharedDatabase: false` to sync the private database alone.
+
+The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
+notifications so pushes start fetches.
+
 ### CloudKit records
 
-On Apple platforms a change converts to a `CKRecord` and back, value for value, so a CloudKit provider
-stores records exactly as CloudKit expects:
+A change converts to a `CKRecord` and back, value for value, so records are stored exactly as CloudKit
+expects:
 
 ```swift
 let record = try container.ckRecord(for: change, in: zoneID)   // nil for a deletion
