@@ -2,6 +2,7 @@
 import CloudKit
 import CryptoKit
 import Foundation
+import SwiftRecords
 
 extension RecordContainer {
     /// The `CKRecord` a save becomes, or `nil` for a deletion, which you delete by `RecordContainer.recordID(for:in:)`.
@@ -15,13 +16,21 @@ extension RecordContainer {
     /// The change's `tag` is the server copy's archived system fields, as `change(from:zone:)` sets it, and
     /// the record is built on them, so it carries the change tag and saves as an update. A change with no
     /// tag is a new record. An asset whose file hasn't downloaded yet is left out.
+    ///
+    /// A change that names its `changedKeys` sets only those fields and clears its `clearedKeys`, so CloudKit
+    /// uploads nothing else. The record still carries the change tag, so a stale copy fails as a conflict.
     public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
         guard let fields = change.fields else { return nil }
-        let store = try storage(for: change.zone).store
+        let zone = change.zone
         let record = try change.tag.map {
             try Self.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
         } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
-        record.fill(fields) { store.assetURL(named: $0) }
+        let file = { [self] (id: String) in try? self.assetURL(named: id, in: zone) }
+        if change.tag != nil, let changedKeys = change.changedKeys {
+            record.fill(fields, only: changedKeys, clearing: change.clearedKeys, file: file)
+        } else {
+            record.fill(fields, file: file)
+        }
         return record
     }
 
@@ -31,7 +40,6 @@ extension RecordContainer {
     /// The record's archived system fields become the change's `tag`, so the next upload builds on exactly
     /// the server's copy, and its `modificationDate` is the `synced` date.
     public func change(from record: CKRecord, zone: Zone) throws -> (change: RecordChangeData, assets: [RecordAssetData]) {
-        let store = try storage(for: zone).store
         guard let id = UUID(uuidString: record.recordID.recordName) else {
             throw RecordsError.incompatibleRecord(type: record.recordType, id: UUID())
         }
@@ -47,7 +55,7 @@ extension RecordContainer {
                 // Named by its contents, so every device and every download agree on the name.
                 let digest = SHA256.hash(data: try Data(contentsOf: file, options: .mappedIfSafe))
                 var name = digest.map { String(format: "%02x", $0) }.joined()
-                let fileExtension = store.assetExtension(type: record.recordType, field: key)
+                let fileExtension = try assetExtension(type: record.recordType, field: key, in: zone)
                 if !fileExtension.isEmpty { name += "." + fileExtension }
                 fields[key] = .asset(name)
                 assets.append(RecordAssetData(id: name, zone: zone, file: file))
@@ -87,7 +95,7 @@ extension RecordContainer {
     }
 
     /// A record's system fields, archived as `encodeSystemFields(with:)` writes them.
-    static func systemFields(of record: CKRecord) -> Data {
+    public static func systemFields(of record: CKRecord) -> Data {
         let coder = NSKeyedArchiver(requiringSecureCoding: true)
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()
@@ -102,12 +110,23 @@ extension CKRecord {
         for key in allKeys() where values[key] == nil {
             setObject(nil, forKey: key)
         }
+        fill(values, only: Set(values.keys), clearing: [], file: file)
+    }
+
+    /// Writes only the `keys` among these values and clears `cleared`, so CloudKit sends nothing else.
+    func fill(_ values: [String: RecordValue], only keys: Set<String>, clearing cleared: Set<String>, file: (String) -> URL?) {
+        for key in cleared {
+            setObject(nil, forKey: key)
+        }
         // The record belongs to what its first `.deleteSelf` pointer names, which is how sharing finds it.
-        parent = values.keys.sorted().lazy.compactMap { key -> CKRecord.Reference? in
+        let parent = values.keys.sorted().lazy.compactMap { key -> CKRecord.Reference? in
             guard case .reference(let id, .deleteSelf)? = values[key] else { return nil }
             return CKRecord.Reference(recordID: RecordContainer.recordID(for: id, in: self.recordID.zoneID), action: .none)
         }.first
-        for (key, value) in values {
+        if self.parent?.recordID != parent?.recordID {
+            self.parent = parent
+        }
+        for (key, value) in values where keys.contains(key) {
             switch value {
             case .string(let value): self[key] = value
             case .int(let value): self[key] = value

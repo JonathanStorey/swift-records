@@ -49,12 +49,18 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// Moves asset files apart from their records, for a server that stores them separately. `nil`, the
     /// default, means assets need no separate transfer.
     var assetTransfer: (any AssetTransfer)? { get }
+
+    /// Called once as a container opens with this provider, before syncing starts, for a provider that
+    /// converts records with the container's help, as `CloudKitSyncProvider` does. Keep it weakly.
+    func attach(_ container: RecordContainer)
 }
 
 extension SyncProvider {
     public var scopes: Set<Zone.Scope> { [.private] }
 
     public var assetTransfer: (any AssetTransfer)? { nil }
+
+    public func attach(_ container: RecordContainer) {}
 
     public func removePending(_ changes: [PendingRecordChange]) {}
 
@@ -135,11 +141,14 @@ public enum ChangeScope: Sendable, Hashable {
     case zones(Set<Zone>)
     case excludingZones(Set<Zone>)
     case records(Set<UUID>)
+    /// Every zone in one database, as each `CKSyncEngine` covers.
+    case database(Zone.Scope)
 
     /// Whether the scope covers a zone at all.
     public func contains(_ zone: Zone) -> Bool {
         switch self {
         case .all, .records: true
+        case .database(let scope): zone.scope == scope
         case .zones(let zones): zones.contains(zone)
         case .excludingZones(let zones): !zones.contains(zone)
         }

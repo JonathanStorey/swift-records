@@ -29,7 +29,7 @@ actor SyncHub: SyncDelegate {
     /// The changes in the requests of the send running now, by record ID.
     private var inFlight: [UUID: (sync: ZoneSync, change: PendingChange, fields: SyncFields?)] = [:]
     /// Records already given to the send running now, which aren't given again unless they met a conflict.
-    private var attempted: Set<UUID> = []
+    private var attempted: [UUID: Zone] = [:]
     private var conflictRounds: [UUID: Int] = [:]
 
     init(provider: any SyncProvider, directory: URL?, openZone: @escaping @Sendable (Zone) -> ZoneSync?) {
@@ -170,18 +170,14 @@ actor SyncHub: SyncDelegate {
                 }
             }
         case .willSendChanges(let context):
-            inFlight = [:]
-            attempted = []
-            conflictRounds = [:]
+            forget(context.options.scope)
             if context.reason == .scheduled {
                 for sync in registry.all where context.options.scope.contains(sync.zone) {
                     sync.begin()
                 }
             }
         case .didSendChanges(let context):
-            inFlight = [:]
-            attempted = []
-            conflictRounds = [:]
+            forget(context.options.scope)
             for sync in registry.all where context.options.scope.contains(sync.zone) {
                 registerPending(sync)
                 if context.reason == .scheduled {
@@ -205,8 +201,8 @@ actor SyncHub: SyncDelegate {
             guard let pending = try? store.pendingChanges(limit: Self.batchSize + attempted.count) else { continue }
             for change in pending {
                 guard count < Self.batchSize else { break }
-                guard !attempted.contains(change.id), records?.contains(change.id) ?? true else { continue }
-                attempted.insert(change.id)
+                guard attempted[change.id] == nil, records?.contains(change.id) ?? true else { continue }
+                attempted[change.id] = sync.zone
                 guard let (record, fields, base) = try? store.syncRecord(for: change),
                       let data = try? store.change(for: record, zone: sync.zone, base: base) else { continue }
                 inFlight[change.id] = (sync, change, fields)
@@ -220,6 +216,16 @@ actor SyncHub: SyncDelegate {
             }
         }
         return batch.isEmpty ? nil : batch
+    }
+
+    /// Forgets what a send in this scope tried, so the next one starts fresh. Sends in other databases keep
+    /// theirs, since each database's engine sends on its own.
+    private func forget(_ scope: ChangeScope) {
+        inFlight = inFlight.filter { !scope.contains($0.value.sync.zone) }
+        for (id, zone) in attempted where scope.contains(zone) {
+            attempted.removeValue(forKey: id)
+            conflictRounds.removeValue(forKey: id)
+        }
     }
 
     func nextFetchOptions(_ context: FetchContext) async -> FetchOptions {
@@ -295,7 +301,7 @@ actor SyncHub: SyncDelegate {
             let rounds = conflictRounds[change.id, default: 0] + 1
             conflictRounds[change.id] = rounds
             if rounds < Self.maxConflictRounds {
-                attempted.remove(change.id)
+                attempted.removeValue(forKey: change.id)
             }
         }
         func failed(_ id: UUID, _ failure: SyncFailure) {
@@ -312,7 +318,7 @@ actor SyncHub: SyncDelegate {
                 }
             case .zoneNotFound:
                 provider.addPending([PendingZoneChange.save(entry.sync.zone)])
-                attempted.remove(id)
+                attempted.removeValue(forKey: id)
             case .quotaExceeded:
                 entry.sync.fail(.storageFull)
             case .networkUnavailable, .other:
