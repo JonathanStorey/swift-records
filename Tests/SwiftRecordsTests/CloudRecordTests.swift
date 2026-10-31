@@ -170,6 +170,34 @@ import SwiftRecordsCloudKit
         #expect(record["servings"] == nil)
     }
 
+    @Test func anAssetsIDRidesBesideIt() throws {
+        let phone = try Device(server)
+        let id = UUID()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([1, 2, 3]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let assetID = String(repeating: "ab", count: 32)
+        let change = RecordChangeData(
+            id: id, zone: .default, type: "SyncRecipe", fields: ["title": .string("Photo"), "photo": .asset(assetID)],
+            assetFiles: [assetID: file]
+        )
+        let record = try #require(try phone.container.ckRecord(for: change, in: zoneID))
+        #expect((record["photo"] as? CKAsset)?.fileURL == file)
+        #expect(record["photo_assetID"] as? String == assetID)
+
+        // Coming back, the ID is taken as it is, and the field beside it isn't a field of the record.
+        let (back, _) = try phone.container.change(from: record, zone: .default)
+        #expect(back.fields?["photo"] == .asset(assetID))
+        #expect(back.fields?["photo_assetID"] == nil)
+        #expect(back.assetFiles[assetID] == file)
+
+        // An ID that isn't one SwiftRecords makes is hashed again rather than used as a file name.
+        record["photo_assetID"] = "../escape"
+        let (hashed, _) = try phone.container.change(from: record, zone: .default)
+        guard case .asset(let name)? = hashed.fields?["photo"] else { Issue.record("No asset"); return }
+        #expect(name != "../escape" && name.count >= 64)
+    }
+
     @Test func zonesMapToCloudKitZones() {
         let family: Zone = "family"
         #expect(CloudKitSyncProvider.zoneID(family) == CKRecordZone.ID(zoneName: "family", ownerName: CKCurrentUserDefaultName))

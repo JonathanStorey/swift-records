@@ -28,6 +28,8 @@ final class TestServer: @unchecked Sendable {
     /// Whether downloads carry only the fields that changed since a record's previous copy, as a document
     /// database might. Uploads always apply only their changed fields, so a wrong key list shows up as lost data.
     var sendsPartialChanges = false
+    /// Whether asset files travel inside their records, as `CKAsset`s do, rather than on their own.
+    var filesTravelWithRecords = false
     /// How many records devices fetched whole.
     private(set) var fetchedRecords = 0
 
@@ -76,6 +78,11 @@ final class TestServer: @unchecked Sendable {
     func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
         withLock {
             guard mayWrite(change.zone, user) else { return .failure(.permissionFailure) }
+            if filesTravelWithRecords {
+                for (id, file) in change.assetFiles {
+                    if let data = try? Data(contentsOf: file) { assets[id] = data }
+                }
+            }
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
             if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
@@ -92,6 +99,7 @@ final class TestServer: @unchecked Sendable {
             }
             stored.changedKeys = nil
             stored.clearedKeys = []
+            stored.assetFiles = [:]
             stored.tag = tagsRecords ? Data("tag \(sequence)".utf8) : nil
             stored.synced = datesRecords ? Self.date(sequence) : nil
             // The owner's own zone holds it.
@@ -143,9 +151,22 @@ final class TestServer: @unchecked Sendable {
             let prefix = space(zone, account: user)
             let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
             let page = found.prefix(limit)
-            let changes = page.map { Self.seen(sendsPartialChanges ? Self.partial($0.change, since: $0.previous) : $0.change, in: zone) }
+            let changes = page.map { withFiles(Self.seen(sendsPartialChanges ? Self.partial($0.change, since: $0.previous) : $0.change, in: zone)) }
             return (changes, page.last?.sequence ?? cursor, found.count > limit)
         }
+    }
+
+    /// A change with its asset files written out, as CloudKit hands over `CKAsset`s, when files travel with records.
+    private func withFiles(_ change: RecordChangeData) -> RecordChangeData {
+        guard filesTravelWithRecords else { return change }
+        var change = change
+        for case .asset(let id) in change.fields?.values.map({ $0 }) ?? [] {
+            guard let data = assets[id] else { continue }
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("TestServer-\(UUID().uuidString)")
+            try? data.write(to: file)
+            change.assetFiles[id] = file
+        }
+        return change
     }
 
     /// Only what changed since the previous copy, when there was one.
@@ -403,7 +424,7 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     var identifier: String { engine.identifier }
     var scopes: Set<Zone.Scope> { engine.scopes }
-    var assetTransfer: (any AssetTransfer)? { engine.assetTransfer }
+    var assetTransfer: (any AssetTransfer)? { server.filesTravelWithRecords ? nil : engine.assetTransfer }
 
     func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
         await engine.start(scope, state: state, delegate: delegate)

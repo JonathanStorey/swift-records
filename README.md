@@ -544,7 +544,13 @@ every save overwrites. `synced` is optional: when a server gives one, `@Timestam
 and otherwise it shows when this device heard the save went through. A provider's tags never reach
 another provider, because changing a zone's provider `identifier` clears them and uploads everything again.
 
-Assets travel on their own, in the background, through the provider's `assetTransfer`.
+A server that keeps files inside their records, as CloudKit does with `CKAsset`, gets them through
+`assetFiles` on each change: an upload names the file behind every `.asset` value, and a download names
+the files that came with it. The container copies those in while the event that carried them runs, so a
+file lands with its record and needs no separate pass. With a field-level edit, an unchanged asset isn't
+among `changedKeys`, so it never goes up again.
+
+Otherwise assets travel on their own, in the background, through the provider's `assetTransfer`.
 `PollingSyncEngine` uses its transport when it conforms to `AssetTransfer`. `refresh()` syncs records
 only and returns once they're stored. After each pass the container uploads files the server doesn't
 have and downloads the ones received records point to, one file at a time. Until a file lands, its
@@ -674,7 +680,9 @@ record, and SwiftRecords' own zones such as `.default` become `swiftrecords._def
 keeps names that start with an underscore for itself. A shared zone is the owner's zone in the shared
 database. An edit sets only its changed keys on a `CKRecord` rebuilt from the server copy's system fields,
 so an unchanged asset or long field never uploads again, and a stale copy still fails as a conflict and
-merges here. Pass `sharedDatabase: false` to sync the private database alone.
+merges here. Asset files ride inside their records as `CKAsset`s, each with its ID in a field beside it,
+so a download names the file without hashing it again. Pass `sharedDatabase: false` to sync the private
+database alone.
 
 The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
 notifications so pushes start fetches.
@@ -703,8 +711,8 @@ let (change, assets) = try container.change(from: record, zone: zone)
 Each child is its own `CKRecord`, and locally it still appears in its parent's array. Coming
 back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
 `modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
-change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, and `change(from:zone:)` returns them so
-`downloadAsset(id:zone:into:)` can hand them over. A server deletion converts with
+change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, or by the `<field>_assetID` field beside them, and
+`change(from:zone:)` puts them in the change's `assetFiles`. A server deletion converts with
 `deletion(of:type:zone:)`.
 
 A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and each

@@ -24,6 +24,13 @@ extension RecordStore {
     func change(for record: SyncRecord, zone: Zone, base: SyncFields? = nil) throws -> RecordChangeData {
         let values = try record.fields.map(wireValues(of: record.type))
         var change = RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, tag: record.tag)
+        // The files behind its assets, for a server that keeps them inside records.
+        for case .asset(let id) in values?.values.map({ $0 }) ?? [] {
+            let file = assetURL(named: id)
+            if FileManager.default.fileExists(atPath: file.path) {
+                change.assetFiles[id] = file
+            }
+        }
         if let values, let base, record.tag != nil {
             let old = try wireValues(of: record.type)(base)
             change.changedKeys = Set(values.compactMap { old[$0.key] == $0.value ? nil : $0.key })

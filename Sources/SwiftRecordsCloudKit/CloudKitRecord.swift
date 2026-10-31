@@ -25,7 +25,7 @@ extension RecordContainer {
         let record = try change.tag.map {
             try Self.record(fromSystemFields: $0, type: change.type, id: change.id, zoneID: zoneID)
         } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
-        let file = { [self] (id: String) in try? self.assetURL(named: id, in: zone) }
+        let file = { [self] (id: String) in change.assetFiles[id] ?? (try? self.assetURL(named: id, in: zone)) }
         if change.tag != nil, let changedKeys = change.changedKeys {
             record.fill(fields, only: changedKeys, clearing: change.clearedKeys, file: file)
         } else {
@@ -47,16 +47,26 @@ extension RecordContainer {
         var assets: [RecordAssetData] = []
         for key in record.allKeys() {
             guard let value = record[key] else { continue }
+            // An asset's ID rides beside it, so a download needn't hash the file again.
+            if key.hasSuffix(CKRecord.assetIDSuffix) {
+                let base = String(key.dropLast(CKRecord.assetIDSuffix.count))
+                if record[base] == nil || record[base] is CKAsset { continue }
+            }
             if let reference = value as? CKRecord.Reference {
                 guard let target = UUID(uuidString: reference.recordID.recordName) else { continue }
                 fields[key] = .reference(target, action: reference.action == .deleteSelf ? .deleteSelf : .nullify)
             } else if let asset = value as? CKAsset {
                 guard let file = asset.fileURL else { continue }
                 // Named by its contents, so every device and every download agree on the name.
-                let digest = SHA256.hash(data: try Data(contentsOf: file, options: .mappedIfSafe))
-                var name = digest.map { String(format: "%02x", $0) }.joined()
-                let fileExtension = try assetExtension(type: record.recordType, field: key, in: zone)
-                if !fileExtension.isEmpty { name += "." + fileExtension }
+                var name: String
+                if let id = record[key + CKRecord.assetIDSuffix] as? String, Self.isAssetID(id) {
+                    name = id
+                } else {
+                    let digest = SHA256.hash(data: try Data(contentsOf: file, options: .mappedIfSafe))
+                    name = digest.map { String(format: "%02x", $0) }.joined()
+                    let fileExtension = try assetExtension(type: record.recordType, field: key, in: zone)
+                    if !fileExtension.isEmpty { name += "." + fileExtension }
+                }
                 fields[key] = .asset(name)
                 assets.append(RecordAssetData(id: name, zone: zone, file: file))
             } else if let number = value as? NSNumber {
@@ -77,9 +87,19 @@ extension RecordContainer {
             }
         }
         let change = RecordChangeData(
-            id: id, zone: zone, type: record.recordType, fields: fields, tag: Self.systemFields(of: record), synced: record.modificationDate
+            id: id, zone: zone, type: record.recordType, fields: fields, tag: Self.systemFields(of: record), synced: record.modificationDate,
+            assetFiles: Dictionary(assets.map { ($0.id, $0.file) }, uniquingKeysWith: { first, _ in first })
         )
         return (change, assets)
+    }
+
+    /// Whether a name is one SwiftRecords gives an asset: a SHA-256 in hex, and maybe an extension. Anything
+    /// else, such as a path, is hashed again rather than trusted as a file name.
+    private static func isAssetID(_ id: String) -> Bool {
+        let parts = id.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let hex = Set("0123456789abcdef")
+        guard parts[0].count == 64, parts[0].allSatisfy(hex.contains) else { return false }
+        return parts.count == 1 || (!parts[1].isEmpty && parts[1].allSatisfy { $0.isLetter || $0.isNumber })
     }
 
     /// The deletion a record the server reports deleted stands for, such as from
@@ -104,6 +124,8 @@ extension RecordContainer {
 }
 
 extension CKRecord {
+    /// The suffix of the field beside each asset that holds its ID.
+    static let assetIDSuffix = "_assetID"
     /// Writes these values and clears the fields it no longer has. `file` finds an asset's file by its ID,
     /// and an asset whose file isn't there, such as one still downloading, keeps the record's value.
     func fill(_ values: [String: RecordValue], file: (String) -> URL?) {
@@ -116,6 +138,7 @@ extension CKRecord {
     /// Writes only the `keys` among these values and clears `cleared`, so CloudKit sends nothing else.
     func fill(_ values: [String: RecordValue], only keys: Set<String>, clearing cleared: Set<String>, file: (String) -> URL?) {
         for key in cleared {
+            // A cleared asset's ID field stays, and is ignored without its asset.
             setObject(nil, forKey: key)
         }
         // The record belongs to what its first `.deleteSelf` pointer names, which is how sharing finds it.
@@ -145,6 +168,7 @@ extension CKRecord {
             case .asset(let id):
                 if let url = file(id), FileManager.default.fileExists(atPath: url.path) {
                     self[key] = CKAsset(fileURL: url)
+                    self[key + Self.assetIDSuffix] = id
                 }
             }
         }

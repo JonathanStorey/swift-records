@@ -391,10 +391,15 @@ public struct RecordChangeData: Sendable, Hashable {
     public var clearedKeys: Set<String>
     /// For a partial download: the tag of the copy it builds on.
     public var baseTag: Data?
+    /// The files behind this change's `.asset` values, by asset ID, for a server that keeps files inside
+    /// their records, as CloudKit does with `CKAsset`. An upload names every file this device has. A
+    /// download names the files that came with it, which the container copies in before the event that
+    /// carried them ends. Never encoded.
+    public var assetFiles: [String: URL]
 
     public init(
         id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil,
-        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil
+        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil, assetFiles: [String: URL] = [:]
     ) {
         self.id = id
         self.zone = zone
@@ -405,6 +410,7 @@ public struct RecordChangeData: Sendable, Hashable {
         self.changedKeys = changedKeys
         self.clearedKeys = clearedKeys
         self.baseTag = baseTag
+        self.assetFiles = assetFiles
     }
 
     public var isDeletion: Bool { fields == nil }
