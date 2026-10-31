@@ -107,6 +107,14 @@ extension ZoneStorage {
         try store.rebase(edit, base: base)
     }
 
+    func merge<R: Record>(_ edit: R, into other: R, base: SyncFields) throws -> R {
+        try store.merge(edit, into: other, base: base)
+    }
+
+    func remainingClashes<R: Record>(of edit: R, in clashes: Set<String>) throws -> Set<String> {
+        try store.remainingClashes(of: edit, in: clashes)
+    }
+
     package func delete<R: Record>(_ record: R) throws {
         try store.delete(record)
     }

@@ -6,7 +6,7 @@ import Testing
 /// fields it changed while the edit keeps its own.
 @MainActor
 @Suite struct PushMergeTests {
-    let context = try! RecordContainer(for: [MergeContact.self], inMemory: true).mainContext
+    let context = try! RecordContainer(for: [MergeContact.self, MergeTicket.self], inMemory: true).mainContext
 
     private func stored(_ id: UUID) throws -> MergeContact {
         try #require(try context.container.fetch(MergeContact.self, id: id))
@@ -93,7 +93,7 @@ import Testing
         #expect(try stored(contact.id).name == "Bo")
     }
 
-    @Test func aRecordDeletedElsewhereKeepsTheEditUntilItSaves() async throws {
+    @Test func aRecordDeletedElsewhereDropsTheEdit() async throws {
         var contact = MergeContact()
         try saved(contact)
         contact.name = "Bo"
@@ -101,7 +101,9 @@ import Testing
 
         try context.container.delete(contact)
         for _ in 0..<20 { await Task.yield() }
-        #expect(try context.record(MergeContact.self, for: contact.id)?.name == "Bo")
+        // A delete wins. An open `@Recordable` keeps the edit for its user to restore.
+        #expect(try context.record(MergeContact.self, for: contact.id) == nil)
+        #expect(!context.hasChanges)
 
         try commit()
         #expect(try context.container.fetch(MergeContact.self, id: contact.id) == nil)
@@ -178,5 +180,42 @@ import Testing
         #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
         #expect(try stored(contact.id).name == "Bo")
         #expect(try stored(contact.id).place.city == "Bergen")
+    }
+
+    @Test func aConflictClearsOnceTheEditAgreesWithTheStoredCopy() async throws {
+        var contact = try await clash()
+        contact = try #require(try context.record(MergeContact.self, for: contact.id))
+        contact.name = "Cy"
+        context.insert(contact)
+        #expect(context.conflict(MergeContact.self, for: contact.id) == nil)
+    }
+
+    @Test func aMergeableThatThrowsReportsAConflict() async throws {
+        var ticket = MergeTicket(seat: "1A")
+        context.insert(ticket)
+        try commit()
+        ticket.seat = "2B"
+        context.insert(ticket)
+        var other = try #require(try context.container.fetch(MergeTicket.self, id: ticket.id))
+        other.seat = "3C"
+        try context.container.save(other)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(context.conflict(MergeTicket.self, for: ticket.id, at: \.seat))
+        #expect(try context.record(MergeTicket.self, for: ticket.id)?.seat == "2B")
+    }
+
+    @Test func aMergeableThatMergesReportsNoConflict() async throws {
+        let container = try RecordContainer(for: [MergeBooking.self], inMemory: true)
+        let context = container.mainContext
+        var booking = MergeBooking(note: "a")
+        try container.save(booking)
+        booking.note = "b"
+        booking.confirmed = true
+        context.insert(booking)
+        var other = try #require(try container.fetch(MergeBooking.self, id: booking.id))
+        other.note = "c"
+        try container.save(other)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(context.conflict(MergeBooking.self, for: booking.id) == nil)
     }
 }

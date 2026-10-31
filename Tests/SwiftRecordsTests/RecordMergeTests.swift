@@ -142,6 +142,8 @@ struct MergeTicket: Mergeable {
         mine.place.street = "Oak"
         phone.insert(mine)
         try commit(phone)
+        // Edit dates are compared, so the tablet's must be strictly later even on a fast machine.
+        try await Task.sleep(for: .milliseconds(20))
         var theirs = original
         theirs.name = "Anne"
         theirs.place.city = "Bergen"

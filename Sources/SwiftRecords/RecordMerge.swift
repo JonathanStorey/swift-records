@@ -45,9 +45,36 @@ extension RecordStore {
     /// `base` or the record is no longer stored.
     func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
         guard let stored = try storedFields(R.self, id: edit.id), stored != base else { return nil }
-        let fields = R.cachedSchema.fields.filter {
+        return try merge(edit, onto: stored, base: base)
+    }
+
+    /// Merges an edit made away from the context, such as a draft's, into another unsaved edit of the same
+    /// record, favoring it. Both began from `base`.
+    func merge<R: Record>(_ edit: R, into other: R, base: SyncFields) throws -> R {
+        var theirs = base
+        let otherFields = try syncFields(of: other)
+        for field in Self.plainFields(of: R.self) {
+            theirs[field.name] = otherFields[field.name]
+        }
+        return try merge(edit, onto: theirs, base: base)?.edit ?? edit
+    }
+
+    /// The fields of `clashes` where the edit still differs from the stored copy. A field the edit has
+    /// come to agree with is no longer a conflict.
+    func remainingClashes<R: Record>(of edit: R, in clashes: Set<String>) throws -> Set<String> {
+        guard !clashes.isEmpty, let stored = try storedFields(R.self, id: edit.id) else { return clashes }
+        let ours = try syncFields(of: edit)
+        return clashes.filter { ours[$0] != stored[$0] }
+    }
+
+    private static func plainFields<R: Record>(of type: R.Type) -> [RecordSchema<R>.Field] {
+        R.cachedSchema.fields.filter {
             $0.name != "id" && $0.isStored && $0.timestamp == nil && !$0.isPointer && !$0.isAsset
         }
+    }
+
+    private func merge<R: Record>(_ edit: R, onto stored: SyncFields, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
+        let fields = Self.plainFields(of: R.self)
         let ours = try syncFields(of: edit)
         var local = base
         var newBase = base
@@ -87,7 +114,7 @@ extension RecordStore {
     }
 
     /// Merges with the type's own merge when it's `Mergeable`, and otherwise, or when that throws, node by
-    /// node with every clash going to the favored side.
+    /// node with every conflict going to the favored side.
     private static func merge<R: Record>(_ ours: R, _ theirs: R, base: R?, favoringOurs: Bool) -> R {
         if let mergeable = ours as? any Mergeable, let merged = try? mergeOwn(mergeable, theirs, base: base) as? R {
             return merged
