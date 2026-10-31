@@ -447,6 +447,36 @@ public final class RecordContext {
         return result
     }
 
+    /// When the context saves on its own, besides the save it always makes as the app stops being active.
+    public enum Autosave: Equatable, Sendable {
+        /// Only explicit saves and the save on leaving commit changes. The default.
+        case off
+        /// Saves, and with a sync provider sends, once edits have paused this long, so a long editing
+        /// session reaches the server without a Save button.
+        case after(Duration)
+    }
+
+    /// Whether the context saves on its own once edits pause, `.off` by default:
+    /// `context.autosave = .after(.seconds(5))`. Drafts held by `@Recordable(.draft)` aren't in the context,
+    /// so it never commits them.
+    public var autosave: Autosave = .off {
+        didSet { scheduleAutosave() }
+    }
+
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+
+    /// Starts the pause again after each change. A save that fails leaves the changes pending, as any
+    /// failed save does, and the next edit tries again.
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        guard case .after(let delay) = autosave, !pending.isEmpty else { return }
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            try? await save()
+        }
+    }
+
     /// Commits every pending change, in one transaction for each zone they touch. If the save fails, the
     /// changes stay pending so you can fix the cause and save again, or discard them with `rollback()`.
     public func save() throws {
@@ -975,6 +1005,7 @@ public final class RecordContext {
         )
         // Views show unsaved changes at once.
         notifyHandlers()
+        scheduleAutosave()
     }
 
     /// Whether a save that failed this way may succeed later without anything changing.
