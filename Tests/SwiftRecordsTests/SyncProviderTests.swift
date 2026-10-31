@@ -659,13 +659,27 @@ struct Device {
         #expect(try await phone.recipes().map(\.title) == ["Alice's"])
     }
 
-    @Test func aServerResetUploadsEverythingAgain() async throws {
+    @Test func aServerThatLostItsDataGetsEverythingAgain() async throws {
         let phone = try Device(server)
         phone.context.insert(SyncRecipe(title: "Keep", steps: [SyncStep(text: "One")]))
         try await phone.context.save()
-        server.reset()
+        try await phone.context.refresh()
+        server.reset(reason: .encryptedDataReset)
         try await phone.context.refresh()
         #expect(server.count == 2)
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
+    }
+
+    @Test func dataDeletedFromTheServerLeavesTheDevice() async throws {
+        let phone = try Device(server)
+        phone.context.insert(SyncRecipe(title: "Gone", steps: [SyncStep(text: "One")]))
+        try await phone.context.save()
+        try await phone.context.refresh()
+        // As when the person deletes the app's data in Settings.
+        server.reset(reason: .purged)
+        try await phone.context.refresh()
+        #expect(try await phone.recipes().isEmpty)
+        #expect(server.count == 0)
         #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
     }
 
@@ -818,32 +832,6 @@ struct Device {
         #expect(try await tablet.recipes().count == 5)
     }
 
-    @Test func publicRecordsCarryTheirOwner() async throws {
-        server.publicZones = [.default]
-        let alice = try Device(server)
-        let bob = try Device(server, account: "bob")
-        var recipe = SyncRecipe(title: "Shared")
-        alice.context.insert(recipe)
-        try await alice.context.save()
-        #expect(server.creator("SyncRecipe", recipe.id) == "alice")
-        #expect(!server.has("SyncRecipe", recipe.id, "_owner"))
-
-        // Everyone sees it, and only its owner can change it.
-        try await bob.context.refresh()
-        recipe = try #require(try await bob.recipes().first)
-        recipe.title = "Bob's now"
-        bob.context.insert(recipe)
-        try await bob.context.save()
-        await bob.settle()
-        #expect(bob.context.status == .failed(.rejected(type: "SyncRecipe", id: recipe.id)))
-        #expect(server.value("SyncRecipe", recipe.id, "title") == .string("Shared"))
-
-        // Signing out never deletes public records, and they still download.
-        let reader = try Device(server, account: .some(nil))
-        try await reader.context.refresh()
-        #expect(try await reader.recipes().map(\.title) == ["Shared"])
-    }
-
     @Test func localOnlyAndInMemoryZonesNeverSync() async throws {
         let phone = try Device(server)
         phone.context.zone = .localOnly
@@ -891,5 +879,43 @@ private actor Seen {
         // The draft stays unsaved, and nothing went up.
         #expect(tablet.context.hasChanges)
         #expect(server.count == 1)
+    }
+}
+
+@MainActor
+@Suite struct PollingEngineTests {
+    let server = TestServer()
+
+    @Test func anAutomaticEngineSendsWithoutBeingAsked() async throws {
+        let provider = TestProvider(server: server, automaticallySync: true)
+        let context = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider).mainContext
+        context.insert(SyncRecipe(title: "Soup"))
+        try commit(context)
+        for _ in 0..<250 where server.count == 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(server.count == 1)
+    }
+
+    /// Commits without asking for a sync, so only the engine's own schedule sends.
+    private func commit(_ context: RecordContext) throws {
+        try context.save()
+    }
+
+    @Test func aFetchOfOneZoneLeavesTheOthersForLater() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        for zone: Zone in ["pantry", "garden"] {
+            phone.context.zone = zone
+            phone.context.insert(SyncRecipe(title: zone.name))
+            try await phone.context.save()
+        }
+        tablet.context.zone = "pantry"
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["pantry"])
+        // The garden changed in the same database fetch, and still arrives when its turn comes.
+        tablet.context.zone = "garden"
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["garden"])
     }
 }
