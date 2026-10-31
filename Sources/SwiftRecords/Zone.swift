@@ -15,6 +15,23 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     /// The zone's lowercased name, which is also its file's name.
     public let name: String
 
+    /// The database the zone lives in: `.private` for the person's own zones, `.shared` for zones other
+    /// people shared with them. ≈ `CKDatabase.Scope`.
+    public let scope: Scope
+
+    /// Who owns a shared zone, as the server names users: a CloudKit user record name. `nil` for a private
+    /// zone, which the signed-in person owns. ≈ `CKRecordZone.ID.ownerName`.
+    public let owner: String?
+
+    /// Which database a zone lives in. ≈ `CKDatabase.Scope` without the public database, which
+    /// `CKSyncEngine` doesn't support.
+    public enum Scope: String, Sendable, Hashable, Codable {
+        /// The signed-in person's own data.
+        case `private`
+        /// Zones other people shared with them.
+        case shared
+    }
+
     /// The zone a context uses until you set another.
     public static let `default` = Zone(unchecked: "_default")
 
@@ -60,6 +77,19 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
         let lowercased = name.lowercased()
         guard Self.isValid(lowercased) else { throw RecordsError.invalidZoneName(name) }
         self.name = lowercased
+        scope = .private
+        owner = nil
+    }
+
+    /// A zone someone else shared with the signed-in person. Its records are stored apart from the person's
+    /// own, under `shared/<owner>/` in the container's folder, so a private zone of the same name never
+    /// mixes with it. Throws `RecordsError.invalidZoneName` for an invalid name or an empty owner.
+    public init(_ name: String, sharedBy owner: String) throws {
+        let zone = try Zone(name)
+        guard !owner.isEmpty, owner.utf8.count <= 255 else { throw RecordsError.invalidZoneName(name) }
+        self.name = zone.name
+        scope = .shared
+        self.owner = owner
     }
 
     /// A zone named in code. An invalid name is a programming error, so it stops the app.
@@ -72,24 +102,61 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
 
     private init(unchecked name: String) {
         self.name = name
+        scope = .private
+        owner = nil
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case name, owner
+    }
+
+    // A private zone is its name, as before sharing. A shared zone is its name and owner.
     public init(from decoder: any Decoder) throws {
-        let name = try decoder.singleValueContainer().decode(String.self)
-        guard let zone = Zone(stored: name) else { throw RecordsError.invalidZoneName(name) }
-        self = zone
+        if let name = try? decoder.singleValueContainer().decode(String.self) {
+            guard let zone = Zone(stored: name) else { throw RecordsError.invalidZoneName(name) }
+            self = zone
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try container.decode(String.self, forKey: .name)
+        self = try Zone(name, sharedBy: try container.decode(String.self, forKey: .owner))
     }
 
     public func encode(to encoder: any Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(name)
+        if let owner {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(name, forKey: .name)
+            try container.encode(owner, forKey: .owner)
+        } else {
+            var container = encoder.singleValueContainer()
+            try container.encode(name)
+        }
     }
 
-    public var description: String { name }
+    /// The name for a private zone, and `shared/<owner>/<name>` for a shared one.
+    public var description: String {
+        owner.map { "shared/\($0)/\(name)" } ?? name
+    }
 
-    /// The zone's database file inside `directory`, or `nil` for `.inMemory`.
+    /// The zone's database file inside `directory`, or `nil` for `.inMemory`. A shared zone's file is in a
+    /// folder for its owner.
     func url(in directory: URL) -> URL? {
-        self == .inMemory ? nil : directory.appendingPathComponent(name + ".sqlite")
+        guard self != .inMemory else { return nil }
+        guard let owner else { return directory.appendingPathComponent(name + ".sqlite") }
+        return directory.appendingPathComponent("shared", isDirectory: true)
+            .appendingPathComponent(Self.folderName(owner), isDirectory: true)
+            .appendingPathComponent(name + ".sqlite")
+    }
+
+    /// An owner's name as a folder name: as it is when it is already lowercase letters, digits, `-` and
+    /// `_`, and otherwise its UTF-8 in hex after an `x`, so names that differ only in case stay apart on a
+    /// case-insensitive disk.
+    static func folderName(_ owner: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-_")
+        if owner.unicodeScalars.allSatisfy(safe.contains), owner.first != "x" {
+            return owner
+        }
+        return "x" + owner.utf8.map { String(format: "%02x", $0) }.joined()
     }
 
     /// Whether the container asks its sync provider about this zone.

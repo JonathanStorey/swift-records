@@ -9,6 +9,9 @@ public protocol SyncTransport: Sendable {
     /// Names the server, such as its URL.
     var identifier: String { get }
 
+    /// The databases the server has. The default is `.private` alone.
+    var scopes: Set<Zone.Scope> { get }
+
     /// A stable ID for the signed-in user, or `nil` when signed out. ≈ `fetchUserRecordID()`.
     func currentUser() async throws -> String?
 
@@ -28,17 +31,28 @@ public protocol SyncTransport: Sendable {
     /// ≈ `CKFetchRecordZoneChangesOperation`.
     func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
 
+    /// The server's whole copy of each record, and a deletion for one it no longer has.
+    /// ≈ `CKFetchRecordsOperation`. A transport whose zone changes are ever partial must implement it: the
+    /// container asks when it lacks the copy a partial change builds on. The default throws.
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
+
     /// Zones the server says have changed, such as from a push. Each call returns a new stream. `nil`, the
     /// default, means the transport can't tell.
     func changeNotifications() -> AsyncStream<[Zone]>?
 }
 
 extension SyncTransport {
+    public var scopes: Set<Zone.Scope> { [.private] }
+
     public func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges {
         SentZoneChanges(saved: save, deleted: delete)
     }
 
     public func changeNotifications() -> AsyncStream<[Zone]>? { nil }
+
+    public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+        throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
+    }
 }
 
 /// The zones a database fetch found. ≈ `CKSyncEngine.Event.FetchedDatabaseChanges`.
@@ -123,6 +137,8 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     public var identifier: String { transport.identifier }
 
+    public var scopes: Set<Zone.Scope> { transport.scopes }
+
     public var assetTransfer: (any AssetTransfer)? { transport as? any AssetTransfer }
 
     public func start(_ scope: Zone.Scope, state data: Data?, delegate: any SyncDelegate) async {
@@ -194,6 +210,10 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     public func fetchChanges(_ options: FetchOptions) async throws {
         try await fetch(options, reason: .manual)
+    }
+
+    public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+        try await transport.fetchRecords(records)
     }
 
     public func cancelOperations() async {

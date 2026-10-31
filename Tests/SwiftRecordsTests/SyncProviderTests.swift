@@ -919,3 +919,209 @@ private actor Seen {
         #expect(try await tablet.recipes().map(\.title) == ["garden"])
     }
 }
+
+@MainActor
+@Suite struct FieldLevelSyncTests {
+    let server = TestServer()
+
+    @Test func anEditSendsOnlyTheFieldsItChanged() async throws {
+        let phone = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", servings: 4, updated: Date(timeIntervalSince1970: 1_000))
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        // A new record goes whole.
+        let first = try #require(phone.provider.sentBatches.last?.first { $0.id == recipe.id })
+        #expect(first.changedKeys == nil)
+
+        var edited = recipe
+        edited.title = "Stew"
+        edited.updated = nil
+        phone.context.insert(edited)
+        try await phone.context.save()
+        let sent = try #require(phone.provider.sentBatches.last?.first { $0.id == recipe.id })
+        #expect(sent.changedKeys == ["title"])
+        #expect(sent.clearedKeys == ["updated"])
+        #expect(sent.sentFields?.keys.sorted() == ["title"])
+        // The whole record still travels, for servers that store whole records.
+        #expect(sent.fields?["servings"] == .int(4))
+        // The server applied only those fields, and kept the rest.
+        #expect(server.value("SyncRecipe", recipe.id, "title") == .string("Stew"))
+        #expect(server.value("SyncRecipe", recipe.id, "servings") == .int(4))
+        #expect(!server.has("SyncRecipe", recipe.id, "updated"))
+    }
+
+    @Test func aPartialDownloadAppliesToTheCopyItBuildsOn() async throws {
+        server.sendsPartialChanges = true
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", servings: 4)
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+
+        var edited = recipe
+        edited.title = "Stew"
+        phone.context.insert(edited)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+        let received = try #require(try await tablet.recipes().first)
+        #expect(received.title == "Stew")
+        #expect(received.servings == 4)
+        #expect(server.fetchedRecords == 0)
+    }
+
+    @Test func aPartialChangeWithoutItsCopyIsFetchedWhole() async throws {
+        server.sendsPartialChanges = true
+        let phone = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", servings: 4)
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        var edited = recipe
+        edited.title = "Stew"
+        phone.context.insert(edited)
+        try await phone.context.save()
+
+        // The tablet never saw the first copy, so the change alone can't rebuild the record.
+        let tablet = try Device(server)
+        try await tablet.context.refresh()
+        let received = try #require(try await tablet.recipes().first)
+        #expect(received.title == "Stew")
+        #expect(received.servings == 4)
+        #expect(server.fetchedRecords == 1)
+        #expect(try tablet.container.initialStorage.sync?.refetch().isEmpty == true)
+    }
+
+    @Test func aFailedFetchIsTriedAgain() async throws {
+        server.sendsPartialChanges = true
+        let phone = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", servings: 4)
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        var edited = recipe
+        edited.title = "Stew"
+        phone.context.insert(edited)
+        try await phone.context.save()
+
+        let tablet = try Device(server)
+        tablet.provider.failsRecordFetches = true
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().isEmpty)
+        #expect(try tablet.container.initialStorage.sync?.refetch().count == 1)
+
+        tablet.provider.failsRecordFetches = false
+        try await tablet.context.refresh()
+        #expect(try await tablet.recipes().map(\.title) == ["Stew"])
+    }
+
+    @Test func aPartialDownloadMergesWithAnUnsentEdit() async throws {
+        server.sendsPartialChanges = true
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        let recipe = SyncRecipe(title: "Soup", servings: 4)
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        try await tablet.context.refresh()
+
+        var local = recipe
+        local.servings = 6
+        tablet.context.insert(local)
+        try tablet.commit()
+        var remote = recipe
+        remote.title = "Stew"
+        phone.context.insert(remote)
+        try await phone.context.save()
+
+        await tablet.download()
+        let merged = try #require(try await tablet.recipes().first)
+        #expect(merged.title == "Stew")
+        #expect(merged.servings == 6)
+        try await tablet.context.save()
+        #expect(server.value("SyncRecipe", recipe.id, "title") == .string("Stew"))
+        #expect(server.value("SyncRecipe", recipe.id, "servings") == .int(6))
+        #expect(tablet.provider.sentBatches.last?.first { $0.id == recipe.id }?.changedKeys == ["servings"])
+    }
+}
+
+@MainActor
+@Suite struct SharedZoneTests {
+    let server = TestServer()
+    let family: Zone = "family"
+    var shared: Zone { try! Zone("family", sharedBy: "alice") }
+
+    @Test func aSharedZoneSyncsBetweenItsOwnerAndParticipants() async throws {
+        server.share(family, of: "alice", with: "bob")
+        let alice = try Device(server, account: "alice")
+        let bob = try Device(server, account: "bob")
+        alice.context.zone = family
+        let recipe = SyncRecipe(title: "Soup")
+        alice.context.insert(recipe)
+        try await alice.context.save()
+
+        bob.context.zone = shared
+        try await bob.context.refresh()
+        #expect(try await bob.recipes().map(\.title) == ["Soup"])
+
+        var edited = recipe
+        edited.title = "Stew"
+        bob.context.insert(edited)
+        try await bob.context.save()
+        try await alice.context.refresh()
+        #expect(try await alice.recipes().map(\.title) == ["Stew"])
+    }
+
+    @Test func aSharedZoneStaysApartFromAPrivateOneOfTheSameName() async throws {
+        server.share(family, of: "alice", with: "bob")
+        let alice = try Device(server, account: "alice")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Alice's soup"))
+        try await alice.context.save()
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bob = try Device(server, directory: directory, account: "bob")
+        bob.context.zone = family
+        bob.context.insert(SyncRecipe(title: "Bob's soup"))
+        try await bob.context.save()
+        bob.context.zone = shared
+        try await bob.context.refresh()
+        #expect(try await bob.recipes().map(\.title) == ["Alice's soup"])
+        bob.context.zone = family
+        #expect(try await bob.recipes().map(\.title) == ["Bob's soup"])
+
+        #expect(bob.container.url(for: shared)?.path.hasSuffix("/shared/alice/family.sqlite") == true)
+        #expect(FileManager.default.fileExists(atPath: try #require(bob.container.url(for: shared)).path))
+    }
+
+    @Test func aZoneNotSharedWithYouIsRefused() async throws {
+        let alice = try Device(server, account: "alice")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Soup"))
+        try await alice.context.save()
+
+        let eve = try Device(server, account: "eve")
+        eve.context.zone = shared
+        eve.context.insert(SyncRecipe(title: "Mine now"))
+        await #expect(throws: RecordsError.self) { try await eve.context.refresh() }
+        alice.context.zone = family
+        try await alice.context.refresh()
+        #expect(try await alice.recipes().map(\.title) == ["Soup"])
+    }
+
+    @Test func aProviderWithoutTheSharedDatabaseKeepsSharedZonesOnTheDevice() async throws {
+        let provider = SilentProvider()
+        let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider)
+        #expect(try container.storage(for: shared).sync == nil)
+        #expect(try container.storage(for: family).sync != nil)
+    }
+
+    @Test func zonesEncodeAsBefore() throws {
+        #expect(String(decoding: try JSONEncoder().encode(family), as: UTF8.self) == "\"family\"")
+        let data = try JSONEncoder().encode(shared)
+        #expect(try JSONDecoder().decode(Zone.self, from: data) == shared)
+        #expect(shared != family)
+        #expect(shared.scope == .shared && family.scope == .private)
+        #expect(shared.description == "shared/alice/family")
+        #expect(Zone.folderName("Alice") == "x416c696365")
+        #expect(throws: RecordsError.self) { try Zone("family", sharedBy: "") }
+    }
+}

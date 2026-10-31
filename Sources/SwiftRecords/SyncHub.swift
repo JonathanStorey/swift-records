@@ -161,6 +161,9 @@ actor SyncHub: SyncDelegate {
         case .didFetchZoneChanges:
             break
         case .didFetchChanges(let context):
+            for sync in registry.all where context.options.scope.contains(sync.zone) {
+                await refetch(sync)
+            }
             if context.reason == .scheduled {
                 for sync in registry.all where context.options.scope.contains(sync.zone) {
                     sync.finish(error: nil, signedOut: isSignedOut)
@@ -204,8 +207,8 @@ actor SyncHub: SyncDelegate {
                 guard count < Self.batchSize else { break }
                 guard !attempted.contains(change.id), records?.contains(change.id) ?? true else { continue }
                 attempted.insert(change.id)
-                guard let (record, fields) = try? store.syncRecord(for: change),
-                      let data = try? store.change(for: record, zone: sync.zone) else { continue }
+                guard let (record, fields, base) = try? store.syncRecord(for: change),
+                      let data = try? store.change(for: record, zone: sync.zone, base: base) else { continue }
                 inFlight[change.id] = (sync, change, fields)
                 if data.isDeletion {
                     batch.deletes.append(RecordDeletion(id: data.id, zone: data.zone, type: data.type, tag: data.tag))
@@ -268,6 +271,19 @@ actor SyncHub: SyncDelegate {
             guard let sync = registry[zone] ?? openZone(zone) else { continue }
             sync.receive(group)
             registerPending(sync)
+        }
+    }
+
+    /// Fetches whole the records whose partial changes this device couldn't apply. A failure keeps them
+    /// for the next fetch, and the zone shows offline.
+    private func refetch(_ sync: ZoneSync) async {
+        guard let ids = try? sync.refetch(), !ids.isEmpty else { return }
+        do {
+            let changes = try await provider.fetchRecords(ids)
+            sync.refetched(ids, changes: changes)
+            registerPending(sync)
+        } catch {
+            sync.markOffline()
         }
     }
 
