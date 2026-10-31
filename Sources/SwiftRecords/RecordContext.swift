@@ -221,9 +221,7 @@ public final class RecordContext {
         self.container = container
         zone = container.initialZone
         lifecycle = LifecycleObserver(resignActive: { [weak self] in
-            guard let self else { return }
-            saveBeforeLeaving()
-            leftAt = Date()
+            self?.willResignActive()
         }, becomeActive: { [weak self] in
             self?.resume()
         })
@@ -445,6 +443,37 @@ public final class RecordContext {
         }
         try save()
         return result
+    }
+
+    /// When the context saves on its own.
+    public enum Autosave: Equatable, Sendable {
+        /// Saves as the app stops being active, such as when the user switches apps or locks the device, so
+        /// nothing entered is lost if the system ends the app in the background. The default.
+        case whenInactive
+        /// Also saves, and with a sync provider sends, once edits have paused this long, so a long editing
+        /// session reaches the server without a Save button. It still saves when the app becomes inactive.
+        case after(Duration)
+    }
+
+    /// When the context saves on its own, `.whenInactive` by default. `.after(.seconds(5))` also saves once
+    /// edits pause, and `nil` leaves every save to you. Drafts held by `@Recordable(.draft)` aren't in the
+    /// context, so no automatic save commits them.
+    public var autosave: Autosave? = .whenInactive {
+        didSet { scheduleAutosave() }
+    }
+
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+
+    /// Starts the pause again after each change. A save that fails leaves the changes pending, as any
+    /// failed save does, and the next edit tries again.
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        guard case .after(let delay)? = autosave, !pending.isEmpty else { return }
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            try? await save()
+        }
     }
 
     /// Commits every pending change, in one transaction for each zone they touch. If the save fails, the
@@ -975,6 +1004,7 @@ public final class RecordContext {
         )
         // Views show unsaved changes at once.
         notifyHandlers()
+        scheduleAutosave()
     }
 
     /// Whether a save that failed this way may succeed later without anything changing.
@@ -982,6 +1012,14 @@ public final class RecordContext {
         guard case .database(let code, _)? = error as? RecordsError else { return false }
         // SQLITE_BUSY, LOCKED, READONLY, IOERR, FULL and CANTOPEN, including their extended codes.
         return [5, 6, 8, 10, 13, 14].contains(code & 0xFF)
+    }
+
+    /// Saves as the app stops being active, unless automatic saves are off, and notes when it left.
+    func willResignActive() {
+        if autosave != nil {
+            saveBeforeLeaving()
+        }
+        leftAt = Date()
     }
 
     /// Saves everything pending when the app stops being active, such as when the user switches apps, so

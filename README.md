@@ -85,6 +85,18 @@ files, and commits that as a save of its own, so it syncs like any other change.
 saved aren't steps, and stay laid over what undo brings back. Without an undo manager, saves skip the
 bookkeeping.
 
+The context also saves on its own as the app stops being active, so nothing typed is lost if the system
+ends the app in the background. `context.autosave: RecordContext.Autosave?` sets when:
+
+```swift
+context.autosave = .whenInactive          // the default
+context.autosave = .after(.seconds(5))    // also once edits pause for five seconds, and syncs
+context.autosave = nil                    // every save is yours
+```
+
+With `.after`, each edit starts the wait again, so a burst of typing makes one save. A
+`@Recordable(.draft)` isn't in the context, so no automatic save commits it.
+
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. If the save the context makes when the app stops being active fails, such as while a
 widget is writing at the same moment, it sets `lastSaveError` and its changes stay pending for the next
