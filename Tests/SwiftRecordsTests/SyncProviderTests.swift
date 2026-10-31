@@ -210,7 +210,7 @@ struct Device {
         }
     }
 
-    @Test func aClashWithoutEditDatesKeepsTheServersCopy() async throws {
+    @Test func aConflictWithoutEditDatesKeepsTheServersCopy() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         var recipe = SyncRecipe(title: "Cake")

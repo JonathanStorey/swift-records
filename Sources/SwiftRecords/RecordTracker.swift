@@ -42,7 +42,7 @@ final class RecordTracker<R: Record> {
         /// The stored fields when the draft's first edit was made, which its commit merges against.
         var base: SyncFields?
         /// The fields where the draft kept its value over a change from elsewhere.
-        var clashes: Set<String> = []
+        var conflicts: Set<String> = []
     }
 
     struct Key: Equatable {
@@ -124,10 +124,11 @@ final class RecordTracker<R: Record> {
     /// does for an unsaved edit.
     private func rebaseDraft(context: RecordContext, zone: Zone) {
         guard let base = draft?.base, let record = draft?.record,
-              let (edit, newBase, clashes) = try? context.storage(for: zone).rebase(record, base: base) else { return }
+              case .rebased(let edit, let newBase, let conflicts)? = try? context.storage(for: zone).store.rebase(record, base: base)
+        else { return }
         draft?.record = edit
         draft?.base = newBase
-        draft?.clashes.formUnion(clashes)
+        draft?.conflicts.formUnion(conflicts)
     }
 
     private func overlay(_ context: RecordContext, zone: Zone) {
@@ -156,12 +157,12 @@ final class RecordTracker<R: Record> {
         value = record
         if editing == .draft || deletedElsewhere {
             if draft == nil {
-                let base = isNew || deletedElsewhere ? nil : try? context.storage(for: zone).storedFields(R.self, id: record.id)
+                let base = isNew || deletedElsewhere ? nil : try? context.storage(for: zone).store.storedFields(R.self, id: record.id)
                 draft = Draft(record: record, base: base)
             }
             draft?.record = record
-            if let clashes = draft?.clashes, !clashes.isEmpty {
-                draft?.clashes = (try? context.storage(for: zone).remainingClashes(of: record, in: clashes)) ?? clashes
+            if let conflicts = draft?.conflicts, !conflicts.isEmpty {
+                draft?.conflicts = (try? context.storage(for: zone).store.remainingConflicts(of: record, in: conflicts)) ?? conflicts
             }
             return true
         }
@@ -183,25 +184,25 @@ final class RecordTracker<R: Record> {
     /// The stored copy when an edit conflicted with a change from elsewhere.
     func conflict(context: RecordContext, zone: Zone) -> R? {
         guard editing == .draft else { return context.conflict(R.self, for: value.id, in: zone) }
-        guard draft?.clashes.isEmpty == false else { return nil }
+        guard draft?.conflicts.isEmpty == false else { return nil }
         return try? context.storage(for: zone).fetch(R.self, id: value.id)
     }
 
     func conflict(at keyPath: PartialKeyPath<R>, context: RecordContext, zone: Zone) -> Bool {
         guard editing == .draft else { return context.conflict(R.self, for: value.id, at: keyPath, in: zone) }
-        guard let clashes = draft?.clashes, !clashes.isEmpty else { return false }
-        return R.cachedSchema.fields.contains { $0.keyPath == keyPath && clashes.contains($0.name) }
+        guard let conflicts = draft?.conflicts, !conflicts.isEmpty else { return false }
+        return R.cachedSchema.fields.contains { $0.keyPath == keyPath && conflicts.contains($0.name) }
     }
 
     func resolve(favoring side: MergeSide, context: RecordContext, zone: Zone) {
         guard editing == .draft else { return context.resolveConflict(R.self, for: value.id, favoring: side, in: zone) }
-        guard var draft, !draft.clashes.isEmpty else { return }
+        guard var draft, !draft.conflicts.isEmpty else { return }
         if side == .theirs, let stored = try? context.storage(for: zone).fetch(R.self, id: value.id) {
-            for field in R.cachedSchema.fields where draft.clashes.contains(field.name) {
+            for field in R.cachedSchema.fields where draft.conflicts.contains(field.name) {
                 _ = RecordStore.copy(field.keyPath, from: stored, into: &draft.record)
             }
         }
-        draft.clashes = []
+        draft.conflicts = []
         self.draft = draft
         value = draft.record
     }

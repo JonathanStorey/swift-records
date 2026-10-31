@@ -40,12 +40,12 @@ extension RecordStore {
     /// after the edit started from `base`. A field only the store changed takes the stored value, and one
     /// both changed merges favoring the edit, as the save would. The returned base is what's stored now,
     /// so the save merges only what changes after this, and `@Merged(.sum)` doesn't count a change twice.
-    /// Pointers, assets and timestamps keep the old base and merge at save, as before. `clashes` names the
-    /// fields where the edit's value won over the stored one. Returns `nil` when nothing changed since
-    /// `base` or the record is no longer stored.
-    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
-        guard let stored = try storedFields(R.self, id: edit.id), stored != base else { return nil }
-        return try merge(edit, onto: stored, base: base)
+    /// Pointers, assets and timestamps keep the old base and merge at save, as before. `conflicts` names
+    /// the fields where the edit's value won over the stored one. It reads the stored record once.
+    func rebase<R: Record>(_ edit: R, base: SyncFields) throws -> Rebase<R> {
+        guard let stored = try storedFields(R.self, id: edit.id) else { return .gone }
+        guard stored != base, let rebased = try merge(edit, onto: stored, base: base) else { return .unchanged }
+        return .rebased(edit: rebased.edit, base: rebased.base, conflicts: rebased.conflicts)
     }
 
     /// Merges an edit made away from the context, such as a draft's, into another unsaved edit of the same
@@ -59,12 +59,12 @@ extension RecordStore {
         return try merge(edit, onto: theirs, base: base)?.edit ?? edit
     }
 
-    /// The fields of `clashes` where the edit still differs from the stored copy. A field the edit has
+    /// The fields of `conflicts` where the edit still differs from the stored copy. A field the edit has
     /// come to agree with is no longer a conflict.
-    func remainingClashes<R: Record>(of edit: R, in clashes: Set<String>) throws -> Set<String> {
-        guard !clashes.isEmpty, let stored = try storedFields(R.self, id: edit.id) else { return clashes }
+    func remainingConflicts<R: Record>(of edit: R, in conflicts: Set<String>) throws -> Set<String> {
+        guard !conflicts.isEmpty, let stored = try storedFields(R.self, id: edit.id) else { return conflicts }
         let ours = try syncFields(of: edit)
-        return clashes.filter { ours[$0] != stored[$0] }
+        return conflicts.filter { ours[$0] != stored[$0] }
     }
 
     private static func plainFields<R: Record>(of type: R.Type) -> [RecordSchema<R>.Field] {
@@ -73,7 +73,7 @@ extension RecordStore {
         }
     }
 
-    private func merge<R: Record>(_ edit: R, onto stored: SyncFields, base: SyncFields) throws -> (edit: R, base: SyncFields, clashes: Set<String>)? {
+    private func merge<R: Record>(_ edit: R, onto stored: SyncFields, base: SyncFields) throws -> (edit: R, base: SyncFields, conflicts: Set<String>)? {
         let fields = Self.plainFields(of: R.self)
         let ours = try syncFields(of: edit)
         var local = base
@@ -83,25 +83,44 @@ extension RecordStore {
             newBase[field.name] = stored[field.name]
         }
         let merged = mergeFields(R.self, local: local, server: stored, base: base, localIsLater: true)
-        // A field clashed when the merge had to pick a side: favoring the stored copy instead ends
+        // A field conflicts when the merge had to pick a side: favoring the stored copy instead ends
         // differently. A strategy such as `.sum` that combines both sides ends the same either way.
         let bothChanged = fields.filter {
             local[$0.name] != base[$0.name] && stored[$0.name] != base[$0.name] && local[$0.name] != stored[$0.name]
         }
-        var clashes: Set<String> = []
-        if !bothChanged.isEmpty {
+        var conflicts = Set(bothChanged.map(\.name))
+        // Only a value that can combine both sides needs the second merge to tell: a nested value, one with
+        // a `@Merged` strategy, or a `Mergeable` record. A plain value both changed differently conflicts.
+        if !bothChanged.isEmpty, edit is any Mergeable || bothChanged.contains(where: { !Self.isPlainValue($0, of: edit) }) {
             let theirs = mergeFields(R.self, local: local, server: stored, base: base, localIsLater: false)
-            clashes = Set(bothChanged.filter { merged[$0.name] != theirs[$0.name] }.map(\.name))
+            conflicts = Set(bothChanged.filter { merged[$0.name] != theirs[$0.name] }.map(\.name))
         }
         let changed = fields.filter { merged[$0.name] != ours[$0.name] }
-        guard !changed.isEmpty else { return (edit, newBase, clashes) }
+        guard !changed.isEmpty else { return (edit, newBase, conflicts) }
         let source = try record(R.self, from: merged)
         var rebased = edit
         for field in changed {
             guard Self.copy(field.keyPath, from: source, into: &rebased) else { return nil }
         }
-        return (rebased, newBase, clashes)
+        return (rebased, newBase, conflicts)
     }
+
+    /// Whether a field holds a single value, such as a string, number or date, that merges only by picking
+    /// a side, rather than a nested value or one with a `@Merged` strategy.
+    private static func isPlainValue<R: Record>(_ field: RecordSchema<R>.Field, of record: R) -> Bool {
+        guard plainTypes.contains(ObjectIdentifier(Swift.type(of: field.keyPath).valueType)) else { return false }
+        return !Mirror(reflecting: record).children.contains { $0.label == "_" + field.name && $0.value is any MergedProperty }
+    }
+
+    private static let plainTypes: Set<ObjectIdentifier> = {
+        let types: [Any.Type] = [
+            String.self, Int.self, Int64.self, Int32.self, Double.self, Float.self, Bool.self, Date.self, UUID.self,
+            Data.self, Decimal.self, URL.self,
+            String?.self, Int?.self, Int64?.self, Int32?.self, Double?.self, Float?.self, Bool?.self, Date?.self,
+            UUID?.self, Data?.self, Decimal?.self, URL?.self,
+        ]
+        return Set(types.map(ObjectIdentifier.init))
+    }()
 
     /// Copies one property's value, or returns `false` when the property can't be set.
     static func copy<R>(_ keyPath: PartialKeyPath<R>, from source: R, into target: inout R) -> Bool {
@@ -163,6 +182,18 @@ extension RecordStore {
         return fields
     }
 }
+
+/// What a rebase found: nothing new since the edit's base, the record deleted, or the edit brought up to
+/// date with a new base and the fields that conflicted.
+enum Rebase<R> {
+    case unchanged
+    case gone
+    case rebased(edit: R, base: SyncFields, conflicts: Set<String>)
+}
+
+/// A `@Merged` property's wrapper, which a merge combines by its strategy.
+private protocol MergedProperty {}
+extension Merged: MergedProperty {}
 
 /// Loads nothing, so a record decodes from its fields alone.
 private struct FieldsOnly: RelationLoader {

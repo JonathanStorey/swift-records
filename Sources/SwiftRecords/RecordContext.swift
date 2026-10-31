@@ -119,7 +119,7 @@ public final class RecordContext {
         /// The record's stored fields when its first unsaved edit was made, which the save merges against.
         var base: SyncFields? = nil
         /// The fields where the edit kept its value over a change from elsewhere, until it saves.
-        var clashes: Set<String> = []
+        var conflicts: Set<String> = []
         var run: @Sendable (ZoneStorage) throws -> Void
     }
 
@@ -327,9 +327,10 @@ public final class RecordContext {
         guard savesInFlight == 0, let storage = observed[zone]?.storage else { return }
         let commits = storage.commitCount
         guard commits != knownCommits[zone] else { return }
+        let known = knownCommits[zone]
         knownCommits[zone] = commits
         lastSaveSource = nil
-        rebasePendingEdits(in: zone, storage: storage)
+        rebasePendingEdits(in: zone, storage: storage, after: known)
         didChange()
     }
 
@@ -337,32 +338,35 @@ public final class RecordContext {
     /// fields another save or a sync changed while each edit keeps its own changes. An edit of a record
     /// deleted elsewhere is dropped, since a delete wins. A `@Recordable` showing it keeps the edit for
     /// its user to save again or let go.
-    private func rebasePendingEdits(in zone: Zone, storage: ZoneStorage) {
-        for (key, change) in pending where change.zone == zone {
+    /// Only the records written by the commits after `commit` are read, when the store knows which those are.
+    private func rebasePendingEdits(in zone: Zone, storage: ZoneStorage, after commit: Int?) {
+        let written = commit.flatMap { storage.store.rowsChanged(after: $0) }
+        for (key, change) in pending where change.zone == zone && change.base != nil {
             guard case .saved(let record)? = change.latest else { continue }
-            if Self.isGone(record, change, in: storage) {
-                pending[key] = nil
-            } else if let rebased = try? Self.rebased(record, change, in: storage) {
-                pending[key] = rebased
+            if let written, let id = try? record.sqlID, !written.contains(RowKey(table: type(of: record).table, id: id)) {
+                continue
+            }
+            switch (try? Self.rebased(record, change, in: storage)) ?? .unchanged {
+            case .unchanged: break
+            case .gone: pending[key] = nil
+            case .rebased(let rebased, _, _): pending[key] = rebased
             }
         }
     }
 
-    /// Whether the record was stored when its edit began and no longer is.
-    private static func isGone<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) -> Bool {
-        change.base != nil && (try? storage.storedFields(R.self, id: record.id)) == .some(nil)
-    }
-
-    private static func rebased<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) throws -> Change? {
-        guard let base = change.base, let (edit, newBase, clashes) = try storage.rebase(record, base: base) else {
-            return nil
+    private static func rebased<R: Record>(_ record: R, _ change: Change, in storage: ZoneStorage) throws -> Rebase<Change> {
+        guard let base = change.base else { return .unchanged }
+        switch try storage.store.rebase(record, base: base) {
+        case .unchanged: return .unchanged
+        case .gone: return .gone
+        case .rebased(let edit, let newBase, let conflicts):
+            var rebased = change
+            rebased.latest = .saved(edit)
+            rebased.base = newBase
+            rebased.conflicts.formUnion(conflicts)
+            rebased.run = { try $0.save(edit, base: newBase) }
+            return .rebased(edit: rebased, base: newBase, conflicts: conflicts)
         }
-        var rebased = change
-        rebased.latest = .saved(edit)
-        rebased.base = newBase
-        rebased.clashes.formUnion(clashes)
-        rebased.run = { try $0.save(edit, base: newBase) }
-        return rebased
     }
 
     /// Calls `run` after each change that views may need to show, for as long as `owner` is alive.
@@ -706,11 +710,12 @@ public final class RecordContext {
         var outside = false
         for (zone, base) in commit.bases {
             let commits = observed[zone]?.storage.commitCount ?? base + 1
-            let fromElsewhere = base != knownCommits[zone] || commits > base + 1
+            let known = knownCommits[zone]
+            let fromElsewhere = base != known || commits > base + 1
             outside = outside || fromElsewhere
             knownCommits[zone] = commits
             if fromElsewhere, let storage = observed[zone]?.storage {
-                rebasePendingEdits(in: zone, storage: storage)
+                rebasePendingEdits(in: zone, storage: storage, after: known)
             }
         }
         let sources = Set(batch.changes.map(\.source))
@@ -806,21 +811,21 @@ public final class RecordContext {
     }
 
     func conflict<R: Record>(_ type: R.Type, for id: R.ID, in zone: Zone) -> R? {
-        guard pending[Self.key(type, id: id, in: zone)]?.clashes.isEmpty == false else { return nil }
+        guard pending[Self.key(type, id: id, in: zone)]?.conflicts.isEmpty == false else { return nil }
         return try? storage(for: zone).fetch(type, id: id)
     }
 
     func conflict<R: Record>(_ type: R.Type, for id: R.ID, at keyPath: PartialKeyPath<R>, in zone: Zone) -> Bool {
-        guard let clashes = pending[Self.key(type, id: id, in: zone)]?.clashes, !clashes.isEmpty else { return false }
-        return R.cachedSchema.fields.contains { $0.keyPath == keyPath && clashes.contains($0.name) }
+        guard let conflicts = pending[Self.key(type, id: id, in: zone)]?.conflicts, !conflicts.isEmpty else { return false }
+        return R.cachedSchema.fields.contains { $0.keyPath == keyPath && conflicts.contains($0.name) }
     }
 
     func resolveConflict<R: Record>(_ type: R.Type, for id: R.ID, favoring side: MergeSide, in zone: Zone) {
         let key = Self.key(type, id: id, in: zone)
-        guard var change = pending[key], !change.clashes.isEmpty else { return }
+        guard var change = pending[key], !change.conflicts.isEmpty else { return }
         if side == .theirs, case .saved(let latest as R)? = change.latest, let stored = try? storage(for: zone).fetch(type, id: id) {
             var record = latest
-            for field in R.cachedSchema.fields where change.clashes.contains(field.name) {
+            for field in R.cachedSchema.fields where change.conflicts.contains(field.name) {
                 _ = RecordStore.copy(field.keyPath, from: stored, into: &record)
             }
             let base = change.base
@@ -830,7 +835,7 @@ public final class RecordContext {
             sequence += 1
             change.sequence = sequence
         }
-        change.clashes = []
+        change.conflicts = []
         pending[key] = change
         // Views refetch, including the one whose edit this is.
         lastSaveSource = nil
@@ -962,13 +967,13 @@ public final class RecordContext {
     ) {
         let key = Self.key(record, in: zone)
         let base: SyncFields?
-        let earlierClashes = pending[key]?.clashes
+        let earlierConflicts = pending[key]?.conflicts
         var record = record
         if let given {
             // An edit made away from the context, such as a draft, merges into another view's unsaved edit
             // of the record rather than replace it.
             if let given, let earlier = pending[key], case .saved(let other as R)? = earlier.latest,
-               let merged = try? storage(for: zone).merge(record, into: other, base: given) {
+               let merged = try? storage(for: zone).store.merge(record, into: other, base: given) {
                 record = merged
                 base = earlier.base
             } else {
@@ -978,7 +983,7 @@ public final class RecordContext {
             // A later edit, even one made while the earlier edit saves, started from the same copy.
             base = earlier.base
         } else {
-            base = try? storage(for: zone).storedFields(R.self, id: record.id)
+            base = try? storage(for: zone).store.storedFields(R.self, id: record.id)
         }
         let saving = record
         enqueue(key: key, zone: zone, table: R.table, source: source, latest: .saved(saving), base: base) {
@@ -986,8 +991,8 @@ public final class RecordContext {
         }
         // A later edit keeps the earlier edit's conflict, except at fields it has come to agree with the
         // stored copy, until it saves or is resolved.
-        if let clashes = earlierClashes, !clashes.isEmpty {
-            pending[key]?.clashes = (try? storage(for: zone).remainingClashes(of: saving, in: clashes)) ?? clashes
+        if let conflicts = earlierConflicts, !conflicts.isEmpty {
+            pending[key]?.conflicts = (try? storage(for: zone).store.remainingConflicts(of: saving, in: conflicts)) ?? conflicts
         }
     }
 

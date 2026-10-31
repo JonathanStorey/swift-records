@@ -35,7 +35,7 @@ struct SyncNote {
         #expect(!server.has("SyncRecipe", recipe.id, "_modified"))
     }
 
-    @Test func aModifiedTimestampDatesEachCopyInAClash() async throws {
+    @Test func aModifiedTimestampDatesEachCopyInAConflict() async throws {
         let phone = try device([SyncNote.self])
         let tablet = try device([SyncNote.self])
         var note = SyncNote(text: "Draft")
