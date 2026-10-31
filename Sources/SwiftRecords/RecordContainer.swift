@@ -87,7 +87,7 @@ public final class RecordContainer: @unchecked Sendable {
             SyncHub(provider: provider, directory: directory, openZone: { opener.container?.syncedStorage(for: $0)?.sync })
         }
         syncHub = hub
-        initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: hub != nil && Self.syncing(initialZone, syncs) ? hub : nil)
+        initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: Self.hub(hub, for: initialZone, syncs))
         storages = [initialZone: initialStorage]
         opener.container = self
         if directory != nil {
@@ -95,12 +95,19 @@ public final class RecordContainer: @unchecked Sendable {
         }
     }
 
-    private static func syncing(_ zone: Zone, _ syncs: (Zone) -> Bool) -> Bool {
-        zone.canSync && syncs(zone)
+    /// The hub a zone syncs through: none for a zone that stays on the device, or one in a database the
+    /// provider doesn't serve.
+    private static func hub(_ hub: SyncHub?, for zone: Zone, _ syncs: (Zone) -> Bool) -> SyncHub? {
+        guard let hub, zone.canSync, hub.provider.scopes.contains(zone.scope), syncs(zone) else { return nil }
+        return hub
     }
 
     private static func open(_ zone: Zone, directory: URL?, types: [any Record.Type], hub: SyncHub?) throws -> ZoneStorage {
-        let store = try RecordStore.open(url: directory.flatMap { zone.url(in: $0) })
+        let url = directory.flatMap { zone.url(in: $0) }
+        if let url, zone.owner != nil {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
+        let store = try RecordStore.open(url: url)
         return try ZoneStorage(zone: zone, store: store, types: types, hub: hub)
     }
 
@@ -111,15 +118,14 @@ public final class RecordContainer: @unchecked Sendable {
         if let storage = storages[zone] {
             return storage
         }
-        let hub = syncHub != nil && Self.syncing(zone, syncs) ? syncHub : nil
-        let storage = try Self.open(zone, directory: directory, types: types, hub: hub)
+        let storage = try Self.open(zone, directory: directory, types: types, hub: Self.hub(syncHub, for: zone, syncs))
         storages[zone] = storage
         return storage
     }
 
     /// The storage of a zone that syncs, opening it for changes a server sent, or `nil` for one that doesn't.
     func syncedStorage(for zone: Zone) -> ZoneStorage? {
-        guard syncHub != nil, Self.syncing(zone, syncs) else { return nil }
+        guard Self.hub(syncHub, for: zone, syncs) != nil else { return nil }
         return try? storage(for: zone)
     }
 

@@ -177,6 +177,16 @@ A zone name is lowercased, then must be 1 to 64 letters, digits, `-` or `_`, sta
 `try Zone(name)` throws for names that come from elsewhere. Names starting with an underscore are reserved
 for `.default`, `.inMemory` and `.localOnly`.
 
+A zone someone else shared with the signed-in person names its owner, as the server knows them:
+
+```swift
+context.zone = try Zone("family", sharedBy: ownerName)    // shared/<owner>/family.sqlite
+```
+
+A shared zone lives in the server's shared database, and its file sits in a folder for its owner, so it
+never mixes with a private zone of the same name. A shared zone syncs only with a provider whose `scopes`
+include `.shared`, and otherwise stays on the device.
+
 Zone files are local to the device unless the container syncs. They are included in the device's own
 backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
 folder sits inside one named for the app's bundle identifier.
@@ -430,7 +440,7 @@ for free.
 ```swift
 public protocol SyncProvider: AnyObject, Sendable {
     var identifier: String { get }
-    var scopes: Set<Zone.Scope> { get }                          // .private, later .shared
+    var scopes: Set<Zone.Scope> { get }                          // .private and .shared
     func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
     func addPending(_ changes: [PendingRecordChange])            // .save(id, zone) or .delete(id, zone)
     func removePending(_ changes: [PendingRecordChange])
@@ -472,6 +482,7 @@ public protocol SyncTransport: AnyObject, Sendable {
     func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges
     func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges
     func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]         // for partial changes
     func changeNotifications() -> AsyncStream<[Zone]>?                                  // optional
 }
 
@@ -485,8 +496,8 @@ before each operation, fetches the zones a view shows first, and leaves the rest
 
 ### Records
 
-The unit of sync is a whole record, `RecordChangeData`, shaped like a `CKRecord`: its values and its
-sync metadata, kept apart.
+The unit of sync is a record, `RecordChangeData`, shaped like a `CKRecord`: its values and its sync
+metadata, kept apart.
 
 ```swift
 public struct RecordChangeData {
@@ -494,8 +505,20 @@ public struct RecordChangeData {
     var fields: [String: RecordValue]?     // nil for a deletion
     var tag: Data?                         // the server's own data for this copy, read only by the provider
     var synced: Date?                      // when the server saved it, if it says
+    var changedKeys: Set<String>?          // the fields set since the copy it builds on, nil for the whole record
+    var clearedKeys: Set<String>           // the fields set to nil since that copy
+    var baseTag: Data?                     // for a partial download, the tag of that copy
 }
 ```
+
+Every edit names the fields it changed. An upload of a record the server already has sets `changedKeys`
+and `clearedKeys` against the copy at `tag`, and `fields` still holds the whole record, so a server that
+stores whole records ignores them. A CloudKit provider sets only those keys on the `CKRecord`, so an
+unchanged asset or a large field never goes up again. The save still checks the tag, so a conflict merges
+here as a whole record. A server can download only what changed, too: it sends the changed fields with
+`changedKeys`, `clearedKeys` and the `baseTag` they build on. The container applies the change only to that
+exact copy, merging any unsent local edit, and otherwise fetches the whole record with `fetchRecords(_:)`,
+trying again with each fetch until it arrives.
 
 Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.bytes`, the lists
 `.strings`, `.ints`, `.doubles` and `.dates`, `.reference(id, action:)` for a child's parent, and

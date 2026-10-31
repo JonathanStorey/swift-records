@@ -20,6 +20,7 @@ final class ZoneSync: @unchecked Sendable {
 
     private static let accountKey = "provider.account"
     private static let identifierKey = "provider.identifier"
+    private static let refetchKey = "provider.refetch"
 
     let zone: Zone
     let store: RecordStore
@@ -233,16 +234,45 @@ final class ZoneSync: @unchecked Sendable {
         }
     }
 
-    /// Applies changes from the server, merging any that have unsent local edits.
+    /// Applies changes from the server, merging any that have unsent local edits. A partial change this
+    /// device lacks the copy for is remembered, to fetch whole.
     func receive(_ changes: [RecordChangeData]) {
         do {
-            let incompatible = try store.transaction { try store.applyReceived(changes) }
-            if let change = incompatible.first {
+            let received = try store.transaction {
+                let received = try store.applyReceived(changes)
+                if !received.refetch.isEmpty {
+                    try setRefetch(Set(try refetch()).union(received.refetch))
+                }
+                return received
+            }
+            if let change = received.incompatible.first {
                 fail(.incompatibleRecord(type: change.type, id: change.id))
             }
         } catch {
             fail(Self.recordsError(error))
         }
+    }
+
+    /// Records to fetch whole, because a partial change built on a copy this device doesn't hold. They're
+    /// kept until a fetch brings them, so a failed one is tried again with the next.
+    func refetch() throws -> [RecordID] {
+        guard let data = try store.syncValue(forKey: Self.refetchKey) else { return [] }
+        return (try? JSONDecoder().decode([RecordID].self, from: data)) ?? []
+    }
+
+    /// Applies records fetched whole and forgets them.
+    func refetched(_ ids: [RecordID], changes: [RecordChangeData]) {
+        receive(changes.map { var change = $0; change.changedKeys = nil; change.clearedKeys = []; change.baseTag = nil; return change })
+        do {
+            try setRefetch(Set(try refetch()).subtracting(ids))
+        } catch {
+            fail(Self.recordsError(error))
+        }
+    }
+
+    private func setRefetch(_ ids: Set<RecordID>) throws {
+        let sorted = ids.sorted { ($0.type, $0.id.uuidString) < ($1.type, $1.id.uuidString) }
+        try store.setSyncValue(sorted.isEmpty ? nil : try JSONEncoder().encode(sorted), forKey: Self.refetchKey)
     }
 
     /// Records that the server accepted a change.

@@ -427,7 +427,7 @@ public final class RecordContext {
             return (try? predicate?.evaluate(record)) ?? true
         }
         enqueue(
-            key: "\(zone.name)|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
+            key: "\(zone)|delete|\(R.table)|\(sequence + 1)", zone: zone, table: R.table, source: nil, deletes: deletes
         ) { try $0.delete(type, where: predicate) }
     }
 
@@ -955,7 +955,7 @@ public final class RecordContext {
     }
 
     private static func key<R: Record>(_ type: R.Type, id: R.ID, in zone: Zone) -> String {
-        "\(zone.name)|record|\(R.table)|\(id)"
+        "\(zone)|record|\(R.table)|\(id)"
     }
 
     /// Queues a save of the record. Its first unsaved edit keeps the stored fields as the base the edit

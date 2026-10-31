@@ -8,7 +8,7 @@ final class TestServer: @unchecked Sendable {
     let name = UUID().uuidString
     private let lock = NSLock()
     /// Each record's latest change, deletions included, with the sequence number it was stored at.
-    private var latest: [String: (change: RecordChangeData, sequence: Int)] = [:]
+    private var latest: [String: (change: RecordChangeData, sequence: Int, previous: RecordChangeData?)] = [:]
     private var assets: [String: Data] = [:]
     private var sequence = 0
     /// Goes up with each `reset(reason:)`, so devices can tell the zones were deleted.
@@ -25,6 +25,11 @@ final class TestServer: @unchecked Sendable {
     var tagsRecords = true
     /// Whether the server says when it saved each copy.
     var datesRecords = true
+    /// Whether downloads carry only the fields that changed since a record's previous copy, as a document
+    /// database might. Uploads always apply only their changed fields, so a wrong key list shows up as lost data.
+    var sendsPartialChanges = false
+    /// How many records devices fetched whole.
+    private(set) var fetchedRecords = 0
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -32,9 +37,30 @@ final class TestServer: @unchecked Sendable {
         return try body()
     }
 
-    /// Where a zone's records live: the account's own.
+    /// Who each owner's zones are shared with, by `owner|zone`.
+    private var shares: [String: Set<String>] = [:]
+
+    /// Where a zone's records live: the account's own, or the owner's for a zone shared with it.
     private func space(_ zone: Zone, account: String?) -> String {
-        "\(account ?? "")|\(zone)|"
+        "\(zone.owner ?? account ?? "")|\(zone.name)|"
+    }
+
+    /// Shares `owner`'s zone with `user`, who sees it in the shared database.
+    func share(_ zone: Zone, of owner: String, with user: String) {
+        withLock { shares["\(owner)|\(zone.name)", default: []].insert(user) }
+    }
+
+    /// Whether `user` may write to the zone.
+    private func mayWrite(_ zone: Zone, _ user: String?) -> Bool {
+        guard let owner = zone.owner else { return true }
+        return user.map { shares["\(owner)|\(zone.name)"]?.contains($0) ?? false } ?? false
+    }
+
+    /// A stored change as `zone` names it, shared or not.
+    private static func seen(_ change: RecordChangeData, in zone: Zone) -> RecordChangeData {
+        var change = change
+        change.zone = zone
+        return change
     }
 
     private func key(_ zone: Zone, _ type: String, _ id: UUID, account: String?) -> String {
@@ -49,17 +75,29 @@ final class TestServer: @unchecked Sendable {
     /// Stores a change from `user`, and returns the stored copy, or the newer copy it conflicts with.
     func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
         withLock {
+            guard mayWrite(change.zone, user) else { return .failure(.permissionFailure) }
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
             if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
-                return .failure(.serverRecordChanged(current))
+                return .failure(.serverRecordChanged(Self.seen(current, in: change.zone)))
             }
             sequence += 1
             var stored = change
+            if change.changedKeys != nil, let fields = current?.fields {
+                // Only the named fields go up, as with CloudKit.
+                var merged = fields
+                for key in change.clearedKeys { merged[key] = nil }
+                for (key, value) in change.sentFields ?? [:] { merged[key] = value }
+                stored.fields = merged
+            }
+            stored.changedKeys = nil
+            stored.clearedKeys = []
             stored.tag = tagsRecords ? Data("tag \(sequence)".utf8) : nil
             stored.synced = datesRecords ? Self.date(sequence) : nil
-            latest[storageKey] = (stored, sequence)
-            return .success(stored)
+            // The owner's own zone holds it.
+            stored.zone = (try? Zone(change.zone.name)) ?? change.zone
+            latest[storageKey] = (stored, sequence, current)
+            return .success(Self.seen(stored, in: change.zone))
         }
     }
 
@@ -71,15 +109,31 @@ final class TestServer: @unchecked Sendable {
                 id: id, zone: zone, type: type, fields: fields, tag: tagsRecords ? Data("tag \(sequence)".utf8) : nil,
                 synced: datesRecords ? Self.date(sequence) : nil
             )
-            latest[key(zone, type, id, account: account)] = (change, sequence)
+            let storageKey = key(zone, type, id, account: account)
+            latest[storageKey] = (change, sequence, latest[storageKey]?.change)
         }
     }
 
-    /// The zones `user` has records in, those with changes after `cursor`, and the latest sequence number.
-    func zones(for user: String?, changedAfter cursor: Int) -> (all: Set<Zone>, changed: Set<Zone>, sequence: Int) {
+    /// The zones `user` has records in, or that are shared with `user`, those with changes after `cursor`,
+    /// and the latest sequence number.
+    func zones(for user: String?, in scope: Zone.Scope = .private, changedAfter cursor: Int) -> (all: Set<Zone>, changed: Set<Zone>, sequence: Int) {
         withLock {
-            let own = latest.filter { $0.key.hasPrefix("\(user ?? "")|") }.values
-            return (Set(own.map(\.change.zone)), Set(own.filter { $0.sequence > cursor }.map(\.change.zone)), sequence)
+            switch scope {
+            case .private:
+                let own = latest.filter { $0.key.hasPrefix("\(user ?? "")|") }.values
+                return (Set(own.map(\.change.zone)), Set(own.filter { $0.sequence > cursor }.map(\.change.zone)), sequence)
+            case .shared:
+                var all: Set<Zone> = [], changed: Set<Zone> = []
+                for (key, users) in shares where user.map(users.contains) ?? false {
+                    let parts = key.split(separator: "|").map(String.init)
+                    guard let zone = try? Zone(parts[1], sharedBy: parts[0]) else { continue }
+                    all.insert(zone)
+                    if latest.contains(where: { $0.key.hasPrefix(space(zone, account: user)) && $0.value.sequence > cursor }) {
+                        changed.insert(zone)
+                    }
+                }
+                return (all, changed, sequence)
+            }
         }
     }
 
@@ -89,7 +143,31 @@ final class TestServer: @unchecked Sendable {
             let prefix = space(zone, account: user)
             let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
             let page = found.prefix(limit)
-            return (page.map(\.change), page.last?.sequence ?? cursor, found.count > limit)
+            let changes = page.map { Self.seen(sendsPartialChanges ? Self.partial($0.change, since: $0.previous) : $0.change, in: zone) }
+            return (changes, page.last?.sequence ?? cursor, found.count > limit)
+        }
+    }
+
+    /// Only what changed since the previous copy, when there was one.
+    private static func partial(_ change: RecordChangeData, since previous: RecordChangeData?) -> RecordChangeData {
+        guard let fields = change.fields, let previous, let old = previous.fields, let baseTag = previous.tag else { return change }
+        var partial = change
+        let changed = Set(fields.compactMap { old[$0.key] == $0.value ? nil : $0.key })
+        partial.fields = fields.filter { changed.contains($0.key) }
+        partial.changedKeys = changed
+        partial.clearedKeys = Set(old.keys.filter { fields[$0] == nil })
+        partial.baseTag = baseTag
+        return partial
+    }
+
+    /// The whole stored copies of records for `user`, and a deletion for each one it doesn't have.
+    func wholeRecords(_ ids: [RecordID], for user: String?) -> [RecordChangeData] {
+        withLock {
+            fetchedRecords += ids.count
+            return ids.map {
+                latest[key($0.zone, $0.type, $0.id, account: user)].map { [zone = $0.zone] in Self.seen($0.change, in: zone) }
+                    ?? RecordChangeData(id: $0.id, zone: $0.zone, type: $0.type, fields: nil)
+            }
         }
     }
 
@@ -158,8 +236,12 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
     var failsAssetUploads = false
     /// Runs before each asset download.
     var beforeAssetDownload: (@Sendable () async -> Void)?
+    /// Fails every fetch of whole records, as if the connection dropped.
+    var failsRecordFetches = false
 
     var identifier: String { server.name }
+
+    var scopes: Set<Zone.Scope> { [.private, .shared] }
 
     init(server: TestServer, account: String?? = nil) {
         self.server = server
@@ -230,12 +312,18 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
             deleted = old.zones.map { ZoneDeletion(zone: $0, reason: reason) }
             known = nil
         }
-        let zones = server.zones(for: user, changedAfter: known?.sequence ?? 0)
+        let zones = server.zones(for: user, in: scope, changedAfter: known?.sequence ?? 0)
         let seen = Set(known?.zones ?? []).union(zones.all)
         let next = DatabaseToken(epoch: epoch, sequence: zones.sequence, zones: seen.sorted { $0.name < $1.name })
         return DatabaseChanges(
             modified: zones.changed.sorted { $0.name < $1.name }, deleted: deleted, token: try JSONEncoder().encode(next)
         )
+    }
+
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+        try check()
+        if failsRecordFetches { throw SyncFailure.networkUnavailable }
+        return server.wholeRecords(records, for: user)
     }
 
     func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
@@ -297,6 +385,10 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
         set { transport.pageSize = newValue }
     }
 
+    var failsRecordFetches: Bool {
+        get { transport.failsRecordFetches }
+        set { transport.failsRecordFetches = newValue }
+    }
     var failsAssetUploads: Bool {
         get { transport.failsAssetUploads }
         set { transport.failsAssetUploads = newValue }
@@ -310,6 +402,7 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     // MARK: SyncProvider
 
     var identifier: String { engine.identifier }
+    var scopes: Set<Zone.Scope> { engine.scopes }
     var assetTransfer: (any AssetTransfer)? { engine.assetTransfer }
 
     func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
@@ -323,4 +416,5 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }
     func fetchChanges(_ options: FetchOptions) async throws { try await engine.fetchChanges(options) }
     func cancelOperations() async { await engine.cancelOperations() }
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] { try await engine.fetchRecords(records) }
 }

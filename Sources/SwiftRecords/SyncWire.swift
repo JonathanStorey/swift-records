@@ -19,12 +19,23 @@ enum WireJSON {
 // MARK: - Records to and from the wire
 
 extension RecordStore {
-    /// The change to upload for a pending record.
-    func change(for record: SyncRecord, zone: Zone) throws -> RecordChangeData {
-        let values = try record.fields.map { fields in
-            try registered[record.type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
+    /// The change to upload for a pending record. With the server copy's fields it builds on, it names the
+    /// fields that differ from that copy, and still carries every field.
+    func change(for record: SyncRecord, zone: Zone, base: SyncFields? = nil) throws -> RecordChangeData {
+        let values = try record.fields.map(wireValues(of: record.type))
+        var change = RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, tag: record.tag)
+        if let values, let base, record.tag != nil {
+            let old = try wireValues(of: record.type)(base)
+            change.changedKeys = Set(values.compactMap { old[$0.key] == $0.value ? nil : $0.key })
+            change.clearedKeys = Set(old.keys.filter { values[$0] == nil })
         }
-        return RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, tag: record.tag)
+        return change
+    }
+
+    private func wireValues(of type: String) -> (SyncFields) throws -> [String: RecordValue] {
+        { fields in
+            try self.registered[type].map { try Self.recordValues($0, fields: fields) } ?? fields.mapValues(Self.recordValue)
+        }
     }
 
     /// The container's typed copy of a change from the server. Throws `incompatibleRecord` when its type

@@ -41,6 +41,11 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// ≈ `cancelOperations()`.
     func cancelOperations() async
 
+    /// ≈ `CKFetchRecordsOperation`. The server's whole copy of each record, and a deletion for one it no
+    /// longer has. The container asks only after a partial download it can't apply, so an engine that
+    /// always delivers whole records, as `CKSyncEngine` does, never needs it.
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
+
     /// Moves asset files apart from their records, for a server that stores them separately. `nil`, the
     /// default, means assets need no separate transfer.
     var assetTransfer: (any AssetTransfer)? { get }
@@ -58,6 +63,10 @@ extension SyncProvider {
     public func removePending(_ changes: [PendingZoneChange]) {}
 
     public func cancelOperations() async {}
+
+    public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+        throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
+    }
 }
 
 /// The engine's delegate. The container implements it, and apps never do. ≈ `CKSyncEngineDelegate`.
@@ -88,20 +97,6 @@ public enum SyncEvent: Sendable {
     case didFetchChanges(FetchContext)
     case willSendChanges(SendContext)
     case didSendChanges(SendContext)
-}
-
-extension Zone {
-    /// Which database a zone lives in. ≈ `CKDatabase.Scope` without the public database, which
-    /// `CKSyncEngine` doesn't support.
-    public enum Scope: String, Sendable, Hashable, Codable {
-        /// The signed-in person's own data.
-        case `private`
-        /// Zones other people shared with them.
-        case shared
-    }
-
-    /// The database the zone lives in. Every zone is private until sharing arrives.
-    public var scope: Scope { .private }
 }
 
 /// A record with changes to send. ≈ `CKSyncEngine.PendingRecordZoneChange`.
@@ -356,12 +351,23 @@ public enum SyncFailure: Error, Sendable, Hashable {
 /// in order as `.strings`, a child's `@Reference(to:)` is a `.reference`, and an asset is its ID. Treat the
 /// fields as opaque where you can: store them and hand them back. Fields from newer app versions are kept
 /// and sent back untouched.
-public struct RecordChangeData: Sendable, Hashable, Codable {
+///
+/// ## Field-level changes
+///
+/// A change can say which fields it touches. On an upload, `changedKeys` and `clearedKeys` name the fields
+/// that differ from the copy at `tag`, and `fields` still holds the whole record, so a server that stores
+/// whole records ignores them. A CloudKit provider sets only those keys, so an unchanged asset or large field
+/// never goes up again. The save still checks `tag`, so conflicts stay whole-record and merge here.
+///
+/// On a download, a server may send only what changed since the copy at `baseTag`: `changedKeys` names the
+/// fields `fields` carries, and `clearedKeys` the ones that became `nil`. The container applies it only to
+/// that exact copy, and otherwise asks the provider for the whole record with `fetchRecords(_:)`.
+public struct RecordChangeData: Sendable, Hashable {
     public var id: UUID
     public var zone: Zone
     /// The stored type name, such as `"Recipe"`.
     public var type: String
-    /// The record's values, or `nil` for a deletion.
+    /// The record's values, or `nil` for a deletion. For a partial download, only the changed fields.
     public var fields: [String: RecordValue]?
     /// The server's data for the copy this change is based on, which only the provider reads: a CloudKit
     /// record's archived system fields, a version number, a hash. `nil` for a copy the server never had,
@@ -370,17 +376,87 @@ public struct RecordChangeData: Sendable, Hashable, Codable {
     /// When the server saved this copy, if it says. The container stores it as `@Timestamped(.synced)` and
     /// never relies on it.
     public var synced: Date?
+    /// The fields set since the copy the change builds on. `nil`: the change is the whole record.
+    public var changedKeys: Set<String>?
+    /// The fields set to `nil` since the copy the change builds on.
+    public var clearedKeys: Set<String>
+    /// For a partial download: the tag of the copy it builds on.
+    public var baseTag: Data?
 
-    public init(id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil) {
+    public init(
+        id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil,
+        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil
+    ) {
         self.id = id
         self.zone = zone
         self.type = type
         self.fields = fields
         self.tag = tag
         self.synced = synced
+        self.changedKeys = changedKeys
+        self.clearedKeys = clearedKeys
+        self.baseTag = baseTag
     }
 
     public var isDeletion: Bool { fields == nil }
+
+    /// Whether this is a download of only the fields that changed since `baseTag`, which needs that copy.
+    public var isPartial: Bool { !isDeletion && changedKeys != nil && baseTag != nil }
+
+    /// The fields an upload sends: only the changed ones, or every one for a whole-record change.
+    public var sentFields: [String: RecordValue]? {
+        guard let fields, let changedKeys else { return fields }
+        return fields.filter { changedKeys.contains($0.key) }
+    }
+}
+
+extension RecordChangeData: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, zone, type, fields, tag, synced, changedKeys, clearedKeys, baseTag
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            zone: try container.decode(Zone.self, forKey: .zone),
+            type: try container.decode(String.self, forKey: .type),
+            fields: try container.decodeIfPresent([String: RecordValue].self, forKey: .fields),
+            tag: try container.decodeIfPresent(Data.self, forKey: .tag),
+            synced: try container.decodeIfPresent(Date.self, forKey: .synced),
+            changedKeys: try container.decodeIfPresent(Set<String>.self, forKey: .changedKeys),
+            clearedKeys: try container.decodeIfPresent(Set<String>.self, forKey: .clearedKeys) ?? [],
+            baseTag: try container.decodeIfPresent(Data.self, forKey: .baseTag)
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(zone, forKey: .zone)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(fields, forKey: .fields)
+        try container.encodeIfPresent(tag, forKey: .tag)
+        try container.encodeIfPresent(synced, forKey: .synced)
+        try container.encodeIfPresent(changedKeys.map { $0.sorted() }, forKey: .changedKeys)
+        if !clearedKeys.isEmpty {
+            try container.encode(clearedKeys.sorted(), forKey: .clearedKeys)
+        }
+        try container.encodeIfPresent(baseTag, forKey: .baseTag)
+    }
+}
+
+/// A record on the server, by its ID, zone and type. ≈ `CKRecord.ID`, with the type for servers that file by it.
+public struct RecordID: Sendable, Hashable, Codable {
+    public let id: UUID
+    public let zone: Zone
+    public let type: String
+
+    public init(id: UUID, zone: Zone, type: String) {
+        self.id = id
+        self.zone = zone
+        self.type = type
+    }
 }
 
 /// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
