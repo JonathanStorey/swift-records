@@ -99,7 +99,7 @@ import Testing
         await tablet.initialStorage.sync?.transfers()
         let received = try #require(try await recipes(tablet).first)
         #expect(received.photo == Data([1, 2, 3]))
-        let name = try #require(received.$photo.url?.lastPathComponent)
+        let name = try #require(received.$photo?.lastPathComponent)
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Records/_default/_assets/\(name)").path))
     }
 

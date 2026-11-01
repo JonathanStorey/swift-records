@@ -25,11 +25,11 @@ struct Album {
 
     @Test func storesDataAsAFile() throws {
         let photo = Photo(image: Data("pixels".utf8))
-        #expect(photo.$image.url == nil)
+        #expect(photo.$image == nil)
         try container.save(photo)
 
         let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
-        let url = try #require(fetched.$image.url)
+        let url = try #require(fetched.$image)
         #expect(url.pathExtension == "jpg")
         #expect(url.deletingLastPathComponent().standardizedFileURL.path == container.assetsDirectory.standardizedFileURL.path)
         #expect(try Data(contentsOf: url) == Data("pixels".utf8))
@@ -39,7 +39,7 @@ struct Album {
     @Test func loadsLazilyAndCaches() throws {
         try container.save(Photo(image: Data("lazy".utf8)))
         let fetched = try #require(try container.fetch(Photo.self).first)
-        let url = try #require(fetched.$image.url)
+        let url = try #require(fetched.$image)
 
         // Nothing is read until the property is used, and then the bytes stay with the record.
         try Data("changed on disk".utf8).write(to: url)
@@ -54,10 +54,10 @@ struct Album {
         defer { try? FileManager.default.removeItem(at: source) }
 
         var photo = Photo()
-        photo.$image = Asset(contentsOf: source)
+        photo.$image = source
         try container.save(photo)
 
-        let url = try #require(try container.fetch(Photo.self, id: photo.id)?.$image.url)
+        let url = try #require(try container.fetch(Photo.self, id: photo.id)?.$image)
         #expect(url != source)
         #expect(url.pathExtension == "png")
         #expect(try String(contentsOf: url, encoding: .utf8) == "from disk")
@@ -69,7 +69,7 @@ struct Album {
         try container.save(photo)
         let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
         #expect(fetched.image == nil)
-        #expect(fetched.$image.url == nil)
+        #expect(fetched.$image == nil)
     }
 
     @Test func resavingKeepsOneFile() throws {
@@ -84,12 +84,12 @@ struct Album {
     @Test func replacingOrClearingRemovesTheOldFile() throws {
         var photo = Photo(image: Data("old".utf8))
         try container.save(photo)
-        let old = try #require(try container.fetch(Photo.self, id: photo.id)?.$image.url)
+        let old = try #require(try container.fetch(Photo.self, id: photo.id)?.$image)
 
         photo.image = Data("new".utf8)
         try container.save(photo)
         #expect(!FileManager.default.fileExists(atPath: old.path))
-        #expect(files() == [photo.$image.name!])
+        #expect(files() == [try #require(try container.fetch(Photo.self, id: photo.id)?.$image?.lastPathComponent)])
 
         photo.image = nil
         try container.save(photo)
