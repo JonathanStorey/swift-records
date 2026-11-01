@@ -1184,6 +1184,94 @@ private actor Seen {
         #expect(try await alice.recipes().map(\.title) == ["Soup"])
     }
 
+    @Test func anInvitationSharesAZone() async throws {
+        let alice = try Device(server, account: "alice")
+        let bob = try Device(server, account: "bob")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Soup"))
+        alice.context.zone = .default
+        // Unsaved edits wait for a save, so share sends what was saved.
+        try alice.commit()
+        #expect(try await alice.container.existingShare(for: family) == nil)
+        let share = try await alice.container.share(family)
+        let invitation = try #require(share.url)
+        #expect(share.zone == family)
+        #expect(share.participants.map(\.role) == [.owner])
+
+        let zone = try await bob.container.acceptShare(invitation)
+        #expect(zone == shared)
+        #expect(await bob.container.sharedZones() == [shared])
+        bob.context.zone = zone
+        #expect(try await bob.recipes().map(\.title) == ["Soup"])
+        #expect(try await alice.container.existingShare(for: family)?.participants.map(\.id) == ["alice", "bob"])
+        #expect(try await bob.container.existingShare(for: shared)?.zone == shared)
+    }
+
+    @Test func sharingAZoneSomeoneElseOwnsIsRefused() async throws {
+        server.share(family, of: "alice", with: "bob")
+        let bob = try Device(server, account: "bob")
+        await #expect(throws: RecordsError.sharingUnavailable(zone: "shared/alice/family")) {
+            try await bob.container.share(shared)
+        }
+        await #expect(throws: RecordsError.sharingUnavailable(zone: "_local")) {
+            try await bob.container.share(.localOnly)
+        }
+        let plain = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: SilentProvider())
+        await #expect(throws: RecordsError.sharingUnavailable(zone: "family")) {
+            try await plain.share(family)
+        }
+    }
+
+    @Test func stoppingAShareRemovesTheZoneFromParticipants() async throws {
+        let alice = try Device(server, account: "alice")
+        let bob = try Device(server, account: "bob")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Soup"))
+        try await alice.context.save()
+        let invitation = try #require(try await alice.container.share(family).url)
+        _ = try await bob.container.acceptShare(invitation)
+        bob.context.zone = shared
+        #expect(try await bob.recipes().count == 1)
+
+        try await alice.container.stopSharing(family)
+        try await bob.context.refresh()
+        #expect(try await bob.recipes().isEmpty)
+        #expect(await bob.container.sharedZones().isEmpty)
+        // The owner keeps the zone.
+        #expect(try await alice.recipes().map(\.title) == ["Soup"])
+        #expect(try await alice.container.existingShare(for: family) == nil)
+    }
+
+    @Test func leavingAShareRemovesItFromThisDeviceOnly() async throws {
+        let alice = try Device(server, account: "alice")
+        let bob = try Device(server, account: "bob")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Soup"))
+        try await alice.context.save()
+        let invitation = try #require(try await alice.container.share(family).url)
+        _ = try await bob.container.acceptShare(invitation)
+
+        try await bob.container.stopSharing(shared)
+        bob.context.zone = shared
+        #expect(try await bob.recipes().isEmpty)
+        #expect(await bob.container.sharedZones().isEmpty)
+        #expect(try await alice.container.existingShare(for: family)?.participants.map(\.id) == ["alice"])
+        #expect(try await alice.recipes().map(\.title) == ["Soup"])
+    }
+
+    @Test func anotherDeviceHearsOfAJoinedZone() async throws {
+        let alice = try Device(server, account: "alice")
+        alice.context.zone = family
+        alice.context.insert(SyncRecipe(title: "Soup"))
+        try await alice.context.save()
+        let invitation = try #require(try await alice.container.share(family).url)
+        let phone = try Device(server, account: "bob")
+        let tablet = try Device(server, account: "bob")
+        _ = try await phone.container.acceptShare(invitation)
+        try await tablet.context.refresh()
+        #expect(await tablet.container.sharedZones() == [shared])
+    }
+
     @Test func aProviderWithoutTheSharedDatabaseKeepsSharedZonesOnTheDevice() async throws {
         let provider = SilentProvider()
         let container = try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: provider)

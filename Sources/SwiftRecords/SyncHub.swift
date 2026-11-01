@@ -20,6 +20,10 @@ actor SyncHub: SyncDelegate {
     private let stateDirectory: URL?
     /// Opens a zone that a server's changes arrive for, or `nil` when the zone doesn't sync.
     private let openZone: @Sendable (Zone) -> ZoneSync?
+    /// Opens a zone only when it is open already or stored on this device, for a deletion to clear it.
+    private let storedZone: @Sendable (Zone) -> ZoneSync?
+    /// The zones others shared with the person, as the server last listed them. `nil` until loaded.
+    private var sharedZoneList: Set<Zone>?
 
     private var startTask: Task<Void, Never>?
     private var memoryState: [Zone.Scope: Data] = [:]
@@ -32,10 +36,14 @@ actor SyncHub: SyncDelegate {
     private var attempted: [UUID: Zone] = [:]
     private var conflictRounds: [UUID: Int] = [:]
 
-    init(provider: any SyncProvider, directory: URL?, openZone: @escaping @Sendable (Zone) -> ZoneSync?) {
+    init(
+        provider: any SyncProvider, directory: URL?, openZone: @escaping @Sendable (Zone) -> ZoneSync?,
+        storedZone: @escaping @Sendable (Zone) -> ZoneSync? = { _ in nil }
+    ) {
         self.provider = provider
         stateDirectory = directory?.appendingPathComponent("_sync", isDirectory: true)
         self.openZone = openZone
+        self.storedZone = storedZone
     }
 
     // MARK: Starting
@@ -141,10 +149,11 @@ actor SyncHub: SyncDelegate {
             saveState(data, scope: scope)
         case .accountChange(let change):
             accountChanged(change)
-        case .fetchedZoneChanges(_, let deleted):
+        case .fetchedZoneChanges(let modified, let deleted):
             for deletion in deleted {
                 zoneDeleted(deletion)
             }
+            updateSharedZones(adding: modified, removing: deleted.filter { $0.reason != .encryptedDataReset }.map(\.zone))
         case .fetchedRecordChanges(let saved, let deleted):
             received(saved + deleted.map { RecordChangeData(id: $0.id, zone: $0.zone, type: $0.type, fields: nil) })
         case .sentZoneChanges(let result):
@@ -259,7 +268,7 @@ actor SyncHub: SyncDelegate {
     }
 
     private func zoneDeleted(_ deletion: ZoneDeletion) {
-        guard let sync = registry[deletion.zone] else { return }
+        guard let sync = registry[deletion.zone] ?? storedZone(deletion.zone) else { return }
         switch deletion.reason {
         case .deleted, .purged:
             // The person removed this data from the server, so it goes from this device too.
@@ -375,6 +384,36 @@ actor SyncHub: SyncDelegate {
         }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
+    }
+
+    // MARK: Shared zones
+
+    /// The zones others shared with the person, by owner, then name.
+    var sharedZones: [Zone] {
+        loadSharedZones().sorted { ($0.owner ?? "", $0.name) < ($1.owner ?? "", $1.name) }
+    }
+
+    /// Notes zones the person joined or lost.
+    func updateSharedZones(adding added: [Zone], removing removed: [Zone]) {
+        var zones = loadSharedZones()
+        let before = zones
+        zones.formUnion(added.filter { $0.scope == .shared })
+        zones.subtract(removed)
+        guard zones != before else { return }
+        sharedZoneList = zones
+        guard let file = stateFile("shared-zones.json"), let data = try? JSONEncoder().encode(zones.sorted { $0.description < $1.description }) else {
+            return
+        }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
+    }
+
+    private func loadSharedZones() -> Set<Zone> {
+        if let sharedZoneList { return sharedZoneList }
+        let zones = stateFile("shared-zones.json").flatMap { try? Data(contentsOf: $0) }
+            .flatMap { try? JSONDecoder().decode([Zone].self, from: $0) } ?? []
+        sharedZoneList = Set(zones)
+        return Set(zones)
     }
 
     private func loadAccount() -> String?? {

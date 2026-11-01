@@ -187,6 +187,27 @@ A shared zone lives in the server's shared database, and its file sits in a fold
 never mixes with a private zone of the same name. A shared zone syncs only with a provider whose `scopes`
 include `.shared`, and otherwise stays on the device.
 
+### Sharing a zone
+
+With a provider that shares, such as `CloudKitSyncProvider` or `FileSyncTransport`, the owner shares one
+of their zones and sends the invitation. Whoever accepts it gets the zone in their shared database, and
+everyone syncs it as their own:
+
+```swift
+let share = try await container.share("family")           // send share.url
+let zone = try await container.acceptShare(invitationURL) // on their device
+context.zone = zone                                        // Zone("family", sharedBy: owner)
+
+try await container.existingShare(for: "family")?.participants
+await container.sharedZones()                              // every zone shared with the person
+try await container.stopSharing("family")                  // the owner keeps it, everyone else loses it
+try await container.stopSharing(zone)                      // a participant leaves, and its records go
+```
+
+`share(_:)` sends the zone's pending changes first, so people who accept find its records. When the
+owner stops sharing, the zone and its records leave every participant's devices. A provider shares by
+offering `sharing`, a `ZoneSharing`, and a provider without one throws `RecordsError.sharingUnavailable`.
+
 Zone files are local to the device unless the container syncs. They are included in the device's own
 backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
 folder sits inside one named for the app's bundle identifier.
@@ -686,6 +707,11 @@ merges here. Asset files ride inside their records as `CKAsset`s, each with its 
 so a download names the file without hashing it again. Pass `sharedDatabase: false` to sync the private
 database alone.
 
+Sharing uses a zone-wide `CKShare`. Invite people with the system's interface, built from
+`provider.ckShare(for: zone)` and `provider.ckContainer`, such as `UICloudSharingController`. Accept the
+share the system hands the scene delegate with `try await container.acceptShare(metadata)`. Pass
+`linkPermission: .readWrite` to let the link alone admit people, rather than only those invited.
+
 The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
 notifications so pushes start fetches.
 
@@ -758,6 +784,10 @@ report its changes, so they arrive with the sync the context runs as the app ret
 pull to refresh. Application Support isn't watched, since nothing else writes it.
 When two devices write a record file at once, iCloud keeps both versions, and `NSFileVersion` settles
 them by keeping the copy with the later save time as a whole record.
+
+Sharing a zone hands out its folder's file URL, and a `_share.json` in the folder lists who joined.
+Accepting it from another `FileSyncTransport` that can reach the same folder, such as on a network drive,
+syncs the zone in place. Shared folders aren't watched, so their changes arrive with the next sync.
 
 ## SwiftUI
 

@@ -22,6 +22,9 @@ import SwiftRecords
 public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @unchecked Sendable {
     public let ckContainer: CKContainer
     public let scopes: Set<Zone.Scope>
+    /// What someone who opens a share's link may do without being invited. `.none` admits only the people
+    /// invited through the system's sharing interface.
+    public let linkPermission: CKShare.ParticipantPermission
     private let automaticallySync: Bool
 
     private let lock = NSLock()
@@ -36,14 +39,23 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     /// - Parameters:
     ///   - container: The CloudKit container, `CKContainer.default()` unless the app uses another.
     ///   - sharedDatabase: Whether to sync zones others shared with the person, through a second engine.
+    ///   - linkPermission: What anyone with a share's link may do: `.none` to admit only invited people,
+    ///     `.readOnly` or `.readWrite` to let the link alone admit them.
     ///   - automaticallySync: Whether the engines send and fetch on their own. Turn it off in tests.
-    public init(container: CKContainer = .default(), sharedDatabase: Bool = true, automaticallySync: Bool = true) {
+    public init(
+        container: CKContainer = .default(), sharedDatabase: Bool = true, linkPermission: CKShare.ParticipantPermission = .none,
+        automaticallySync: Bool = true
+    ) {
         ckContainer = container
         scopes = sharedDatabase ? [.private, .shared] : [.private]
+        self.linkPermission = linkPermission
         self.automaticallySync = automaticallySync
     }
 
     public var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
+
+    /// Shares zones with zone-wide `CKShare`s when the shared database syncs.
+    public var sharing: (any ZoneSharing)? { scopes.contains(.shared) ? self : nil }
 
     public func attach(_ container: RecordContainer) {
         lock.withLock { self.container = container }
