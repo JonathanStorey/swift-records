@@ -52,6 +52,23 @@ final class TestServer: @unchecked Sendable {
         withLock { shares["\(owner)|\(zone.name)", default: []].insert(user) }
     }
 
+    /// Stops sharing `owner`'s zone with `user`, or with everyone.
+    func unshare(_ zone: Zone, of owner: String, with user: String? = nil) {
+        withLock {
+            let key = "\(owner)|\(zone.name)"
+            if let user {
+                shares[key]?.remove(user)
+            } else {
+                shares[key] = nil
+            }
+        }
+    }
+
+    /// Who `owner`'s zone is shared with, or `nil` when it isn't.
+    func participants(of zone: Zone, owner: String) -> Set<String>? {
+        withLock { shares["\(owner)|\(zone.name)"] }
+    }
+
     /// Whether `user` may write to the zone.
     private func mayWrite(_ zone: Zone, _ user: String?) -> Bool {
         guard let owner = zone.owner else { return true }
@@ -334,10 +351,18 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
             known = nil
         }
         let zones = server.zones(for: user, in: scope, changedAfter: known?.sequence ?? 0)
-        let seen = Set(known?.zones ?? []).union(zones.all)
-        let next = DatabaseToken(epoch: epoch, sequence: zones.sequence, zones: seen.sorted { $0.name < $1.name })
+        var seen = Set(known?.zones ?? []).union(zones.all)
+        if scope == .shared {
+            // A zone no longer shared with the person is gone from their shared database.
+            deleted += seen.subtracting(zones.all).sorted { $0.description < $1.description }.map { ZoneDeletion(zone: $0, reason: .deleted) }
+            seen = zones.all
+        }
+        let next = DatabaseToken(epoch: epoch, sequence: zones.sequence, zones: seen.sorted { $0.description < $1.description })
+        // A zone joined since the last fetch counts as changed, so the person hears of it.
+        let joined = scope == .shared ? zones.all.subtracting(known?.zones ?? []) : []
         return DatabaseChanges(
-            modified: zones.changed.sorted { $0.name < $1.name }, deleted: deleted, token: try JSONEncoder().encode(next)
+            modified: zones.changed.union(joined).sorted { $0.description < $1.description }, deleted: deleted,
+            token: try JSONEncoder().encode(next)
         )
     }
 
@@ -382,6 +407,49 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
     ) async throws -> URL {
         progress(0.5)
         return try await downloadAsset(id: id, zone: zone, into: directory)
+    }
+}
+
+extension TestTransport: ZoneSharing {
+    /// Invitations read `test://share/<owner>/<zone>`.
+    func share(_ zone: Zone) async throws -> ZoneShare {
+        try check()
+        guard let owner = user else { throw SyncFailure.permissionFailure }
+        if server.participants(of: zone, owner: owner) == nil {
+            // An empty share, which people join with the invitation.
+            server.share(zone, of: owner, with: owner)
+            server.unshare(zone, of: owner, with: owner)
+        }
+        return try await existingShare(for: zone)!
+    }
+
+    func existingShare(for zone: Zone) async throws -> ZoneShare? {
+        try check()
+        guard let owner = zone.owner ?? user, let users = server.participants(of: zone, owner: owner) else { return nil }
+        let participants = [ShareParticipant(id: owner, role: .owner, status: .accepted)]
+            + users.sorted().map { ShareParticipant(id: $0, role: .participant, status: .accepted) }
+        let seen = zone.scope == .shared ? zone : try Zone(zone.name)
+        return ZoneShare(zone: seen, url: URL(string: "test://share/\(owner)/\(zone.name)"), participants: participants)
+    }
+
+    func acceptShare(_ invitation: URL) async throws -> Zone {
+        try check()
+        let parts = invitation.pathComponents.filter { $0 != "/" }
+        guard invitation.scheme == "test", parts.count == 2, let user,
+              let zone = try? Zone(parts[1]), server.participants(of: zone, owner: parts[0]) != nil else {
+            throw SyncFailure.other("Not a share")
+        }
+        server.share(zone, of: parts[0], with: user)
+        return try Zone(zone.name, sharedBy: parts[0])
+    }
+
+    func stopSharing(_ zone: Zone) async throws {
+        try check()
+        if let owner = zone.owner {
+            server.unshare(zone, of: owner, with: user)
+        } else if let owner = user {
+            server.unshare(zone, of: owner)
+        }
     }
 }
 
@@ -433,6 +501,7 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     var identifier: String { engine.identifier }
     var scopes: Set<Zone.Scope> { engine.scopes }
     var assetTransfer: (any AssetTransfer)? { server.filesTravelWithRecords ? nil : engine.assetTransfer }
+    var sharing: (any ZoneSharing)? { engine.sharing }
 
     func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
         await engine.start(scope, state: state, delegate: delegate)

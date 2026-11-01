@@ -9,8 +9,8 @@ import Testing
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FileSync-\(UUID().uuidString)")
 
     /// A device that syncs only when asked, or with a watcher, on its own as changes land.
-    private func device(watching mode: FileSyncTransport.WatchMode = .none) throws -> RecordContainer {
-        let transport = FileSyncTransport(location: .other(directory: folder))
+    private func device(watching mode: FileSyncTransport.WatchMode = .none, in folder: URL? = nil) throws -> RecordContainer {
+        let transport = FileSyncTransport(location: .other(directory: folder ?? self.folder))
         transport.watchMode = mode
         let engine = PollingSyncEngine(transport: transport, automaticallySync: mode != .none, sendDelay: .milliseconds(10))
         return try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: engine)
@@ -236,6 +236,67 @@ import Testing
         // A tie keeps the current file, and an unreadable version never wins.
         #expect(FileSyncTransport.newest([copy(3_000), copy(3_000)]) == 0)
         #expect(FileSyncTransport.newest([nil, copy(nil), copy(5)]) == 2)
+    }
+
+    // MARK: Sharing
+
+    @Test func aSharedFolderSyncsBetweenPeople() async throws {
+        let bobsFolder = folder.appendingPathComponent("bob")
+        let alice = try device()
+        let bob = try device(in: bobsFolder)
+        let family: Zone = "family"
+        alice.mainContext.zone = family
+        alice.mainContext.insert(SyncRecipe(title: "Soup"))
+        try await alice.mainContext.save()
+        let share = try await alice.share(family)
+        let invitation = try #require(share.url)
+        #expect(invitation.path.hasSuffix("/Records/family"))
+
+        let zone = try await bob.acceptShare(invitation)
+        #expect(zone.scope == .shared && zone.name == "family")
+        #expect(zone.owner == share.participants.first?.id)
+        #expect(await bob.sharedZones() == [zone])
+        bob.mainContext.zone = zone
+        var soup = try #require(try await recipes(bob).first)
+        #expect(soup.title == "Soup")
+        #expect(try await alice.existingShare(for: family)?.participants.count == 2)
+
+        // Edits go both ways, and the owner's file names the zone as the owner sees it.
+        soup.title = "Stew"
+        bob.mainContext.insert(soup)
+        try await bob.mainContext.save()
+        try await alice.mainContext.refresh()
+        #expect(try await recipes(alice).map(\.title) == ["Stew"])
+        let file = folder.appendingPathComponent("Records/family/SyncRecipe/\(soup.id.uuidString.lowercased()).json")
+        #expect(try String(contentsOf: file, encoding: .utf8).contains(#""zone":"family""#))
+
+        // Once Alice stops sharing, Bob's copy goes and his edits can't reach her folder.
+        try await alice.stopSharing(family)
+        try await bob.mainContext.refresh()
+        #expect(try await recipes(bob).isEmpty)
+        #expect(await bob.sharedZones().isEmpty)
+        #expect(try await recipes(alice).map(\.title) == ["Stew"])
+    }
+
+    @Test func leavingASharedFolder() async throws {
+        let alice = try device()
+        let bob = try device(in: folder.appendingPathComponent("bob"))
+        let family: Zone = "family"
+        alice.mainContext.zone = family
+        alice.mainContext.insert(SyncRecipe(title: "Soup"))
+        try await alice.mainContext.save()
+        let zone = try await bob.acceptShare(try #require(try await alice.share(family).url))
+
+        try await bob.stopSharing(zone)
+        bob.mainContext.zone = zone
+        #expect(try await recipes(bob).isEmpty)
+        #expect(await bob.sharedZones().isEmpty)
+        #expect(try await alice.existingShare(for: family)?.participants.count == 1)
+        // A folder that isn't shared can't be joined.
+        try await alice.stopSharing(family)
+        await #expect(throws: SyncFailure.self) {
+            try await bob.acceptShare(folder.appendingPathComponent("Records/family"))
+        }
     }
 
     @Test func locations() async throws {

@@ -141,6 +141,9 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     public var assetTransfer: (any AssetTransfer)? { transport as? any AssetTransfer }
 
+    /// The transport, when it conforms to `ZoneSharing`.
+    public var sharing: (any ZoneSharing)? { transport as? any ZoneSharing }
+
     public func start(_ scope: Zone.Scope, state data: Data?, delegate: any SyncDelegate) async {
         let first = lock.withLock {
             if let data, let decoded = try? JSONDecoder().decode(State.self, from: data) {

@@ -24,7 +24,11 @@ import SwiftRecords
 ///
 /// iCloud needs the iCloud capability with iCloud Documents turned on. While the person is signed out of
 /// iCloud, the container reports `signedOut`.
-public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
+///
+/// Sharing a zone hands out its folder's URL. Whoever opens that URL from their own `FileSyncTransport`,
+/// such as through a shared network drive or App Group, joins the zone and syncs it in place. A shared
+/// folder isn't watched, so its changes arrive with the next sync.
+public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing, @unchecked Sendable {
     /// Where the files live.
     public enum Location: Sendable, Hashable {
         /// The app's iCloud container, hidden from the Files app.
@@ -137,38 +141,61 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
         #endif
     }
 
+    public var scopes: Set<Zone.Scope> { [.private, .shared] }
+
     public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         let root = try root()
         let changes = batch.changes
         defer { mark(Set(changes.map(\.zone)), in: root) }
+        var folders: [Zone: URL] = [:]
+        for zone in Set(changes.map(\.zone)) {
+            folders[zone] = try? folder(for: zone, in: root)
+        }
         return try lock.withLock {
             var result = SentRecordChanges()
             for change in changes {
-                let file = Self.recordFile(change.type, change.id, in: root.appendingPathComponent(change.zone.name))
-                let current = try Self.read(file)
+                // A zone shared with the person can be written only while its owner shares it.
+                guard let folder = folders[change.zone], change.zone.scope == .private || Self.shareFile(in: folder) != nil else {
+                    result.failed.append(FailedSave(change: change, failure: .permissionFailure))
+                    continue
+                }
+                let file = Self.recordFile(change.type, change.id, in: folder)
+                let current = try Self.read(file).map { Self.seen($0, in: change.zone) }
                 if !change.isDeletion, let current, current.tag != change.tag {
                     result.failed.append(FailedSave(change: change, failure: .serverRecordChanged(current)))
                     continue
                 }
-                // Each save gets a strictly later time, and its milliseconds are the new tag.
+                // Each save gets a strictly later time, and its milliseconds are the new tag. The file names
+                // the zone as its owner sees it.
                 var stored = change
                 stored.synced = Self.stamp(after: current?.synced)
                 stored.tag = stored.synced.map(Self.tag)
+                stored.zone = (try? Zone(change.zone.name)) ?? change.zone
                 try Self.write(stored, to: file)
                 if change.isDeletion {
                     result.deleted.append(RecordDeletion(id: change.id, zone: change.zone, type: change.type))
                 } else {
-                    result.saved.append(stored)
+                    result.saved.append(Self.seen(stored, in: change.zone))
                 }
             }
             return result
         }
     }
 
+    /// A stored change as the person reading it names its zone.
+    private static func seen(_ change: RecordChangeData, in zone: Zone) -> RecordChangeData {
+        var change = change
+        change.zone = zone
+        return change
+    }
+
     /// Every zone folder, so each is checked for new files, and the zones whose folders were deleted or
     /// replaced since `token`, which holds each folder's identity.
     public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
         let root = try root()
+        if scope == .shared {
+            return try sharedDatabaseChanges(in: root, since: token)
+        }
         let known = token.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
         var epochs: [String: String] = [:]
@@ -186,11 +213,11 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
     }
 
     public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
-        let folder = try root().appendingPathComponent(zone.name, isDirectory: true)
+        let folder = try folder(for: zone, in: root())
         var state = token.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
         var found: [(key: String, change: RecordChangeData)] = []
         for file in Self.recordFiles(in: folder) {
-            guard let change = try? Self.read(file), let tag = change.tag else { continue }
+            guard let change = try? Self.read(file).map({ Self.seen($0, in: zone) }), let tag = change.tag else { continue }
             let key = "\(change.type)/\(change.id)"
             if state.seen[key] != tag {
                 found.append((key, change))
@@ -216,7 +243,7 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
         defer { mark(Set(assets.map(\.zone)), in: root) }
         let manager = FileManager.default
         for asset in assets {
-            let folder = root.appendingPathComponent(asset.zone.name).appendingPathComponent(Self.assetsFolder, isDirectory: true)
+            let folder = try folder(for: asset.zone, in: root).appendingPathComponent(Self.assetsFolder, isDirectory: true)
             let destination = folder.appendingPathComponent(asset.id)
             // A file never changes once stored.
             guard !manager.fileExists(atPath: destination.path) else { continue }
@@ -233,7 +260,7 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
     }
 
     public func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
-        let source = try root().appendingPathComponent(zone.name)
+        let source = try folder(for: zone, in: root())
             .appendingPathComponent(Self.assetsFolder, isDirectory: true).appendingPathComponent(id)
         let destination = directory.appendingPathComponent(id)
         guard Self.isAvailable(source) else { throw SyncFailure.networkUnavailable }
@@ -348,7 +375,8 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
         for zone in zones {
             let token = UUID().uuidString
             lock.withLock { _ = ownMarks.insert(token) }
-            let file = root.appendingPathComponent(zone.name).appendingPathComponent(Self.markFile)
+            guard let folder = try? folder(for: zone, in: root) else { continue }
+            let file = folder.appendingPathComponent(Self.markFile)
             try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? Self.coordinate(writing: file) { url in
                 try Data(token.utf8).write(to: url, options: .atomic)
@@ -619,6 +647,180 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, @unchecked S
             hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
         }
         return String(hash, radix: 16)
+    }
+}
+
+// MARK: - Sharing
+
+extension FileSyncTransport {
+    /// A zone folder's share, beside its records.
+    struct ShareFile: Codable, Hashable {
+        /// The owner's account, from `.account.json` beside their zone folders.
+        var owner: String
+        /// Everyone who joined, by account.
+        var participants: [String]
+    }
+
+    /// A zone someone shared with the person, and where its folder is.
+    struct JoinedZone: Codable, Hashable {
+        var owner: String
+        var zone: String
+        var path: String
+
+        var key: String { "\(owner)/\(zone)" }
+    }
+
+    private static let shareFileName = "_share.json"
+    private static let accountFile = ".account.json"
+    private static let joinedFile = ".shares.json"
+
+    /// The folder a zone's files live in: the person's own, or the owner's for a zone shared with them.
+    func folder(for zone: Zone, in root: URL) throws -> URL {
+        guard let owner = zone.owner else { return root.appendingPathComponent(zone.name, isDirectory: true) }
+        guard let joined = Self.joined(in: root).first(where: { $0.owner == owner && $0.zone == zone.name }) else {
+            throw SyncFailure.zoneNotFound
+        }
+        return URL(fileURLWithPath: joined.path, isDirectory: true)
+    }
+
+    static func shareFile(in folder: URL) -> ShareFile? {
+        let file = folder.appendingPathComponent(shareFileName)
+        guard FileManager.default.fileExists(atPath: file.path), let data = try? coordinatedData(at: file) else { return nil }
+        return try? JSONDecoder().decode(ShareFile.self, from: data)
+    }
+
+    private static func writeShareFile(_ share: ShareFile?, in folder: URL) throws {
+        let file = folder.appendingPathComponent(shareFileName)
+        guard let share else {
+            try? coordinate(writing: file) { url in try FileManager.default.removeItem(at: url) }
+            return
+        }
+        let data = try fileEncoder.encode(share)
+        try mapping {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try coordinate(writing: file) { url in try data.write(to: url, options: .atomic) }
+        }
+    }
+
+    /// The account these zone folders belong to, made the first time it's needed. It travels with the
+    /// folder, so every device of the person's has the same one.
+    private static func account(in root: URL) throws -> String {
+        let file = root.appendingPathComponent(accountFile)
+        if let data = try? coordinatedData(at: file), let id = try? JSONDecoder().decode([String: String].self, from: data)["id"] {
+            return id
+        }
+        let id = UUID().uuidString.lowercased()
+        let data = try fileEncoder.encode(["id": id])
+        try mapping {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try coordinate(writing: file) { url in try data.write(to: url, options: .atomic) }
+        }
+        return id
+    }
+
+    static func joined(in root: URL) -> [JoinedZone] {
+        guard let data = try? coordinatedData(at: root.appendingPathComponent(joinedFile)) else { return [] }
+        return (try? JSONDecoder().decode([JoinedZone].self, from: data)) ?? []
+    }
+
+    private static func setJoined(_ zones: [JoinedZone], in root: URL) throws {
+        let data = try fileEncoder.encode(zones.sorted { $0.key < $1.key })
+        try mapping {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try coordinate(writing: root.appendingPathComponent(joinedFile)) { url in try data.write(to: url, options: .atomic) }
+        }
+    }
+
+    /// The zones shared with the person. One whose owner stopped sharing it is deleted, and so is one the
+    /// person left. One whose folder can't be reached now waits, rather than losing its records.
+    func sharedDatabaseChanges(in root: URL, since token: Data?) throws -> DatabaseChanges {
+        let known = Set(token.flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? [])
+        var joined = Self.joined(in: root)
+        var modified: [Zone] = []
+        var deleted: [ZoneDeletion] = []
+        var current: Set<String> = []
+        for entry in joined {
+            guard let zone = try? Zone(entry.zone, sharedBy: entry.owner) else { continue }
+            let folder = URL(fileURLWithPath: entry.path, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: folder.path) else {
+                if known.contains(entry.key) { current.insert(entry.key) }
+                continue
+            }
+            if Self.shareFile(in: folder) == nil {
+                deleted.append(ZoneDeletion(zone: zone, reason: .deleted))
+            } else {
+                current.insert(entry.key)
+                modified.append(zone)
+            }
+        }
+        for key in known.subtracting(current) where !deleted.contains(where: { "\($0.zone.owner ?? "")/\($0.zone.name)" == key }) {
+            let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+            if parts.count == 2, let zone = try? Zone(parts[1], sharedBy: parts[0]) {
+                deleted.append(ZoneDeletion(zone: zone, reason: .deleted))
+            }
+        }
+        // A share that ended is forgotten, so joining again starts over.
+        if deleted.contains(where: { zone in joined.contains { $0.key == "\(zone.zone.owner ?? "")/\(zone.zone.name)" } }) {
+            joined.removeAll { entry in deleted.contains { "\($0.zone.owner ?? "")/\($0.zone.name)" == entry.key } }
+            try Self.setJoined(joined, in: root)
+        }
+        return DatabaseChanges(modified: modified, deleted: deleted, token: try JSONEncoder().encode(current.sorted()))
+    }
+
+    // MARK: ZoneSharing
+
+    /// Shares the zone's folder. The invitation is its file URL, which works wherever the people joining
+    /// reach the same folder.
+    public func share(_ zone: Zone) async throws -> ZoneShare {
+        let root = try root()
+        let folder = try folder(for: zone, in: root)
+        if Self.shareFile(in: folder) == nil {
+            _ = try Self.epoch(of: folder)
+            try Self.writeShareFile(ShareFile(owner: try Self.account(in: root), participants: []), in: folder)
+        }
+        return try await existingShare(for: zone) ?? ZoneShare(zone: zone, url: folder, participants: [])
+    }
+
+    public func existingShare(for zone: Zone) async throws -> ZoneShare? {
+        let folder = try folder(for: zone, in: root())
+        guard let share = Self.shareFile(in: folder) else { return nil }
+        let participants = [ShareParticipant(id: share.owner, role: .owner, status: .accepted)]
+            + share.participants.map { ShareParticipant(id: $0, role: .participant, status: .accepted) }
+        return ZoneShare(zone: zone, url: folder, participants: participants)
+    }
+
+    public func acceptShare(_ invitation: URL) async throws -> Zone {
+        let root = try root()
+        let folder = invitation.standardizedFileURL
+        guard invitation.isFileURL, var share = Self.shareFile(in: folder), let zone = Self.zone(named: folder.lastPathComponent) else {
+            throw SyncFailure.zoneNotFound
+        }
+        let me = try Self.account(in: root)
+        guard share.owner != me else { throw SyncFailure.other("This zone is already the person's own") }
+        if !share.participants.contains(me) {
+            share.participants.append(me)
+            try Self.writeShareFile(share, in: folder)
+        }
+        let entry = JoinedZone(owner: share.owner, zone: zone.name, path: folder.path)
+        var joined = Self.joined(in: root).filter { $0.key != entry.key }
+        joined.append(entry)
+        try Self.setJoined(joined, in: root)
+        return try Zone(zone.name, sharedBy: share.owner)
+    }
+
+    public func stopSharing(_ zone: Zone) async throws {
+        let root = try root()
+        let folder = try folder(for: zone, in: root)
+        guard zone.scope == .shared else {
+            try Self.writeShareFile(nil, in: folder)
+            return
+        }
+        let me = try Self.account(in: root)
+        if var share = Self.shareFile(in: folder) {
+            share.participants.removeAll { $0 == me }
+            try Self.writeShareFile(share, in: folder)
+        }
+        try Self.setJoined(Self.joined(in: root).filter { !($0.owner == zone.owner && $0.zone == zone.name) }, in: root)
     }
 }
 

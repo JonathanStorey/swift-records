@@ -26,6 +26,9 @@ public enum RecordsError: Error, Hashable, Sendable {
     /// A stored or received record doesn't decode as this version of the app's type. A received one is kept
     /// and tried again after the app updates.
     case incompatibleRecord(type: String, id: UUID)
+    /// The zone can't be shared or left: the sync provider can't share, the zone stays on this device,
+    /// or someone else owns it and only the owner shares.
+    case sharingUnavailable(zone: String)
 }
 
 extension RecordsError {

@@ -50,6 +50,10 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// default, means assets need no separate transfer.
     var assetTransfer: (any AssetTransfer)? { get }
 
+    /// Shares the person's zones with other people and joins zones others share. `nil`, the default, means
+    /// the provider can't share.
+    var sharing: (any ZoneSharing)? { get }
+
     /// Called once as a container opens with this provider, before syncing starts, for a provider that
     /// converts records with the container's help, as `CloudKitSyncProvider` does. Keep it weakly.
     func attach(_ container: RecordContainer)
@@ -59,6 +63,8 @@ extension SyncProvider {
     public var scopes: Set<Zone.Scope> { [.private] }
 
     public var assetTransfer: (any AssetTransfer)? { nil }
+
+    public var sharing: (any ZoneSharing)? { nil }
 
     public func attach(_ container: RecordContainer) {}
 
@@ -581,5 +587,75 @@ extension AssetTransfer {
         id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try await downloadAsset(id: id, zone: zone, into: directory)
+    }
+}
+
+// MARK: - Sharing
+
+/// Shares whole zones between people. ≈ a zone-wide `CKShare`. Apps call it through `RecordContainer`'s
+/// `share(_:)`, `acceptShare(_:)` and `stopSharing(_:)`, which also keep the zone's records in step.
+///
+/// The owner shares one of their private zones and sends the invitation's URL. Each participant who
+/// accepts it sees the zone in their `.shared` database, as `Zone(name, sharedBy: owner)`, and syncs it like
+/// their own. A provider that shares must serve the `.shared` scope.
+public protocol ZoneSharing: AnyObject, Sendable {
+    /// Shares one of the person's private zones, or returns the share it already has. The zone and its
+    /// records are on the server before this is called.
+    func share(_ zone: Zone) async throws -> ZoneShare
+
+    /// The zone's share, or `nil` when it isn't shared. For a zone shared with the person, the owner's share.
+    func existingShare(for zone: Zone) async throws -> ZoneShare?
+
+    /// Joins the zone an invitation shares and returns it, as the person will see it in `.shared`.
+    func acceptShare(_ invitation: URL) async throws -> Zone
+
+    /// For a private zone, stops sharing it: every participant loses it, and the owner keeps it. For a
+    /// shared zone, leaves it.
+    func stopSharing(_ zone: Zone) async throws
+}
+
+/// A shared zone and who it's shared with. ≈ `CKShare`.
+public struct ZoneShare: Sendable, Hashable {
+    /// The zone as the person calling sees it: private for its owner, shared for a participant.
+    public var zone: Zone
+    /// The invitation to send. Anyone the server lets open it can join.
+    public var url: URL?
+    /// The owner and everyone invited, owner first.
+    public var participants: [ShareParticipant]
+
+    public init(zone: Zone, url: URL?, participants: [ShareParticipant]) {
+        self.zone = zone
+        self.url = url
+        self.participants = participants
+    }
+}
+
+/// Someone in a share. ≈ `CKShare.Participant`.
+public struct ShareParticipant: Sendable, Hashable {
+    public enum Role: String, Sendable, Hashable, Codable {
+        case owner
+        case participant
+    }
+
+    public enum Status: String, Sendable, Hashable, Codable {
+        /// Invited and hasn't accepted yet.
+        case pending
+        case accepted
+        /// Left, or was removed.
+        case removed
+    }
+
+    /// The server's name for the person, such as a CloudKit user record name.
+    public var id: String
+    /// How to show the person, when the server knows.
+    public var name: String?
+    public var role: Role
+    public var status: Status
+
+    public init(id: String, name: String? = nil, role: Role, status: Status) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.status = status
     }
 }

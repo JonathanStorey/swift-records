@@ -84,7 +84,10 @@ public final class RecordContainer: @unchecked Sendable {
         // The hub opens zones a server's changes arrive for, through the container once it exists.
         let opener = ZoneOpener()
         let hub = syncProvider.map { provider in
-            SyncHub(provider: provider, directory: directory, openZone: { opener.container?.syncedStorage(for: $0)?.sync })
+            SyncHub(
+                provider: provider, directory: directory, openZone: { opener.container?.syncedStorage(for: $0)?.sync },
+                storedZone: { opener.container?.storedSyncedStorage(for: $0)?.sync }
+            )
         }
         syncHub = hub
         initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: Self.hub(hub, for: initialZone, syncs))
@@ -122,6 +125,16 @@ public final class RecordContainer: @unchecked Sendable {
         let storage = try Self.open(zone, directory: directory, types: types, hub: Self.hub(syncHub, for: zone, syncs))
         storages[zone] = storage
         return storage
+    }
+
+    /// The storage of a zone that syncs and is open or stored on this device, or `nil`.
+    func storedSyncedStorage(for zone: Zone) -> ZoneStorage? {
+        lock.lock()
+        let open = storages[zone]
+        lock.unlock()
+        if let open { return open.sync == nil ? nil : open }
+        guard let url = directory.flatMap({ zone.url(in: $0) }), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return syncedStorage(for: zone)
     }
 
     /// The storage of a zone that syncs, opening it for changes a server sent, or `nil` for one that doesn't.
