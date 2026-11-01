@@ -28,6 +28,8 @@ package final class ZoneStorage: @unchecked Sendable {
     @MainActor private(set) var assetTransfer: ZoneSync.Transfer? {
         didSet { context?.assetTransferChanged() }
     }
+    /// The newest transfer report applied, so a late one is dropped.
+    @MainActor private var transferReport = 0
 
     init(zone: Zone, store: RecordStore, types: [any Record.Type], hub: SyncHub?) throws {
         self.zone = zone
@@ -43,13 +45,18 @@ package final class ZoneStorage: @unchecked Sendable {
             phaseChanged: { [weak self] phase in
                 Task { @MainActor in self?.syncPhase = phase }
             },
-            transferChanged: { [weak self] transfer, landed in
+            transferChanged: { [weak self] report in
                 // Waiting for the main actor keeps updates in order, and the transfer isn't done until views know.
                 await MainActor.run {
                     guard let self else { return }
-                    self.assetTransfer = transfer
+                    // A file that came inside its record lands without a transfer, and leaves any as it is.
+                    let ownLanding = report.landed && report.transfer == nil
+                    if !ownLanding, report.number > self.transferReport {
+                        self.transferReport = report.number
+                        self.assetTransfer = report.transfer
+                    }
                     // The record already points at the file, so only views need to know it's here.
-                    if landed { self.context?.assetDidLand(in: zone) }
+                    if report.landed { self.context?.assetDidLand(in: zone) }
                 }
             },
             shown: { [weak self] in self?.context != nil }

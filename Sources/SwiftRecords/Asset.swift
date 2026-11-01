@@ -11,16 +11,19 @@ import Foundation
 /// }
 ///
 /// recipe.photo = jpegData                 // written to disk when the record is saved
-/// let url = saved.$photo.url              // the stored file, for AsyncImage or QuickLook
+/// recipe.$photo = movieURL                // or copied in from a file, without loading it
+/// let url = saved.$photo                  // the stored file, for AsyncImage or QuickLook
 /// let bytes = saved.photo                 // read from disk on first access, then cached
 /// ```
 ///
 /// A fetched record doesn't load its files. Reading the property loads the file once and keeps it with
-/// that copy of the record, so prefer `$photo.url` where a URL will do, such as for images in a list.
+/// that copy of the record, so prefer `$photo` where a URL will do, such as for images in a list.
 ///
-/// With a sync provider, records arrive first and their files follow in the background, so a received
-/// record's asset reads `nil` until its file lands. Views refresh when it does, and
-/// `RecordContext.assetProgress` reports how far the transfers have got.
+/// With CloudKit, a record's files arrive inside it. With a transport that moves files on their own,
+/// such as `FileSyncTransport`, records arrive first and their files follow in the background, so a
+/// received record's asset reads `nil` until its file lands. Views refresh when it does.
+/// `$recipe.downloadProgress` on a `@Recordable` shows how far a record's files have got, and
+/// `RecordContext.assetURL(_:of:)` waits for one.
 ///
 /// Outside a container, such as with `JSONEncoder`, the property encodes and decodes as plain `Data?`.
 @propertyWrapper
@@ -70,8 +73,7 @@ public struct Asset: Hashable, Sendable, Codable {
     }
 
     /// An asset copied from the file at `url` when its record is saved, without reading it into memory.
-    /// Assign it through the projected value: `recipe.$photo = Asset(contentsOf: url)`.
-    public init(contentsOf url: URL) {
+    init(contentsOf url: URL) {
         fileExtension = url.pathExtension
         storage = Storage(name: Self.makeName(fileExtension: url.pathExtension), source: .file(url))
     }
@@ -87,21 +89,30 @@ public struct Asset: Hashable, Sendable, Codable {
         set { storage = newValue.map { Storage(name: Self.makeName(fileExtension: fileExtension), source: .data($0)) } }
     }
 
-    /// The asset itself, for its file URL: `recipe.$photo.url`.
-    public var projectedValue: Asset {
-        get { self }
-        set { self = newValue }
+    /// The stored file: `recipe.$photo`. It's `nil` until the record has been saved and fetched back, for
+    /// an empty asset, and while a synced record's file is still downloading.
+    ///
+    /// Assigning a file URL copies that file in when the record is saved, without reading it into memory,
+    /// and assigning `nil` clears the asset.
+    public var projectedValue: URL? {
+        get { url }
+        set { self = newValue.map { Asset(contentsOf: $0) } ?? Asset(fileExtension: fileExtension) }
     }
 
-    /// The stored file. `nil` until the record has been saved and fetched back, for an empty asset, and
-    /// while a synced record's file is still downloading.
-    public var url: URL? {
+    /// The stored file, or `nil` when it isn't on disk.
+    var url: URL? {
         guard case .stored(let url)? = storage?.source, FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }
 
     /// The file's unique name in the assets folder, or `nil` for an empty asset.
     var name: String? { storage?.name }
+
+    /// The name of a stored file that isn't on disk yet, because it's still on its way from the server.
+    var missingName: String? {
+        guard case .stored(let url)? = storage?.source, !FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return storage?.name
+    }
 
     static func makeName(fileExtension: String) -> String {
         fileExtension.isEmpty ? UUID().uuidString : UUID().uuidString + "." + fileExtension

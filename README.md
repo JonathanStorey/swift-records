@@ -298,17 +298,17 @@ struct Photo {
 
 context.insert(Photo(image: jpeg))
 let photo = try context.fetch(Photo.self).first
-let url = photo?.$image.url      // the stored file, for AsyncImage, QuickLook or AVPlayer
+let url = photo?.$image          // the stored file, for AsyncImage, QuickLook or AVPlayer
 let bytes = photo?.image         // read from disk on first access, then cached
 ```
 
 - Fetching never reads asset files. The bytes load the first time the property is read, so prefer
-  `$image.url` where a URL will do.
+  `$image` where a URL will do.
 - Files live in a folder named after the database file, such as `Records/_default.assets/`, so they
   are included in device backups along with the zone.
 - Assigning new data or `nil` removes the old file when the record is saved, and deleting a record
   (directly or by cascade) removes its files. Rolled-back transactions leave no files behind.
-- To copy a large file in without loading it, assign `photo.$image = Asset(contentsOf: url)`.
+- To copy a large file in without loading it, assign `photo.$image = url`.
 - Outside a container, such as with `JSONEncoder`, the property encodes as plain `Data?`.
 
 ## Sorting
@@ -554,7 +554,9 @@ Otherwise assets travel on their own, in the background, through the provider's 
 `PollingSyncEngine` uses its transport when it conforms to `AssetTransfer`. `refresh()` syncs records
 only and returns once they're stored. After each pass the container uploads files the server doesn't
 have and downloads the ones received records point to, one file at a time. Until a file lands, its
-record's asset reads `nil` and `$image.url` is `nil`, and views refresh when it arrives. A file that
+record's asset reads `nil` and `$image` is `nil`, and views refresh when it arrives. `$photo.downloadProgress`
+on a `@Recordable` shows how far a record's files have got, and `context.assetURL(\.$image, of: photo)` waits
+for one. A file that
 fails, such as one whose record arrived before its upload finished, is tried again after the next pass.
 A file never changes once stored, so an asset can't conflict, and each one is uploaded once.
 

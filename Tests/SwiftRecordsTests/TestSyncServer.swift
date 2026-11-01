@@ -375,6 +375,14 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
         try data.write(to: file)
         return file
     }
+
+    /// Reports half the file before the download proper, so tests see a fraction.
+    func downloadAsset(
+        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        progress(0.5)
+        return try await downloadAsset(id: id, zone: zone, into: directory)
+    }
 }
 
 /// One device's engine on a `TestServer`, which syncs only when asked so tests control each step.

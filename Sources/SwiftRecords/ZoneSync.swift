@@ -12,10 +12,22 @@ final class ZoneSync: @unchecked Sendable {
         case failed(RecordsError)
     }
 
-    /// How far the current asset transfers have got, by file count.
+    /// How far the current asset transfers have got, by file count, and the file downloading now.
     struct Transfer: Sendable, Hashable {
         var done: Int
         var total: Int
+        /// The asset file downloading now.
+        var downloading: String?
+        /// How much of it has arrived, when the transfer reports that.
+        var fraction: Double?
+    }
+
+    /// A transfer update, numbered so one reported late from a progress callback can't undo a newer one.
+    struct TransferReport: Sendable {
+        var transfer: Transfer?
+        /// Whether a downloaded file just landed.
+        var landed: Bool
+        var number: Int
     }
 
     private static let accountKey = "provider.account"
@@ -27,7 +39,7 @@ final class ZoneSync: @unchecked Sendable {
     private let hub: SyncHub
     private let phaseChanged: @Sendable (Phase) -> Void
     /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
-    private let transferChanged: @Sendable (Transfer?, _ landed: Bool) async -> Void
+    private let transferChanged: @Sendable (TransferReport) async -> Void
     /// Whether a context is showing the zone, so its changes are fetched first.
     private let shown: @Sendable () -> Bool
 
@@ -42,11 +54,12 @@ final class ZoneSync: @unchecked Sendable {
     /// The asset transfers running now, and whether a sync has finished since they started.
     private var transferring: Task<Void, Never>?
     private var transferRequested = false
+    private var reports = 0
 
     init(
         zone: Zone, store: RecordStore, hub: SyncHub,
         phaseChanged: @escaping @Sendable (Phase) -> Void,
-        transferChanged: @escaping @Sendable (Transfer?, _ landed: Bool) async -> Void = { _, _ in },
+        transferChanged: @escaping @Sendable (TransferReport) async -> Void = { _ in },
         shown: @escaping @Sendable () -> Bool = { false }
     ) {
         self.zone = zone
@@ -271,8 +284,9 @@ final class ZoneSync: @unchecked Sendable {
             }
         }
         if landed {
+            let report = TransferReport(transfer: nil, landed: true, number: nextReport())
             let transferChanged = transferChanged
-            Task { await transferChanged(nil, true) }
+            Task { await transferChanged(report) }
         }
     }
 
@@ -347,28 +361,50 @@ final class ZoneSync: @unchecked Sendable {
         let downloads = signedOut ? [] : (try? store.missingAssets()) ?? []
         var progress = Transfer(done: 0, total: uploads.count + downloads.count)
         guard progress.total > 0 else { return }
-        await transferChanged(progress, false)
+        await report(progress)
         for asset in uploads {
             if (try? await transfer.uploadAssets([asset])) != nil {
                 try? store.markAssetsUploaded([asset.id])
             }
             progress.done += 1
-            await transferChanged(progress, false)
+            await report(progress)
         }
         for id in downloads {
-            let landed = (try? await downloadAsset(id, with: transfer)) ?? false
+            progress.downloading = id
+            await report(progress)
+            let landed = (try? await downloadAsset(id, with: transfer, progress: progress)) ?? false
+            progress.downloading = nil
             progress.done += 1
-            await transferChanged(progress, landed)
+            await report(progress, landed: landed)
         }
-        await transferChanged(nil, false)
+        await report(nil)
     }
 
-    private func downloadAsset(_ id: String, with transfer: any AssetTransfer) async throws -> Bool {
+    private func nextReport() -> Int {
+        lock.withLock {
+            reports += 1
+            return reports
+        }
+    }
+
+    private func report(_ transfer: Transfer?, landed: Bool = false) async {
+        await transferChanged(TransferReport(transfer: transfer, landed: landed, number: nextReport()))
+    }
+
+    private func downloadAsset(_ id: String, with transfer: any AssetTransfer, progress: Transfer) async throws -> Bool {
         let manager = FileManager.default
         let directory = manager.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? manager.removeItem(at: directory) }
-        let file = try await transfer.downloadAsset(id: id, zone: zone, into: directory)
+        let transferChanged = transferChanged
+        let file = try await transfer.downloadAsset(id: id, zone: zone, into: directory) { [weak self] fraction in
+            guard let self else { return }
+            var progress = progress
+            progress.fraction = min(max(fraction, 0), 1)
+            // The number is taken now, so a report that reaches views after a newer one is dropped.
+            let report = TransferReport(transfer: progress, landed: false, number: self.nextReport())
+            Task { await transferChanged(report) }
+        }
         return try store.placeDownloadedAsset(at: file, id: id)
     }
 }

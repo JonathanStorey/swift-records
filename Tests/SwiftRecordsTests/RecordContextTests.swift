@@ -127,7 +127,7 @@ import Testing
         // Copying a file that does not exist fails the whole batch.
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID()).jpg")
         var photo = Photo()
-        photo.$image = Asset(contentsOf: missing)
+        photo.$image = missing
         context.insert(photo)
         #expect(throws: (any Error).self) { try context.save() }
         #expect(try context.container.fetch(ToDo.self).isEmpty)

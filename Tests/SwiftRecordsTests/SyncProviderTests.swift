@@ -441,11 +441,11 @@ struct Device {
         await tablet.transfers()
         let received = try #require(try await tablet.recipes().first)
         #expect(received.photo == Data([1, 2, 3]))
-        #expect(received.$photo.url?.path.hasPrefix(tablet.container.assetsDirectory.path) == true)
+        #expect(received.$photo?.path.hasPrefix(tablet.container.assetsDirectory.path) == true)
         // The record holds the file's ID, and the file travels on its own.
         let assetID = try #require(server.assetID("SyncRecipe", recipe.id, "photo"))
         #expect(server.asset(assetID) == Data([1, 2, 3]))
-        #expect(received.$photo.url?.lastPathComponent == assetID)
+        #expect(received.$photo?.lastPathComponent == assetID)
 
         // An unchanged photo isn't uploaded again.
         var renamed = received
@@ -477,7 +477,7 @@ struct Device {
         let waiting = try #require(try await tablet.recipes().first)
         #expect(waiting.title == "Photo")
         #expect(waiting.photo == nil)
-        #expect(waiting.$photo.url == nil)
+        #expect(waiting.$photo == nil)
         #expect(tablet.context.status == .saved)
         // The fetch sent again, which retried the download, so wait for that to finish too.
         await tablet.transfers()
@@ -494,7 +494,7 @@ struct Device {
         #expect(tablet.context.changeCount > changes)
         let landed = try #require(try await tablet.recipes().first)
         #expect(landed.photo == Data([1, 2, 3]))
-        #expect(landed.$photo.url?.lastPathComponent == assetID)
+        #expect(landed.$photo?.lastPathComponent == assetID)
     }
 
     @Test func assetProgressCountsFiles() async throws {
@@ -520,6 +520,83 @@ struct Device {
         #expect(await seen.values == [0, 0.5])
         #expect(tablet.context.assetProgress == nil)
         #expect(try await tablet.recipes().compactMap(\.photo).count == 2)
+    }
+
+    @Test func downloadProgressFollowsARecordsFiles() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        await phone.transfers()
+        // A record without files has nothing to download.
+        #expect(phone.context.downloadProgress(of: SyncRecipe(title: "Plain"), in: .default) == nil)
+
+        let seen = Seen()
+        let context = tablet.context
+        let id = recipe.id
+        tablet.provider.beforeAssetDownload = {
+            for _ in 0..<20 { await Task.yield() }
+            await seen.add(await MainActor.run {
+                (try? context.record(SyncRecipe.self, for: id)).flatMap { context.downloadProgress(of: $0, in: .default) }
+            })
+        }
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        // The transport reported half the file before it arrived.
+        #expect(await seen.values == [0.5])
+        let landed = try #require(try tablet.context.record(SyncRecipe.self, for: id))
+        #expect(tablet.context.downloadProgress(of: landed, in: .default) == nil)
+    }
+
+    @Test func assetURLWaitsForTheFile() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        phone.provider.failsAssetUploads = true
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        await phone.transfers()
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        let waiting = try #require(try await tablet.recipes().first)
+        #expect(waiting.$photo == nil)
+        #expect(tablet.context.downloadProgress(of: waiting, in: .default) == 0)
+
+        let context = tablet.context
+        let wait = Task { @MainActor in try await context.assetURL(\.$photo, of: waiting) }
+        phone.provider.failsAssetUploads = false
+        try await phone.context.refresh()
+        await phone.transfers()
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        let url = try #require(try await wait.value)
+        #expect(try Data(contentsOf: url) == Data([1, 2, 3]))
+        // Once the file is here, it returns at once, and an empty asset has nothing to wait for.
+        #expect(try await context.assetURL(\.$photo, of: waiting) == url)
+        #expect(try await context.assetURL(\.$photo, of: SyncRecipe(title: "Plain")) == nil)
+    }
+
+    @Test func cancellingStopsWaitingForAFile() async throws {
+        let phone = try Device(server)
+        let tablet = try Device(server)
+        phone.provider.failsAssetUploads = true
+        var recipe = SyncRecipe(title: "Photo")
+        recipe.photo = Data([1, 2, 3])
+        phone.context.insert(recipe)
+        try await phone.context.save()
+        await phone.transfers()
+        try await tablet.context.refresh()
+        await tablet.transfers()
+        let waiting = try #require(try await tablet.recipes().first)
+
+        let context = tablet.context
+        let wait = Task { @MainActor in try await context.assetURL(\.$photo, of: waiting) }
+        for _ in 0..<20 { await Task.yield() }
+        wait.cancel()
+        await #expect(throws: CancellationError.self) { try await wait.value }
     }
 
     // MARK: Status
@@ -1153,7 +1230,7 @@ private actor Seen {
         await tablet.settle()
         let received = try #require(try await tablet.recipes().first)
         #expect(received.photo == Data([1, 2, 3]))
-        #expect(received.$photo.url?.lastPathComponent == assetID)
+        #expect(received.$photo?.lastPathComponent == assetID)
         #expect(tablet.context.assetProgress == nil)
     }
 

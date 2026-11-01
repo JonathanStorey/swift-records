@@ -567,4 +567,19 @@ public protocol AssetTransfer: AnyObject, Sendable {
     /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
     /// have it yet, and it's asked for again after the next sync.
     func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
+
+    /// Downloads one asset file as `downloadAsset(id:zone:into:)` does, calling `progress` with the
+    /// fraction that has arrived, from 0 to 1, from any thread. It feeds `downloadProgress` on a
+    /// `@Recordable`. The default calls the version without progress.
+    func downloadAsset(
+        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL
+}
+
+extension AssetTransfer {
+    public func downloadAsset(
+        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        try await downloadAsset(id: id, zone: zone, into: directory)
+    }
 }
