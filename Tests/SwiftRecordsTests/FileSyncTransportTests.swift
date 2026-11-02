@@ -93,10 +93,8 @@ import Testing
         recipe.photo = Data([1, 2, 3])
         phone.mainContext.insert(recipe)
         try await phone.mainContext.save()
-        await phone.initialStorage.sync?.transfers()
 
         try await tablet.mainContext.refresh()
-        await tablet.initialStorage.sync?.transfers()
         let received = try #require(try await recipes(tablet).first)
         #expect(received.photo == Data([1, 2, 3]))
         let name = try #require(received.$photo?.lastPathComponent)
@@ -118,6 +116,33 @@ import Testing
         #expect(try await recipes(phone).isEmpty)
     }
 
+    @Test func aRecordWaitsForItsFilesToDownload() async throws {
+        let zone = folder.appendingPathComponent("Records/_default")
+        let id = UUID()
+        try FileManager.default.createDirectory(at: zone.appendingPathComponent("SyncRecipe"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: zone.appendingPathComponent("_assets"), withIntermediateDirectories: true)
+        // iCloud has the file, but hasn't downloaded it to this device yet.
+        let placeholder = zone.appendingPathComponent("_assets/.photo.asset.icloud")
+        try Data().write(to: placeholder)
+        let json = """
+            {"id":"\(id.uuidString)","record":{"photo":{"asset":"photo.asset"},"title":{"string":"Bread"}},\
+            "synced":1700000000000,"type":"SyncRecipe","zone":"_default"}
+            """
+        try Data(json.utf8).write(to: recordFile(id))
+
+        let phone = try device()
+        try await phone.mainContext.refresh()
+        #expect(try await recipes(phone).isEmpty)
+
+        // Once the file is here, the record arrives with it.
+        try FileManager.default.removeItem(at: placeholder)
+        try Data([7, 8]).write(to: zone.appendingPathComponent("_assets/photo.asset"))
+        try await phone.mainContext.refresh()
+        let recipe = try #require(try await recipes(phone).first)
+        #expect(recipe.title == "Bread")
+        #expect(recipe.photo == Data([7, 8]))
+    }
+
     @Test func handWrittenFilesDownload() async throws {
         // Files written by something other than a container, such as a script or another app.
         let zone = folder.appendingPathComponent("Records/_default")
@@ -133,7 +158,6 @@ import Testing
 
         let phone = try device()
         try await phone.mainContext.refresh()
-        await phone.initialStorage.sync?.transfers()
         let recipe = try #require(try await recipes(phone).first)
         #expect(recipe.id == id)
         #expect(recipe.title == "Bread")

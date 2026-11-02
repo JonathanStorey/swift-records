@@ -139,8 +139,6 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     public var scopes: Set<Zone.Scope> { transport.scopes }
 
-    public var assetTransfer: (any AssetTransfer)? { transport as? any AssetTransfer }
-
     /// The transport, when it conforms to `ZoneSharing`.
     public var sharing: (any ZoneSharing)? { transport as? any ZoneSharing }
 

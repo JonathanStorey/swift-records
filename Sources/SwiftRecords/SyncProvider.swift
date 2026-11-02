@@ -46,10 +46,6 @@ public protocol SyncProvider: AnyObject, Sendable {
     /// always delivers whole records, as `CKSyncEngine` does, never needs it.
     func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
 
-    /// Moves asset files apart from their records, for a server that stores them separately. `nil`, the
-    /// default, means assets need no separate transfer.
-    var assetTransfer: (any AssetTransfer)? { get }
-
     /// Shares the person's zones with other people and joins zones others share. `nil`, the default, means
     /// the provider can't share.
     var sharing: (any ZoneSharing)? { get }
@@ -61,8 +57,6 @@ public protocol SyncProvider: AnyObject, Sendable {
 
 extension SyncProvider {
     public var scopes: Set<Zone.Scope> { [.private] }
-
-    public var assetTransfer: (any AssetTransfer)? { nil }
 
     public var sharing: (any ZoneSharing)? { nil }
 
@@ -397,10 +391,10 @@ public struct RecordChangeData: Sendable, Hashable {
     public var clearedKeys: Set<String>
     /// For a partial download: the tag of the copy it builds on.
     public var baseTag: Data?
-    /// The files behind this change's `.asset` values, by asset ID, for a server that keeps files inside
-    /// their records, as CloudKit does with `CKAsset`. An upload names every file this device has. A
-    /// download names the files that came with it, which the container copies in before the event that
-    /// carried them ends. Never encoded.
+    /// The files behind this change's `.asset` values, by asset ID. A record and its files travel together,
+    /// as CloudKit's `CKAsset`s do: an upload names every file this device has, and a download names the
+    /// files that came with it, which the container copies in before the event that carried them ends.
+    /// Never encoded.
     public var assetFiles: [String: URL]
     /// The fields of `@Encrypted` properties, which a server that can stores end-to-end encrypted, as
     /// CloudKit does in `encryptedValues`. Set on uploads. A download needs none, since the container knows
@@ -501,7 +495,7 @@ public enum RecordValue: Sendable, Hashable {
     case dates([Date])
     /// A child's reference to its parent, as a `CKRecord.Reference`.
     case reference(UUID, action: ReferenceAction)
-    /// An asset, by its ID. The file crosses separately, through `uploadAssets(_:)` and `downloadAsset(id:zone:into:)`.
+    /// An asset, by its ID. Its file travels with the change, in `assetFiles`.
     case asset(String)
 }
 
@@ -551,48 +545,6 @@ extension RecordValue: Codable {
             if action != .nullify { try container.encode(action, forKey: .action) }
         case .asset(let id): try container.encode(id, forKey: .asset)
         }
-    }
-}
-
-/// An asset file as it crosses to or from a server. Its `id` is the file's unique name, which a record's
-/// JSON holds. A file never changes once stored, so an asset can't conflict: a new photo is a new ID.
-public struct RecordAssetData: Sendable, Hashable, Codable {
-    public let id: String
-    public let zone: Zone
-    /// The local file to upload.
-    public var file: URL
-
-    public init(id: String, zone: Zone, file: URL) {
-        self.id = id
-        self.zone = zone
-        self.file = file
-    }
-}
-
-/// Moves asset files apart from their records, for a server that stores them separately, such as a
-/// folder of files. CloudKit sends a record's files inside it and doesn't use this.
-public protocol AssetTransfer: AnyObject, Sendable {
-    /// Uploads asset files the server doesn't have yet. Called after records sync, so a record can reach
-    /// other devices before its file does.
-    func uploadAssets(_ assets: [RecordAssetData]) async throws
-
-    /// Downloads one asset file into `directory` and returns where it landed. Throw when the server doesn't
-    /// have it yet, and it's asked for again after the next sync.
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL
-
-    /// Downloads one asset file as `downloadAsset(id:zone:into:)` does, calling `progress` with the
-    /// fraction that has arrived, from 0 to 1, from any thread. It feeds `downloadProgress` on a
-    /// `@Recordable`. The default calls the version without progress.
-    func downloadAsset(
-        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
-    ) async throws -> URL
-}
-
-extension AssetTransfer {
-    public func downloadAsset(
-        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
-    ) async throws -> URL {
-        try await downloadAsset(id: id, zone: zone, into: directory)
     }
 }
 

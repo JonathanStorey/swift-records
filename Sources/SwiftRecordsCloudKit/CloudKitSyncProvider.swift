@@ -316,7 +316,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     private func received(_ record: CKRecord, scope: Zone.Scope) -> RecordChangeData? {
         guard let container = lock.withLock({ self.container }),
               let zone = Self.zone(for: record.recordID.zoneID, scope: scope),
-              let (change, _) = try? container.change(from: record, zone: zone) else { return nil }
+              let change = try? container.change(from: record, zone: zone) else { return nil }
         return change
     }
 

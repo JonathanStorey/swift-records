@@ -115,8 +115,8 @@ import SwiftRecordsCloudKit
         #expect(record.parent == nil)
         #expect(record["photo"] is CKAsset)
 
-        let (back, assets) = try phone.container.change(from: record, zone: .default)
-        #expect(assets.count == 1)
+        let back = try phone.container.change(from: record, zone: .default)
+        #expect(back.assetFiles.count == 1)
         #expect(back.tag != nil)
         // The archived system fields bring back the same record.
         let again = try #require(try phone.container.ckRecord(for: back, in: zoneID))
@@ -132,7 +132,7 @@ import SwiftRecordsCloudKit
         #expect(reference.action == .deleteSelf)
         // A step belongs to its recipe, which is how a share of the recipe includes it.
         #expect(step.parent?.recordID == record.recordID)
-        let (stepBack, _) = try phone.container.change(from: step, zone: .default)
+        let stepBack = try phone.container.change(from: step, zone: .default)
         #expect(try store.syncRecord(from: stepBack).fields == store.syncRecord(from: savedStep).fields)
     }
 
@@ -186,14 +186,14 @@ import SwiftRecordsCloudKit
         #expect(record["photo_assetID"] as? String == assetID)
 
         // Coming back, the ID is taken as it is, and the field beside it isn't a field of the record.
-        let (back, _) = try phone.container.change(from: record, zone: .default)
+        let back = try phone.container.change(from: record, zone: .default)
         #expect(back.fields?["photo"] == .asset(assetID))
         #expect(back.fields?["photo_assetID"] == nil)
         #expect(back.assetFiles[assetID] == file)
 
         // An ID that isn't one SwiftRecords makes is hashed again rather than used as a file name.
         record["photo_assetID"] = "../escape"
-        let (hashed, _) = try phone.container.change(from: record, zone: .default)
+        let hashed = try phone.container.change(from: record, zone: .default)
         guard case .asset(let name)? = hashed.fields?["photo"] else { Issue.record("No asset"); return }
         #expect(name != "../escape" && name.count >= 64)
     }

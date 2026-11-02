@@ -28,8 +28,6 @@ final class TestServer: @unchecked Sendable {
     /// Whether downloads carry only the fields that changed since a record's previous copy, as a document
     /// database might. Uploads always apply only their changed fields, so a wrong key list shows up as lost data.
     var sendsPartialChanges = false
-    /// Whether asset files travel inside their records, as `CKAsset`s do, rather than on their own.
-    var filesTravelWithRecords = false
     /// How many records devices fetched whole.
     private(set) var fetchedRecords = 0
 
@@ -95,10 +93,9 @@ final class TestServer: @unchecked Sendable {
     func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
         withLock {
             guard mayWrite(change.zone, user) else { return .failure(.permissionFailure) }
-            if filesTravelWithRecords {
-                for (id, file) in change.assetFiles {
-                    if let data = try? Data(contentsOf: file) { assets[id] = data }
-                }
+            // Files travel inside their records, as `CKAsset`s do.
+            for (id, file) in change.assetFiles {
+                if let data = try? Data(contentsOf: file) { assets[id] = data }
             }
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
@@ -173,9 +170,8 @@ final class TestServer: @unchecked Sendable {
         }
     }
 
-    /// A change with its asset files written out, as CloudKit hands over `CKAsset`s, when files travel with records.
+    /// A change with its asset files written out, as CloudKit hands over `CKAsset`s.
     private func withFiles(_ change: RecordChangeData) -> RecordChangeData {
-        guard filesTravelWithRecords else { return change }
         var change = change
         for case .asset(let id) in change.fields?.values.map({ $0 }) ?? [] {
             guard let data = assets[id] else { continue }
@@ -259,21 +255,16 @@ final class TestServer: @unchecked Sendable {
 }
 
 /// A transport that talks to a `TestServer`, as one device.
-final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
+final class TestTransport: SyncTransport, @unchecked Sendable {
     let server: TestServer
     private let lock = NSLock()
     private var batches: [[RecordChangeData]] = []
-    private var uploadedAssets: [String] = []
     /// Saves on the server without answering, as if the app quit before hearing back.
     var dropsAcknowledgements = false
     /// Signs this device in as someone other than the server's account, `.some(nil)` for signed out.
     var account: String??
     /// Changes per download page.
     var pageSize = 100
-    /// Fails every asset upload, as if the connection dropped mid-file.
-    var failsAssetUploads = false
-    /// Runs before each asset download.
-    var beforeAssetDownload: (@Sendable () async -> Void)?
     /// Fails every fetch of whole records, as if the connection dropped.
     var failsRecordFetches = false
 
@@ -288,9 +279,6 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
 
     /// Every batch the container asked to upload.
     var sentBatches: [[RecordChangeData]] { lock.withLock { batches } }
-
-    /// Every asset file uploaded, by ID.
-    var sentAssets: [String] { lock.withLock { uploadedAssets } }
 
     private var user: String? {
         lock.withLock { account } ?? server.withLock { server.account }
@@ -383,31 +371,6 @@ final class TestTransport: SyncTransport, AssetTransfer, @unchecked Sendable {
         )
     }
 
-    func uploadAssets(_ assets: [RecordAssetData]) async throws {
-        try check()
-        guard !failsAssetUploads else { throw SyncFailure.networkUnavailable }
-        for asset in assets {
-            server.storeAsset(try Data(contentsOf: asset.file), id: asset.id)
-            lock.withLock { uploadedAssets.append(asset.id) }
-        }
-    }
-
-    func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
-        await beforeAssetDownload?()
-        try check()
-        guard let data = server.asset(id) else { throw SyncFailure.networkUnavailable }
-        let file = directory.appendingPathComponent(id)
-        try data.write(to: file)
-        return file
-    }
-
-    /// Reports half the file before the download proper, so tests see a fraction.
-    func downloadAsset(
-        id: String, zone: Zone, into directory: URL, progress: @escaping @Sendable (Double) -> Void
-    ) async throws -> URL {
-        progress(0.5)
-        return try await downloadAsset(id: id, zone: zone, into: directory)
-    }
 }
 
 extension TestTransport: ZoneSharing {
@@ -465,7 +428,6 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     var server: TestServer { transport.server }
     var sentBatches: [[RecordChangeData]] { transport.sentBatches }
-    var sentAssets: [String] { transport.sentAssets }
 
     var dropsAcknowledgements: Bool {
         get { transport.dropsAcknowledgements }
@@ -486,21 +448,11 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
         get { transport.failsRecordFetches }
         set { transport.failsRecordFetches = newValue }
     }
-    var failsAssetUploads: Bool {
-        get { transport.failsAssetUploads }
-        set { transport.failsAssetUploads = newValue }
-    }
-
-    var beforeAssetDownload: (@Sendable () async -> Void)? {
-        get { transport.beforeAssetDownload }
-        set { transport.beforeAssetDownload = newValue }
-    }
 
     // MARK: SyncProvider
 
     var identifier: String { engine.identifier }
     var scopes: Set<Zone.Scope> { engine.scopes }
-    var assetTransfer: (any AssetTransfer)? { server.filesTravelWithRecords ? nil : engine.assetTransfer }
     var sharing: (any ZoneSharing)? { engine.sharing }
 
     func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {

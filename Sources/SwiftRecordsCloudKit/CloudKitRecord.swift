@@ -34,17 +34,16 @@ extension RecordContainer {
         return record
     }
 
-    /// The change a `CKRecord` from the server stands for, and the asset files it brought. Hand the files
-    /// back from `downloadAsset(id:zone:into:)` when the container asks for them by ID.
+    /// The change a `CKRecord` from the server stands for, with the asset files it brought in `assetFiles`.
     ///
     /// The record's archived system fields become the change's `tag`, so the next upload builds on exactly
     /// the server's copy, and its `modificationDate` is the `synced` date.
-    public func change(from record: CKRecord, zone: Zone) throws -> (change: RecordChangeData, assets: [RecordAssetData]) {
+    public func change(from record: CKRecord, zone: Zone) throws -> RecordChangeData {
         guard let id = UUID(uuidString: record.recordID.recordName) else {
             throw RecordsError.incompatibleRecord(type: record.recordType, id: UUID())
         }
         var fields: [String: RecordValue] = [:]
-        var assets: [RecordAssetData] = []
+        var assetFiles: [String: URL] = [:]
         // `@Encrypted` properties arrive in `encryptedValues`, under the same names.
         let plain = record.allKeys().compactMap { key in record[key].map { (key, $0) } }
         let encrypted = record.encryptedValues.allKeys().compactMap { key in record.encryptedValues[key].map { (key, $0) } }
@@ -69,7 +68,7 @@ extension RecordContainer {
                     name += "." + Asset.defaultExtension
                 }
                 fields[key] = .asset(name)
-                assets.append(RecordAssetData(id: name, zone: zone, file: file))
+                assetFiles[name] = assetFiles[name] ?? file
             } else if let number = value as? NSNumber {
                 fields[key] = CFNumberIsFloatType(number as CFNumber) ? .double(number.doubleValue) : .int(number.int64Value)
             } else if let string = value as? String {
@@ -87,11 +86,10 @@ extension RecordContainer {
                     ? .doubles(numbers.map(\.doubleValue)) : .ints(numbers.map(\.int64Value))
             }
         }
-        let change = RecordChangeData(
+        return RecordChangeData(
             id: id, zone: zone, type: record.recordType, fields: fields, tag: Self.systemFields(of: record), synced: record.modificationDate,
-            assetFiles: Dictionary(assets.map { ($0.id, $0.file) }, uniquingKeysWith: { first, _ in first })
+            assetFiles: assetFiles
         )
-        return (change, assets)
     }
 
     /// Whether a name is one SwiftRecords gives an asset: a SHA-256 in hex, and maybe an extension. Anything

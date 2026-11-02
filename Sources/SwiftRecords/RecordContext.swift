@@ -64,11 +64,6 @@ public final class RecordContext {
     /// container moves between `saving`, `saved` and `failed`.
     public private(set) var status: Status = .saved
 
-    /// How far asset files have got moving to and from the server, from 0 to 1 by file count across the
-    /// zones this context uses, or `nil` when none are moving. Records sync first and their files follow,
-    /// so a received record's asset reads `nil` until its file lands.
-    public private(set) var assetProgress: Double?
-
     /// The records in the context's zone whose saved changes the sync server hasn't confirmed. It
     /// is empty without a sync provider, and unsaved edits aren't in it until they save. Its `count` grows
     /// while the device is offline or signed out.
@@ -198,10 +193,6 @@ public final class RecordContext {
     /// The zones this context has used, and its commit observer on each.
     @ObservationIgnored private nonisolated(unsafe) var observed: [Zone: (storage: ZoneStorage, token: UUID)] = [:]
     @ObservationIgnored private var changeHandlers: [ObjectIdentifier: ChangeHandler] = [:]
-    /// Moves whenever an asset download does, which tells views reading `downloadProgress` to read again.
-    private var assetRevision = 0
-    /// Calls to `assetURL(_:of:)` waiting for a change, which may be their file landing.
-    @ObservationIgnored private var assetWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
     /// Runs every commit and async read in order, off the main actor, so a save never overtakes an earlier one.
     @ObservationIgnored private let writer = DispatchQueue(label: "SwiftRecords.RecordContext")
     /// Async saves committing now. Their commits are accounted for when they finish.
@@ -273,21 +264,10 @@ public final class RecordContext {
         updateStatus()
     }
 
-    func assetTransferChanged() {
-        let transfers = observed.values.compactMap(\.storage.assetTransfer)
-        let total = transfers.reduce(0) { $0 + $1.total }
-        let new = total == 0 ? nil : Double(transfers.reduce(0) { $0 + $1.done }) / Double(total)
-        if new != assetProgress {
-            assetProgress = new
-        }
-        assetRevision += 1
-    }
-
     /// Refreshes views once a downloaded asset file is in place, so its record's asset reads the file.
     func assetDidLand(in zone: Zone) {
         guard observed[zone] != nil else { return }
         lastSaveSource = nil
-        assetRevision += 1
         didChange()
     }
 
@@ -369,74 +349,6 @@ public final class RecordContext {
         changeCount += 1
         updateUnsyncedChanges()
         notifyHandlers()
-        let waiters = assetWaiters
-        assetWaiters = [:]
-        for waiter in waiters.values {
-            waiter.resume()
-        }
-    }
-
-    // MARK: Asset downloads
-
-    /// How much of a record's asset files are on this device, from 0 to 1, or `nil` once all of them are.
-    /// With CloudKit a record's files arrive inside it, so this is `nil` there. With a transport that moves
-    /// files on their own, a received record's files follow it, one at a time. `@Recordable` shows it as
-    /// `$recipe.downloadProgress`.
-    func downloadProgress<R: Record>(of record: R, in zone: Zone) -> Double? {
-        _ = assetRevision
-        guard let storage = observed[zone]?.storage, storage.sync != nil else { return nil }
-        let assets = Self.assets(of: record)
-        let missing = Set(assets.compactMap(\.missingName))
-        guard !missing.isEmpty else { return nil }
-        var done = Double(assets.count - missing.count)
-        if let transfer = storage.assetTransfer, let id = transfer.downloading, missing.contains(id) {
-            done += transfer.fraction ?? 0
-        }
-        return done / Double(assets.count)
-    }
-
-    /// The record's assets that hold a file.
-    private static func assets<R: Record>(of record: R) -> [Asset] {
-        Mirror(reflecting: record).children.compactMap { $0.value as? Asset }.filter { $0.storage != nil }
-    }
-
-    /// The asset's file once it's on this device, waiting while it downloads: `try await
-    /// context.assetURL(\.$photo, of: recipe)`. Views don't need it, because they show a file as soon as it
-    /// lands. Use it where code needs the bytes, such as to share or export them.
-    ///
-    /// It returns `nil` for an empty asset, without a sync provider, and once the record is deleted. A file
-    /// the server doesn't have yet keeps it waiting, so cancel the task to give up.
-    public func assetURL<R: Record>(_ asset: KeyPath<R, URL?>, of record: R, in zone: Zone? = nil) async throws -> URL? {
-        let zone = zone ?? self.zone
-        var record = record
-        while true {
-            if let url = record[keyPath: asset] { return url }
-            // An empty asset has nothing to wait for, and without sync a missing file never comes.
-            guard Self.assets(of: record).contains(where: { $0.missingName != nil }),
-                  try storage(for: zone).sync != nil else { return nil }
-            try await waitForChange()
-            guard case .saved(let latest)? = try current(R.self, id: record.id, in: zone), let latest = latest as? R else {
-                return nil
-            }
-            record = latest
-        }
-    }
-
-    private func waitForChange() async throws {
-        let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                if Task.isCancelled {
-                    continuation.resume(throwing: CancellationError())
-                } else {
-                    assetWaiters[id] = continuation
-                }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.assetWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
-            }
-        }
     }
 
     private func notifyHandlers() {

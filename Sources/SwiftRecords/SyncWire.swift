@@ -75,42 +75,8 @@ extension RecordStore {
 // MARK: - Assets
 
 extension RecordStore {
-    /// The zone's asset files that are here but not yet on the server, oldest name first.
-    func unsentAssets(zone: Zone) throws -> [RecordAssetData] {
-        try locked {
-            let rows = try db.run("SELECT name FROM \"_records_assets\" WHERE uploaded = 0 ORDER BY name")
-            return rows.compactMap { row in
-                guard case .text(let name)? = row["name"] else { return nil }
-                let file = assetURL(named: name)
-                guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-                return RecordAssetData(id: name, zone: zone, file: file)
-            }
-        }
-    }
-
-    /// Records that the server has these asset files.
-    func markAssetsUploaded(_ ids: [String]) throws {
-        try transaction {
-            for id in ids {
-                try db.run("UPDATE \"_records_assets\" SET uploaded = 1 WHERE name = ?", [.text(id)])
-            }
-        }
-    }
-
-    /// The asset files that records here use but that haven't arrived yet.
-    func missingAssets() throws -> [String] {
-        try locked {
-            try db.run("SELECT name FROM \"_records_assets\" ORDER BY name").compactMap { row in
-                guard case .text(let name)? = row["name"],
-                      !FileManager.default.fileExists(atPath: assetURL(named: name).path) else { return nil }
-                return name
-            }
-        }
-    }
-
     /// Moves a downloaded asset file into the assets folder under its ID, where the record that uses it
-    /// already points. The server already has it, so it isn't uploaded again. Returns false when no record
-    /// uses it any more, and the file is dropped.
+    /// already points. Returns false when no record uses it any more, and the file is dropped.
     @discardableResult
     func placeDownloadedAsset(at file: URL, id: String) throws -> Bool {
         try locked {
@@ -124,7 +90,6 @@ extension RecordStore {
             let destination = assetURL(named: id)
             try? manager.removeItem(at: destination)
             try manager.moveItem(at: file, to: destination)
-            try markAssetsUploaded([id])
             return true
         }
     }
