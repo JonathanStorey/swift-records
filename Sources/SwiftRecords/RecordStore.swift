@@ -63,6 +63,13 @@ final class RecordStore: @unchecked Sendable {
     lazy var releasedAssetsDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-records-undo-\(UUID().uuidString)", isDirectory: true)
 
+    /// Files that came with the server changes being applied, by asset name, for merging an asset's bytes
+    /// before the files are placed.
+    var incomingAssetFiles: [String: URL] = [:]
+    /// Where an asset merge writes its result until the record's save copies it in.
+    lazy var mergedAssetsDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swift-records-merged-\(UUID().uuidString)", isDirectory: true)
+
     var structureVersion: Int { locked { structuralChanges } }
 
     /// The first record of each type that no longer decodes, such as after a property changed type. Fetches
@@ -154,6 +161,7 @@ final class RecordStore: @unchecked Sendable {
             try? FileManager.default.removeItem(at: assetsDirectory)
         }
         try? FileManager.default.removeItem(at: releasedAssetsDirectory)
+        try? FileManager.default.removeItem(at: mergedAssetsDirectory)
     }
 
     // MARK: Transactions
@@ -180,6 +188,7 @@ final class RecordStore: @unchecked Sendable {
                 let rows = touched.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
+                    pruneAssetBases()
                     if changedData {
                         changedData = false
                         commits += 1
@@ -463,6 +472,7 @@ final class RecordStore: @unchecked Sendable {
     }
 
     private func removeReleasedFiles(_ names: [String]) {
+        retainAssetBases(Set(names))
         for name in Set(names) {
             // A released name can be stored again later in the same transaction.
             let held = (try? db.run("SELECT 1 FROM \"_records_assets\" WHERE name = ?", [.text(name)]).isEmpty == false) ?? true

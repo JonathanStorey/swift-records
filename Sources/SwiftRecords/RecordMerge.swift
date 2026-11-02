@@ -7,8 +7,17 @@ extension RecordStore {
     /// Fields both sides changed merge as the record's own type: node by node, with `@Merged` strategies
     /// and a `Mergeable` type's own merge, and a value both sides changed differently goes to the later
     /// edit, `local` when `localIsLater`. Timestamps, pointers, assets and fields this version of the app
-    /// doesn't know merge field by field, as does a record whose fields don't decode.
+    /// doesn't know merge field by field, as does a record whose fields don't decode. An asset both sides
+    /// replaced with a merge strategy merges its files' bytes, as `mergeAssets` does.
     func mergeFields<R: Record>(
+        _ type: R.Type, local: SyncFields, server: SyncFields, base: SyncFields?, localIsLater: Bool
+    ) -> SyncFields {
+        var result = mergePlainFields(type, local: local, server: server, base: base, localIsLater: localIsLater)
+        mergeAssets(type, into: &result, local: local, server: server, base: base)
+        return result
+    }
+
+    private func mergePlainFields<R: Record>(
         _ type: R.Type, local: SyncFields, server: SyncFields, base: SyncFields?, localIsLater: Bool
     ) -> SyncFields {
         let byField = SyncMerge.merge(local: local, server: server, base: base, localIsLater: localIsLater)

@@ -100,7 +100,8 @@ final class TestServer: @unchecked Sendable {
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
             if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
-                return .failure(.serverRecordChanged(Self.seen(current, in: change.zone)))
+                // The server copy comes with its files, as a `CKRecord` does.
+                return .failure(.serverRecordChanged(withFiles(Self.seen(current, in: change.zone))))
             }
             sequence += 1
             var stored = change

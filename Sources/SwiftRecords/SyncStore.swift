@@ -584,6 +584,9 @@ extension RecordStore {
     /// only to the exact copy it builds on.
     func applyReceived(_ changes: [RecordChangeData]) throws -> Received {
         var received = Received()
+        // A merge reads the bytes of assets that haven't been placed yet.
+        incomingAssetFiles = changes.reduce(into: [:]) { $0.merge($1.assetFiles) { $1 } }
+        defer { incomingAssetFiles = [:] }
         // The page's bookkeeping, read in one query per type. A deletion can cascade to other records'
         // rows, so after one the rest of the page reads its own.
         var rows: [RowKey: [String: SQLiteValue]]? = try bookkeepingRows(for: changes)
@@ -707,6 +710,7 @@ extension RecordStore {
             )
             // The server's copy is the ancestor of whatever is sent next.
             try updateSyncRow(table, id: id, ["known": .integer(1), "snapshot": .blob(try server.encoded())])
+            retainAssetBases(of: type, server: server, merged: merged)
             try applySyncFields(table: table, id: record.id, fields: merged)
             try storeTag(of: record, id: id)
             if merged == server {

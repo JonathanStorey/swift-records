@@ -37,11 +37,13 @@ struct Device {
     let container: RecordContainer
     var context: RecordContext { container.mainContext }
 
-    init(_ server: TestServer, directory: URL? = nil, account: String?? = nil) throws {
+    init(
+        _ server: TestServer, directory: URL? = nil, account: String?? = nil, types: [any Record.Type] = [SyncRecipe.self]
+    ) throws {
         let provider = TestProvider(server: server, account: account)
         self.provider = provider
         container = try RecordContainer(
-            for: [SyncRecipe.self], directory: directory, inMemory: directory == nil, syncProvider: provider
+            for: types, directory: directory, inMemory: directory == nil, syncProvider: provider
         )
     }
 
