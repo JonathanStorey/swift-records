@@ -157,7 +157,7 @@ public struct Recordable<R: Record>: DynamicProperty {
     /// the fields in conflict. The edit stays unsaved until the context saves.
     public func resolveConflict(favoring side: MergeSide) {
         guard let context else { return }
-        cache.tracker.resolveConflict(favoring: side, context: context, zone: zone.zone(in: context))
+        cache.tracker.resolve(favoring: side, context: context, zone: zone.zone(in: context))
         withAnimation(animation) { cache.version += 1 }
     }
 
