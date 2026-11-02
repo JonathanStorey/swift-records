@@ -95,7 +95,7 @@ struct DraftStep {
 
     @Test func backgroundContextsCompareWithTheStore() async throws {
         let draft = Draft(title: "Soup")
-        try await container.performBackgroundTask { context in
+        try await container.mainContext.performInBackground { context in
             #expect(try context.hasChanges(draft))
             try context.insert(draft)
             #expect(try !context.hasChanges(draft))

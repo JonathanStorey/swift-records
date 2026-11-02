@@ -161,11 +161,11 @@ struct Album {
 
         let photo = Photo(image: Data("x".utf8))
         do {
-            let container = try RecordContainer(directory: directory)
+            let container = try RecordContainer(location: .directory(directory))
             #expect(container.assetsDirectory.lastPathComponent == "_default.assets")
             try container.save(photo)
         }
-        let reopened = try RecordContainer(directory: directory)
+        let reopened = try RecordContainer(location: .directory(directory))
         #expect(try reopened.fetch(Photo.self, id: photo.id)?.image == Data("x".utf8))
     }
 

@@ -90,7 +90,7 @@ import Testing
 
     @Test func backgroundWritesRefreshToo() async throws {
         let before = context.changeCount
-        let count = try await context.container.performBackgroundTask { background in
+        let count = try await context.container.mainContext.performInBackground { background in
             try background.transaction {
                 try background.insert(Person(name: "Imported"))
                 try background.insert(Person(name: "Also imported"))

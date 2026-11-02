@@ -65,10 +65,10 @@ struct Place {
     @Test func sharedReturnsTheLatestContainerForAFolder() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shared-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let mine = try RecordContainer(directory: directory)
+        let mine = try RecordContainer(location: .directory(directory))
         #expect(try RecordContainer.shared(in: directory) === mine)
 
-        let newer = try RecordContainer(directory: directory)
+        let newer = try RecordContainer(location: .directory(directory))
         #expect(try RecordContainer.shared(in: directory) === newer)
     }
 

@@ -154,7 +154,7 @@ struct Device {
 
     @Test func anUploadOfAnySizeFinishesInOnePass() async throws {
         let phone = try Device(server)
-        try await phone.container.performBackgroundTask { context in
+        try await phone.container.mainContext.performInBackground { context in
             try context.insert((0..<4_100).map { SyncCook(name: "Cook \($0)") })
         }
         try await phone.context.save()
@@ -602,26 +602,26 @@ struct Device {
 
     // MARK: Status
 
-    @Test func unsyncedChangesCountWhatTheServerLacks() async throws {
+    @Test func unsyncedHoldsWhatTheServerLacks() async throws {
         let phone = try Device(server)
         server.isOnline = false
         phone.context.insert(SyncRecipe(title: "Soup"))
         phone.context.insert(SyncRecipe(title: "Stew"))
         try await phone.context.save()
         await phone.settle()
-        #expect(phone.context.unsyncedChanges == 2)
+        #expect(phone.context.unsynced.count == 2)
         #expect(phone.context.unsavedChanges == 0)
 
         server.isOnline = true
         try await phone.context.refresh()
         await phone.settle()
-        #expect(phone.context.unsyncedChanges == 0)
+        #expect(phone.context.unsynced.isEmpty)
 
         // Without a sync provider nothing is waiting to be sent.
         let local = try RecordContainer(for: [SyncRecipe.self], inMemory: true)
         local.mainContext.insert(SyncRecipe(title: "Toast"))
         try await local.mainContext.save()
-        #expect(local.mainContext.unsyncedChanges == 0)
+        #expect(local.mainContext.unsynced.isEmpty)
     }
 
     @Test func unsyncedNamesTheRecordsTheServerLacks() async throws {
@@ -765,7 +765,7 @@ struct Device {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         do {
-            let local = try RecordContainer(directory: directory)
+            let local = try RecordContainer(location: .directory(directory))
             try local.save(SyncRecipe(title: "Before sync"))
         }
         let phone = try Device(server, directory: directory)
@@ -788,7 +788,7 @@ struct Device {
         try await moved.context.refresh()
         #expect(bigger.count == 1)
         #expect(try await moved.recipes().map(\.title) == ["Soup"])
-        #expect(moved.context.unsyncedChanges == 0)
+        #expect(moved.context.unsynced.isEmpty)
     }
 
     @Test func changesSentBeforeACrashAreSentAgain() async throws {
@@ -935,7 +935,7 @@ private actor Seen {
 @Suite struct ResumeTests {
     let server = TestServer()
 
-    @Test func resumingSyncsOnlyAfterABreakAndNeverSaves() async throws {
+    @Test func resumingSyncsOnlyAfterLeavingAndNeverSaves() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         try await tablet.context.refresh()
@@ -943,13 +943,13 @@ private actor Seen {
         try await phone.context.save()
         tablet.context.insert(SyncRecipe(title: "Draft"))
 
-        let left = Date()
-        tablet.context.leftAt = left
-        tablet.context.resume(now: left.addingTimeInterval(60))
+        // Becoming active without having left, such as on launch, only reads the file.
+        tablet.context.resume()
         await tablet.settle()
         #expect(try await tablet.recipes().map(\.title) == ["Draft"])
 
-        tablet.context.resume(now: left.addingTimeInterval(300))
+        tablet.context.hasLeft = true
+        tablet.context.resume()
         for _ in 0..<200 where try await tablet.recipes().count < 2 {
             try await Task.sleep(for: .milliseconds(10))
         }

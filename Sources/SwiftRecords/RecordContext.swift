@@ -43,10 +43,6 @@ public final class RecordContext {
     /// of each change through `onChange(for:_:)`.
     @ObservationIgnored private(set) var changeCount = 0
 
-    /// The error from the most recent save the context made on its own, when the app stopped being active,
-    /// if it failed. Its changes stay pending for the next `save()`.
-    public private(set) var lastSaveError: Error?
-
     /// Where this context's changes stand, locally and, with a sync provider, on the server.
     public enum Status: Sendable, Hashable {
         /// Everything is saved, and with a provider, sent.
@@ -73,13 +69,9 @@ public final class RecordContext {
     /// so a received record's asset reads `nil` until its file lands.
     public private(set) var assetProgress: Double?
 
-    /// How many saved records have changes the sync server hasn't confirmed, across the zones this
-    /// context uses. It stays at 0 without a sync provider, and grows while the device is offline or
-    /// signed out.
-    public private(set) var unsyncedChanges = 0
-
     /// The records in the context's zone whose saved changes the sync server hasn't confirmed. It
-    /// is empty without a sync provider, and unsaved edits aren't in it until they save.
+    /// is empty without a sync provider, and unsaved edits aren't in it until they save. Its `count` grows
+    /// while the device is offline or signed out.
     ///
     /// ```swift
     /// if context.unsynced.contains(note.id) { Image(systemName: "icloud.slash") }
@@ -148,12 +140,8 @@ public final class RecordContext {
         let journals: [(zone: Zone, journal: RecordStore.Journal)]
     }
 
-    /// How long the app must be away before becoming active again syncs, five minutes by default. A
-    /// shorter absence only picks up changes other processes wrote. Pushes from the server sync
-    /// whenever they arrive.
-    @ObservationIgnored public var resumeSyncInterval: TimeInterval = 300
-    /// When the app last stopped being active.
-    @ObservationIgnored var leftAt: Date?
+    /// Whether the app stopped being active since it last synced on becoming active.
+    @ObservationIgnored var hasLeft = false
 
     /// Hears what undoes each save, which turns on journaling. `undoManager` sets it.
     @ObservationIgnored var registerUndo: ((SaveStep) -> Void)?
@@ -276,10 +264,6 @@ public final class RecordContext {
                 unsyncedIDs[zone] = nil
             }
             unsyncedSummaries = summaries
-        }
-        let count = summaries.values.reduce(0) { $0 + $1.count }
-        if count != unsyncedChanges {
-            unsyncedChanges = count
         }
     }
 
@@ -612,12 +596,31 @@ public final class RecordContext {
     }
 
     /// Picks up changes another process, such as a widget or app extension, wrote to the zone's file, and
-    /// refreshes views if there are any. The context also checks when the app becomes active, and every
-    /// save and fetch reads the latest data whether or not you call this.
-    public func refresh() {
+    /// refreshes views if there are any. The context checks when the app becomes active, and every save and
+    /// fetch reads the latest data anyway.
+    func reloadExternalChanges() {
         for (storage, _) in observed.values {
             storage.checkForExternalChanges()
         }
+    }
+
+    /// Runs `body` off the main actor with a context of its own in this context's zone, or in `zone`, for
+    /// work such as an import. Each insert or delete commits right away unless it is inside the background
+    /// context's `transaction(_:)`, and this context's views refresh after each commit. Unsaved changes
+    /// here aren't visible to it.
+    ///
+    /// ```swift
+    /// try await context.performInBackground { background in
+    ///     try background.insert(parsed)
+    /// }
+    /// ```
+    ///
+    /// Each zone serializes access to its file, so this context waits while a transaction runs. Keep
+    /// transactions to a few hundred records, and split a large import into several.
+    public func performInBackground<T: Sendable>(
+        in zone: Zone? = nil, _ body: @escaping @Sendable (BackgroundContext) throws -> T
+    ) async throws -> T {
+        try await container.performBackgroundTask(in: zone ?? self.zone, body)
     }
 
     /// Saves, picks up changes other processes wrote, and with a sync provider, sends what is pending and
@@ -641,12 +644,12 @@ public final class RecordContext {
         }
     }
 
-    /// Picks up other processes' changes as the app becomes active, and after a long enough absence syncs
-    /// with the server. It never saves: leaving already did.
-    func resume(now: Date = Date()) {
-        refresh()
-        guard let leftAt, now.timeIntervalSince(leftAt) >= resumeSyncInterval else { return }
-        self.leftAt = nil
+    /// Picks up other processes' changes as the app becomes active, and syncs with the server, since pushes
+    /// can be missed while the app is away. It never saves: leaving already did.
+    func resume() {
+        reloadExternalChanges()
+        guard hasLeft else { return }
+        hasLeft = false
         let storages = observed.values.map(\.storage).filter { $0.sync != nil }
         guard !storages.isEmpty else { return }
         Task {
@@ -1098,23 +1101,18 @@ public final class RecordContext {
         if autosave != nil {
             saveBeforeLeaving()
         }
-        leftAt = Date()
+        hasLeft = true
     }
 
     /// Saves everything pending when the app stops being active, such as when the user switches apps, so
     /// nothing entered is lost. It can't wait for an async save. A failure keeps the changes pending for
-    /// the next `save()` and sets `lastSaveError`.
+    /// the next `save()` and shows in `status` as `.failed`.
     func saveBeforeLeaving() {
         guard let batch = takePending() else { return }
         let container = container
         let journaling = registerUndo != nil
         let result = writer.sync { Result { try Self.commit(batch.changes, in: container, journaling: journaling) } }
-        do {
-            try finish(batch, result, keepingFailures: { _ in true })
-            lastSaveError = nil
-        } catch {
-            lastSaveError = error
-        }
+        try? finish(batch, result, keepingFailures: { _ in true })
     }
 }
 

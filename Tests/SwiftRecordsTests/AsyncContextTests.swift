@@ -59,14 +59,14 @@ import Testing
 
     @Test func refreshPicksUpAnotherProcessesWrites() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         let context = container.mainContext
         let person = Person(name: "Ana")
         context.insert(person)
         try await context.save()
 
         // A second connection stands in for an app extension.
-        let other = try SQLiteDatabase(url: try #require(container.url))
+        let other = try SQLiteDatabase(url: try #require(container.url(for: .default)))
         _ = try other.run("UPDATE \"Person\" SET name = 'Bea'")
         try other.execute("CREATE TABLE \"Extra\" (\"id\" PRIMARY KEY)")
 

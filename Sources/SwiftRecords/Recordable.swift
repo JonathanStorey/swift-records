@@ -152,8 +152,8 @@ public struct Recordable<R: Record>: DynamicProperty {
     /// ```swift
     /// if let other = $note.conflict {
     ///     Text("Changed on another device: \(other.title)")
-    ///     Button("Use theirs") { $note.resolve(favoring: .theirs) }
-    ///     Button("Keep mine") { $note.resolve(favoring: .ours) }
+    ///     Button("Use theirs") { $note.resolveConflict(favoring: .theirs) }
+    ///     Button("Keep mine") { $note.resolveConflict(favoring: .ours) }
     /// }
     /// ```
     public var conflict: R? {
@@ -172,9 +172,9 @@ public struct Recordable<R: Record>: DynamicProperty {
 
     /// Settles the conflict: `.ours` keeps the edit's values, and `.theirs` takes the other version's at
     /// the fields in conflict. The edit stays unsaved until the context saves.
-    public func resolve(favoring side: MergeSide) {
+    public func resolveConflict(favoring side: MergeSide) {
         guard let context else { return }
-        cache.tracker.resolve(favoring: side, context: context, zone: zone.zone(in: context))
+        cache.tracker.resolveConflict(favoring: side, context: context, zone: zone.zone(in: context))
         withAnimation(animation) { cache.version += 1 }
     }
 

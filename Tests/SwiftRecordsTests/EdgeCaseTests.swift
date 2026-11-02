@@ -177,7 +177,7 @@ struct DishV3 {
     @Test func throwingTransactionLeavesNothing() async throws {
         struct Failure: Error {}
         await #expect(throws: Failure.self) {
-            try await container.performBackgroundTask { context in
+            try await container.mainContext.performInBackground { context in
                 try context.transaction {
                     try context.insert((0..<20).map { Person(name: "P\($0)") })
                     throw Failure()
@@ -233,7 +233,7 @@ struct DishV3 {
     @Test func backgroundDeletes() async throws {
         let container = context.container
         try container.save((0..<4).map { Person(name: "P\($0)") })
-        try await container.performBackgroundTask { background in
+        try await container.mainContext.performInBackground { background in
             let first = try #require(try background.fetch(Person.self).first)
             try background.delete(first)
             try background.delete(record: Person.self, where: #Predicate { $0.name == "P3" })
@@ -247,7 +247,7 @@ struct DishV3 {
         context.insert(ToDo(title: "Pending"))
         let token = try container.changeToken
 
-        try container.deleteAllData()
+        try container.deleteAllData(in: .default)
         #expect(!context.hasChanges)
         #expect(try context.fetch(ToDo.self).isEmpty)
         #expect(try context.fetch(Person.self).isEmpty)
@@ -263,7 +263,7 @@ struct DishV3 {
     @Test func concurrentBackgroundImportAndMainSaves() async throws {
         let container = context.container
         let importing = Task {
-            try await container.performBackgroundTask { background in
+            try await container.mainContext.performInBackground { background in
                 for batch in 0..<10 {
                     try background.transaction {
                         try background.insert((0..<50).map { Person(name: "Import \(batch)-\($0)") })
@@ -287,8 +287,8 @@ struct DishV3 {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
     @Test func containersOnOneFileShareAStore() async throws {
-        let first = try RecordContainer(directory: directory)
-        let second = try RecordContainer(directory: directory)
+        let first = try RecordContainer(location: .directory(directory))
+        let second = try RecordContainer(location: .directory(directory))
         defer { try? FileManager.default.removeItem(at: directory) }
         #expect(first.initialStorage.store === second.initialStorage.store)
 

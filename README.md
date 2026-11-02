@@ -666,8 +666,8 @@ conflict once the edit comes to agree with the stored value. An editor can offer
 ```swift
 if let other = $contact.conflict {
     Text("Changed on another device: \(other.name)")
-    Button("Use theirs") { $contact.resolve(favoring: .theirs) }
-    Button("Keep mine") { $contact.resolve(favoring: .ours) }
+    Button("Use theirs") { $contact.resolveConflict(favoring: .theirs) }
+    Button("Keep mine") { $contact.resolveConflict(favoring: .ours) }
 }
 TextField("Name", text: $contact.name)
     .foregroundStyle($contact.conflict(at: \.name) ? .orange : .primary)

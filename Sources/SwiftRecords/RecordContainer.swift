@@ -18,17 +18,30 @@ import Foundation
 /// Records and their relationships live in one zone. A save commits each zone it touches in a transaction
 /// of its own.
 public final class RecordContainer: @unchecked Sendable {
+    /// Where a container keeps its zone files.
+    public enum Location: Sendable, Hashable {
+        /// `Application Support/Records`, inside a folder named for the app on macOS. The default.
+        case applicationSupport
+        #if canImport(Darwin)
+        /// `Library/Application Support/Records` in an App Group's container, to share zones with an app
+        /// extension such as a widget. Opening throws when the app lacks the App Group entitlement.
+        case appGroup(String)
+        #endif
+        /// A folder of your choosing, such as a temporary one for previews and tests.
+        case directory(URL)
+        /// Every zone lives only as long as the container and never touches disk, for tests and previews.
+        case inMemory
+    }
+
     /// The folder holding the zone files, or `nil` for an in-memory container.
-    public let directory: URL?
+    let directory: URL?
 
     /// The zone the main context starts in, opened with the container.
-    public let initialZone: Zone
+    let initialZone: Zone
 
     private let types: [any Record.Type]
     /// The container's side of sync, the delegate of the provider's engine. `nil` without a provider.
     let syncHub: SyncHub?
-    /// Whether a zone syncs, asked once as it opens.
-    private let syncs: @Sendable (Zone) -> Bool
     /// The initial zone, opened with the container so `mainContext` can't fail.
     let initialStorage: ZoneStorage
     private var storages: [Zone: ZoneStorage]
@@ -36,8 +49,8 @@ public final class RecordContainer: @unchecked Sendable {
     private nonisolated(unsafe) var mainContextStorage: RecordContext?
     private let lock = NSLock()
 
-    /// Opens a folder of zones, `Application Support/Records` unless you pass `directory`, such as an App Group
-    /// folder from `RecordContainer.directory(appGroup:)`. Previews and tests can pass a temporary folder.
+    /// Opens a folder of zones, `Application Support/Records` unless `location` says otherwise, such as
+    /// `.appGroup("group.com.example")` to share them with a widget.
     ///
     /// Registering types creates their tables and applies renames and indexes in each zone as it opens,
     /// rather than the first time code uses each type. Types reached through relationships are registered
@@ -46,21 +59,20 @@ public final class RecordContainer: @unchecked Sendable {
     ///
     /// `syncProvider` is the sync engine, such as `CloudKitSyncProvider` or a `PollingSyncEngine`, and the
     /// container becomes its delegate. It keeps each zone in step with its zone on the server, except
-    /// `.inMemory` and `.localOnly`, which never sync, and any zone `syncs` turns down, such as drafts. Both
-    /// stay fixed for the container's life.
+    /// `.inMemory`, `.localOnly` and any `Zone.local(_:)`, which never sync. It stays fixed for the
+    /// container's life.
     ///
-    /// `initialZone` is where the main context starts and what methods that take an optional zone use. It
-    /// opens with the container, so an error opening it throws here. Switch zones later with
-    /// `RecordContext.zone`.
+    /// `initialZone` is where the main context starts. It opens with the container, so an error opening it
+    /// throws here. Switch zones later with `RecordContext.zone`.
     public convenience init(
         for types: [any Record.Type] = [],
-        directory: URL? = nil,
+        location: Location = .applicationSupport,
         initialZone: Zone = .default,
-        syncProvider: (any SyncProvider)? = nil,
-        syncs: @escaping @Sendable (Zone) -> Bool = { _ in true }
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
         try self.init(
-            for: types, directory: directory, inMemory: false, initialZone: initialZone, syncProvider: syncProvider, syncs: syncs
+            for: types, directory: try Self.directory(for: location), inMemory: location == .inMemory,
+            initialZone: initialZone, syncProvider: syncProvider
         )
     }
 
@@ -70,8 +82,7 @@ public final class RecordContainer: @unchecked Sendable {
         directory: URL? = nil,
         inMemory: Bool,
         initialZone: Zone = .default,
-        syncProvider: (any SyncProvider)? = nil,
-        syncs: @escaping @Sendable (Zone) -> Bool = { _ in true }
+        syncProvider: (any SyncProvider)? = nil
     ) throws {
         let directory = inMemory ? nil : directory ?? RecordContainer.defaultDirectory
         if let directory {
@@ -80,7 +91,6 @@ public final class RecordContainer: @unchecked Sendable {
         self.directory = directory
         self.initialZone = initialZone
         self.types = types
-        self.syncs = syncs
         // The hub opens zones a server's changes arrive for, through the container once it exists.
         let opener = ZoneOpener()
         let hub = syncProvider.map { provider in
@@ -90,7 +100,7 @@ public final class RecordContainer: @unchecked Sendable {
             )
         }
         syncHub = hub
-        initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: Self.hub(hub, for: initialZone, syncs))
+        initialStorage = try Self.open(initialZone, directory: directory, types: types, hub: Self.hub(hub, for: initialZone))
         storages = [initialZone: initialStorage]
         opener.container = self
         syncProvider?.attach(self)
@@ -101,8 +111,8 @@ public final class RecordContainer: @unchecked Sendable {
 
     /// The hub a zone syncs through: none for a zone that stays on the device, or one in a database the
     /// provider doesn't serve.
-    private static func hub(_ hub: SyncHub?, for zone: Zone, _ syncs: (Zone) -> Bool) -> SyncHub? {
-        guard let hub, zone.canSync, hub.provider.scopes.contains(zone.scope), syncs(zone) else { return nil }
+    private static func hub(_ hub: SyncHub?, for zone: Zone) -> SyncHub? {
+        guard let hub, zone.canSync, hub.provider.scopes.contains(zone.scope) else { return nil }
         return hub
     }
 
@@ -122,7 +132,7 @@ public final class RecordContainer: @unchecked Sendable {
         if let storage = storages[zone] {
             return storage
         }
-        let storage = try Self.open(zone, directory: directory, types: types, hub: Self.hub(syncHub, for: zone, syncs))
+        let storage = try Self.open(zone, directory: directory, types: types, hub: Self.hub(syncHub, for: zone))
         storages[zone] = storage
         return storage
     }
@@ -139,7 +149,7 @@ public final class RecordContainer: @unchecked Sendable {
 
     /// The storage of a zone that syncs, opening it for changes a server sent, or `nil` for one that doesn't.
     func syncedStorage(for zone: Zone) -> ZoneStorage? {
-        guard Self.hub(syncHub, for: zone, syncs) != nil else { return nil }
+        guard Self.hub(syncHub, for: zone) != nil else { return nil }
         return try? storage(for: zone)
     }
 
@@ -148,9 +158,10 @@ public final class RecordContainer: @unchecked Sendable {
         try storage(for: zone).store.assetURL(named: name)
     }
 
-    /// The zone's database file, the initial zone's by default, or `nil` in memory.
+    /// The folder holding the zone files, or with a zone, that zone's database file. `nil` in memory.
     public func url(for zone: Zone? = nil) -> URL? {
-        directory.flatMap { (zone ?? initialZone).url(in: $0) }
+        guard let zone else { return directory }
+        return directory.flatMap { zone.url(in: $0) }
     }
 
     // MARK: Contexts
@@ -167,28 +178,21 @@ public final class RecordContainer: @unchecked Sendable {
         return context
     }
 
-    /// Runs `body` off the main actor with a context of its own in the zone, the initial zone by default, for
-    /// work such as an import.
-    /// Each save or delete commits right away unless it is inside the context's `transaction(_:)`, and the
-    /// zone's main context refreshes after each commit.
-    ///
-    /// Each zone serializes access to its file, so the main context waits while a transaction runs. Keep
-    /// transactions to a few hundred records, and split a large import into several.
-    public func performBackgroundTask<T: Sendable>(
-        in zone: Zone? = nil,
+    /// Runs `body` off the main actor with a background context in the zone. `RecordContext.performInBackground`
+    /// is the public way in.
+    func performBackgroundTask<T: Sendable>(
+        in zone: Zone,
         _ body: @escaping @Sendable (BackgroundContext) throws -> T
     ) async throws -> T {
-        let storage = try storage(for: zone ?? initialZone)
+        let storage = try storage(for: zone)
         return try await Task.detached { try body(BackgroundContext(storage: storage)) }.value
     }
 
-    /// Removes every record and asset file in the zone, the initial zone by default, along with its change log
-    /// and sync state, and
+    /// Removes every record and asset file in the zone, along with its change log and sync state, and
     /// discards its main context's pending changes. Use it for signing out or resetting app data. Nothing
     /// is sent to a sync server: the next sync starts over.
     @MainActor
-    public func deleteAllData(in zone: Zone? = nil) throws {
-        let zone = zone ?? initialZone
+    public func deleteAllData(in zone: Zone) throws {
         mainContextStorage?.rollback(in: zone)
         mainContextStorage?.waitForSaves()
         try storage(for: zone).deleteAllData()
@@ -216,7 +220,7 @@ public final class RecordContainer: @unchecked Sendable {
             return container
         }
         registryLock.unlock()
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(directory: directory, inMemory: false)
         registryLock.lock()
         defer { registryLock.unlock() }
         registry[key]?.retained = container

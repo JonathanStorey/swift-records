@@ -72,7 +72,7 @@ struct Dish {
     @Test func backgroundFetchesSortToo() async throws {
         let dishes = try stock()
         let expected = RecordOrder([SortDescriptor(\Dish.servings)]).sorted(dishes).map(\.id)
-        let ids = try await container.performBackgroundTask { context in
+        let ids = try await container.mainContext.performInBackground { context in
             try context.fetch(RecordDescriptor<Dish>(sortBy: [SortDescriptor(\.servings)])).map(\.id)
         }
         #expect(ids == expected)
