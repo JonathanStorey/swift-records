@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 import Testing
 
 @Suite struct ChangeLogTests {

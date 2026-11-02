@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 
 /// A stand-in sync server that several in-memory containers share, each playing one device. It checks
 /// `synced` dates the way the protocol asks: a save based on an older copy comes back as a conflict.

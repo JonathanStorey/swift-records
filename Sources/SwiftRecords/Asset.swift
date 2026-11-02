@@ -189,6 +189,7 @@ struct AssetMerge: Sendable {
 
 extension KeyedDecodingContainer {
     /// Lets a record decode without its asset key, as a plain optional property would.
+    @_documentation(visibility: internal)
     public func decode(_ type: Asset.Type, forKey key: Key) throws -> Asset {
         try decodeIfPresent(type, forKey: key) ?? Asset()
     }
@@ -196,6 +197,7 @@ extension KeyedDecodingContainer {
 
 extension KeyedEncodingContainer {
     /// Leaves an empty asset's key out, as a plain optional property would.
+    @_documentation(visibility: internal)
     public mutating func encode(_ value: Asset, forKey key: Key) throws {
         try encodeIfPresent(value.storage == nil ? nil : value, forKey: key)
     }

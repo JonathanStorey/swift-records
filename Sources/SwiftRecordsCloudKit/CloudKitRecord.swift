@@ -2,7 +2,7 @@
 import CloudKit
 import CryptoKit
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 
 extension RecordContainer {
     /// The `CKRecord` a save becomes, or `nil` for a deletion, which you delete by `RecordContainer.recordID(for:in:)`.
@@ -19,7 +19,7 @@ extension RecordContainer {
     ///
     /// A change that names its `changedKeys` sets only those fields and clears its `clearedKeys`, so CloudKit
     /// uploads nothing else. The record still carries the change tag, so a stale copy fails as a conflict.
-    public func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
+    package func ckRecord(for change: RecordChangeData, in zoneID: CKRecordZone.ID) throws -> CKRecord? {
         guard let fields = change.fields else { return nil }
         let zone = change.zone
         let record = try change.tag.map {
@@ -38,7 +38,7 @@ extension RecordContainer {
     ///
     /// The record's archived system fields become the change's `tag`, so the next upload builds on exactly
     /// the server's copy, and its `modificationDate` is the `synced` date.
-    public func change(from record: CKRecord, zone: Zone) throws -> RecordChangeData {
+    package func change(from record: CKRecord, zone: Zone) throws -> RecordChangeData {
         guard let id = UUID(uuidString: record.recordID.recordName) else {
             throw RecordsError.incompatibleRecord(type: record.recordType, id: UUID())
         }
@@ -103,18 +103,18 @@ extension RecordContainer {
 
     /// The deletion a record the server reports deleted stands for, such as from
     /// `recordWithIDWasDeletedBlock`. Returns `nil` for a record name that isn't a record's ID.
-    public func deletion(of recordID: CKRecord.ID, type: CKRecord.RecordType, zone: Zone) -> RecordChangeData? {
+    package func deletion(of recordID: CKRecord.ID, type: CKRecord.RecordType, zone: Zone) -> RecordChangeData? {
         guard let id = UUID(uuidString: recordID.recordName) else { return nil }
         return RecordChangeData(id: id, zone: zone, type: type, fields: nil)
     }
 
     /// The record ID a record's `id` has in a CloudKit zone: its `uuidString` as the record name.
-    public static func recordID(for id: UUID, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
+    package static func recordID(for id: UUID, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
         CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
     }
 
     /// A record's system fields, archived as `encodeSystemFields(with:)` writes them.
-    public static func systemFields(of record: CKRecord) -> Data {
+    package static func systemFields(of record: CKRecord) -> Data {
         let coder = NSKeyedArchiver(requiringSecureCoding: true)
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()

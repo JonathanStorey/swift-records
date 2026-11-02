@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -149,7 +149,7 @@ import Testing
         context.insert(other)
         tracker.rollback(context: context, zone: .default)
         #expect(tracker.update(context: context, initial: todo, zone: .default) {}.title == "Saved")
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
         tracker.delete(context: context, zone: .default)
         tracker.rollback(context: context, zone: .default)
         #expect(!tracker.isDeleted)

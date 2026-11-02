@@ -35,7 +35,7 @@ public struct RecordStorage<R: Record>: DynamicProperty {
     public init(wrappedValue: R, _ key: String? = nil, animation: Animation? = .default) {
         defaultValue = wrappedValue
         zone = .settings(key ?? Zone.settingsKey(for: R.table))
-        _records = Records(zone, RecordDescriptor(), animation: animation)
+        _records = Records(RecordDescriptor(), zone: zone, animation: animation)
     }
 
     /// The setting, or the default value until it's stored. Setting it stores it.

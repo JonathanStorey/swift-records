@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -42,7 +42,7 @@ import Testing
         context.insert(ToDo(title: "Main"))
         context.zone = "archive"
         context.insert(ToDo(title: "Old"))
-        #expect(context.unsavedChanges == 2)
+        #expect(context.unsavedChangeCount == 2)
 
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Old"])
         context.zone = .default

@@ -1,7 +1,7 @@
 #if canImport(CloudKit)
 import CloudKit
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 
 /// Syncs with CloudKit through `CKSyncEngine`: the first-class provider.
 ///
@@ -19,7 +19,7 @@ import SwiftRecords
 /// so pushes start fetches. A field-level change sets only its changed keys on the `CKRecord`, built on
 /// the server copy's system fields, so an unchanged asset or long field never uploads again. Asset files
 /// travel inside their records as `CKAsset`s and land as the records do, with no separate transfer.
-public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @unchecked Sendable {
+public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
     public let ckContainer: CKContainer
     public let scopes: Set<Zone.Scope>
     /// What someone who opens a share's link may do without being invited. `.none` admits only the people
@@ -35,6 +35,8 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     private var createdZones: Set<Zone> = []
     /// How many fetches the container started, so the engines' fetch events can say they were manual.
     private var manualFetches = 0
+    /// Takes the engines' delegate calls, which the engines hold weakly.
+    private let engineDelegate = EngineDelegate()
 
     /// - Parameters:
     ///   - container: The CloudKit container, `CKContainer.default()` unless the app uses another.
@@ -50,6 +52,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         scopes = sharedDatabase ? [.private, .shared] : [.private]
         self.linkPermission = linkPermission
         self.automaticallySync = automaticallySync
+        engineDelegate.provider = self
     }
 
     public var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
@@ -63,10 +66,10 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
 
     // MARK: SyncProvider
 
-    public func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
+    @_spi(SyncProvider) public func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
         let serialization = state.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         let database = scope == .shared ? ckContainer.sharedCloudDatabase : ckContainer.privateCloudDatabase
-        var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: serialization, delegate: self)
+        var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: serialization, delegate: engineDelegate)
         configuration.automaticallySync = automaticallySync
         let engine = CKSyncEngine(configuration)
         lock.withLock {
@@ -75,7 +78,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         }
     }
 
-    public func addPending(_ changes: [PendingRecordChange]) {
+    @_spi(SyncProvider) public func addPending(_ changes: [PendingRecordChange]) {
         // A private zone exists on the server only once created, so each one is created before its records.
         let newZones = lock.withLock {
             let zones = Set(changes.map(\.zone)).filter { $0.scope == .private && !createdZones.contains($0) }
@@ -90,26 +93,26 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         }
     }
 
-    public func removePending(_ changes: [PendingRecordChange]) {
+    @_spi(SyncProvider) public func removePending(_ changes: [PendingRecordChange]) {
         for (scope, group) in Dictionary(grouping: changes, by: \.zone.scope) {
             engine(scope)?.state.remove(pendingRecordZoneChanges: group.map(Self.pendingChange))
         }
     }
 
-    public func addPending(_ changes: [PendingZoneChange]) {
+    @_spi(SyncProvider) public func addPending(_ changes: [PendingZoneChange]) {
         // Only the owner creates or deletes a zone, so the shared database takes none.
         let changes = changes.filter { $0.zone.scope == .private }
         guard !changes.isEmpty else { return }
         engine(.private)?.state.add(pendingDatabaseChanges: changes.map(Self.databaseChange))
     }
 
-    public func removePending(_ changes: [PendingZoneChange]) {
+    @_spi(SyncProvider) public func removePending(_ changes: [PendingZoneChange]) {
         let changes = changes.filter { $0.zone.scope == .private }
         guard !changes.isEmpty else { return }
         engine(.private)?.state.remove(pendingDatabaseChanges: changes.map(Self.databaseChange))
     }
 
-    public func sendChanges(_ options: SendOptions) async throws {
+    @_spi(SyncProvider) public func sendChanges(_ options: SendOptions) async throws {
         for (scope, engine) in allEngines {
             guard let ckOptions = Self.sendOptions(options, scope: scope) else { continue }
             do {
@@ -120,7 +123,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         }
     }
 
-    public func fetchChanges(_ options: FetchOptions) async throws {
+    @_spi(SyncProvider) public func fetchChanges(_ options: FetchOptions) async throws {
         lock.withLock { manualFetches += 1 }
         defer { lock.withLock { manualFetches -= 1 } }
         for (scope, engine) in allEngines {
@@ -155,7 +158,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
 
     // MARK: CKSyncEngineDelegate
 
-    public func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+    fileprivate func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
         guard let delegate = lock.withLock({ delegate }) else { return }
         let scope = scope(of: syncEngine)
         for event in events(for: event, scope: scope) {
@@ -163,7 +166,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         }
     }
 
-    public func nextRecordZoneChangeBatch(
+    fileprivate func nextRecordZoneChangeBatch(
         _ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         guard let delegate = lock.withLock({ delegate }), let container = lock.withLock({ self.container }) else { return nil }
@@ -184,7 +187,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: saves, recordIDsToDelete: deletes, atomicByZone: batch.atomicByZone)
     }
 
-    public func nextFetchChangesOptions(
+    fileprivate func nextFetchChangesOptions(
         _ context: CKSyncEngine.FetchChangesContext, syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.FetchChangesOptions {
         guard let delegate = lock.withLock({ delegate }) else { return context.options }
@@ -343,13 +346,13 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     private static let reservedPrefix = "swiftrecords."
 
     /// The CloudKit zone a zone syncs to.
-    public static func zoneID(_ zone: Zone) -> CKRecordZone.ID {
+    package static func zoneID(_ zone: Zone) -> CKRecordZone.ID {
         let name = zone.name.hasPrefix("_") ? reservedPrefix + zone.name : zone.name
         return CKRecordZone.ID(zoneName: name, ownerName: zone.owner ?? CKCurrentUserDefaultName)
     }
 
     /// The zone a CloudKit zone in this database stands for, or `nil` for one SwiftRecords didn't make.
-    public static func zone(for zoneID: CKRecordZone.ID, scope: Zone.Scope) -> Zone? {
+    package static func zone(for zoneID: CKRecordZone.ID, scope: Zone.Scope) -> Zone? {
         var name = zoneID.zoneName
         if name.hasPrefix(reservedPrefix) {
             name.removeFirst(reservedPrefix.count)
@@ -435,7 +438,7 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
     }
 
     /// A CloudKit error as the failure the container acts on.
-    public static func failure(_ error: any Error) -> SyncFailure {
+    package static func failure(_ error: any Error) -> SyncFailure {
         guard let error = error as? CKError else { return .other("\(error)") }
         switch error.code {
         case .serverRecordChanged: return .other("The server's copy changed")
@@ -449,6 +452,27 @@ public final class CloudKitSyncProvider: SyncProvider, CKSyncEngineDelegate, @un
         case .permissionFailure: return .permissionFailure
         default: return .other(error.localizedDescription)
         }
+    }
+}
+
+/// The engines' delegate, kept apart so its methods stay off the provider's public surface.
+private final class EngineDelegate: CKSyncEngineDelegate, @unchecked Sendable {
+    weak var provider: CloudKitSyncProvider?
+
+    func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        await provider?.handleEvent(event, syncEngine: syncEngine)
+    }
+
+    func nextRecordZoneChangeBatch(
+        _ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine
+    ) async -> CKSyncEngine.RecordZoneChangeBatch? {
+        await provider?.nextRecordZoneChangeBatch(context, syncEngine: syncEngine)
+    }
+
+    func nextFetchChangesOptions(
+        _ context: CKSyncEngine.FetchChangesContext, syncEngine: CKSyncEngine
+    ) async -> CKSyncEngine.FetchChangesOptions {
+        await provider?.nextFetchChangesOptions(context, syncEngine: syncEngine) ?? context.options
     }
 }
 

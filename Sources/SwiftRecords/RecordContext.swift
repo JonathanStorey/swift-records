@@ -361,7 +361,7 @@ public final class RecordContext {
     public var hasChanges: Bool { !pending.isEmpty }
 
     /// The number of changes waiting for `save()`. Repeated edits to one record count once.
-    public var unsavedChanges: Int { pending.count }
+    public var unsavedChangeCount: Int { pending.count }
 
     // MARK: Changes
 

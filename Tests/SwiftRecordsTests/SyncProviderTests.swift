@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record("SyncRecipe")
@@ -436,7 +436,7 @@ struct Device {
         try await phone.context.save()
         await phone.settle()
         #expect(phone.context.unsynced.count == 2)
-        #expect(phone.context.unsavedChanges == 0)
+        #expect(phone.context.unsavedChangeCount == 0)
 
         server.isOnline = true
         try await phone.context.refresh()

@@ -1195,7 +1195,7 @@ final class RecordStore: @unchecked Sendable {
                   case .text(let action) = row["action"] else { return nil }
             var target: String?
             if case .text(let name) = row["target_table"] { target = name }
-            return PointerInfo(table: table, field: field, target: target, action: ReferenceAction(rawValue: action) ?? .nullify)
+            return PointerInfo(table: table, field: field, target: target, action: ReferenceAction(storedName: action) ?? .nullify)
         }
         pointerInfo = loaded
         return loaded
@@ -1205,7 +1205,7 @@ final class RecordStore: @unchecked Sendable {
         guard !pointers().contains(info) else { return }
         try db.run(
             "INSERT OR REPLACE INTO \"_records_pointers\" (record_table, field, target_table, action) VALUES (?, ?, ?, ?)",
-            [.text(info.table), .text(info.field), info.target.map { .text($0) } ?? .null, .text(info.action.rawValue)]
+            [.text(info.table), .text(info.field), info.target.map { .text($0) } ?? .null, .text(info.action.storedName)]
         )
         pointerInfo = pointers().filter { !($0.table == info.table && $0.field == info.field) } + [info]
     }

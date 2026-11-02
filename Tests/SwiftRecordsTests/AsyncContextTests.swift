@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -49,7 +49,7 @@ import Testing
     @Test func failedAsyncSaveKeepsChangesPending() async throws {
         context.insert(Measurement(value: .nan))
         await #expect(throws: RecordsError.self) { try await context.save() }
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
     }
 }
 

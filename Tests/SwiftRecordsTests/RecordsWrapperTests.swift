@@ -1,7 +1,7 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// Each form of `@Records` compiles against the property type it fills.
@@ -13,7 +13,7 @@ private struct WrapperUses: View {
     @Records(.default, ids: []) var other: [Note]
     @Records("pantry") var pantry: [Person]
     @Records(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20)) var firstOpen: [ToDo]
-    @Records("pantry", RecordDescriptor<Person>(fetchLimit: 5)) var someone: [Person]
+    @Records(RecordDescriptor<Person>(fetchLimit: 5), zone: "pantry") var someone: [Person]
     @Records(sort: \ToDo.title) var byTitle: [ToDo]
     @Records(sort: \ToDo.due, order: .reverse, animation: nil) var byDue: [ToDo]
     @Records(filter: #Predicate<ToDo> { !$0.done }, sort: [SortDescriptor(\ToDo.priority, order: .reverse)]) var urgent: [ToDo]

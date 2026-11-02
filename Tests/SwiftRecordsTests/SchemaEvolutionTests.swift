@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 import Testing
 
 // Two versions of one record type, sharing a table through `@Record(_:)`.

@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// Relationships across devices, where each side may hold an older copy or see records in any order.

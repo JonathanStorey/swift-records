@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 
 /// Syncs through a folder of files, such as the app's iCloud container, which the system then copies
 /// between the person's devices. No server code is needed.
@@ -125,9 +125,9 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
     // MARK: SyncTransport
 
     /// The location, so moving to another folder uploads everything to it.
-    public var identifier: String { "FileSyncTransport.\(location)" }
+    @_spi(SyncProvider) public var identifier: String { "FileSyncTransport.\(location)" }
 
-    public func currentUser() async throws -> String? {
+    @_spi(SyncProvider) public func currentUser() async throws -> String? {
         guard location.isICloud else { return "local" }
         #if canImport(Darwin)
         // The token changes with the iCloud account, and is nil while signed out.
@@ -141,9 +141,9 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         #endif
     }
 
-    public var scopes: Set<Zone.Scope> { [.private, .shared] }
+    @_spi(SyncProvider) public var scopes: Set<Zone.Scope> { [.private, .shared] }
 
-    public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
+    @_spi(SyncProvider) public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         let root = try root()
         let changes = batch.changes
         defer { mark(Set(changes.map(\.zone)), in: root) }
@@ -197,7 +197,7 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
 
     /// Every zone folder, so each is checked for new files, and the zones whose folders were deleted or
     /// replaced since `token`, which holds each folder's identity.
-    public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
+    @_spi(SyncProvider) public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
         let root = try root()
         if scope == .shared {
             return try sharedDatabaseChanges(in: root, since: token)
@@ -218,7 +218,7 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         return DatabaseChanges(modified: modified, deleted: deleted.sorted { $0.zone.name < $1.zone.name }, token: try JSONEncoder().encode(epochs))
     }
 
-    public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
+    @_spi(SyncProvider) public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
         let folder = try folder(for: zone, in: root())
         var state = token.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
         var found: [(key: String, change: RecordChangeData)] = []
@@ -284,7 +284,7 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         return waiting ? nil : files
     }
 
-    public func changeNotifications() -> AsyncStream<[Zone]>? {
+    @_spi(SyncProvider) public func changeNotifications() -> AsyncStream<[Zone]>? {
         let (stream, continuation) = AsyncStream<[Zone]>.makeStream()
         let id = UUID()
         lock.withLock { pushes[id] = continuation }

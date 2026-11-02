@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -43,10 +43,10 @@ import Testing
         context.insert(todo)
         let found: ToDo? = try context.record(for: todo.id)
         #expect(found?.title == "Draft")
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
         context.delete(todo)
         #expect(try context.record(ToDo.self, for: todo.id) == nil)
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
     }
 
     @Test func descriptorsPageCountAndListIDs() throws {
@@ -71,7 +71,7 @@ import Testing
                 throw Stop()
             }
         }
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
 
         try context.transaction {
             context.insert(ToDo(title: "Kept"))
@@ -143,9 +143,9 @@ import Testing
             todo.title = title
             context.insert(todo)
         }
-        #expect(context.unsavedChanges == 2)
+        #expect(context.unsavedChangeCount == 2)
         try context.save()
-        #expect(context.unsavedChanges == 0)
+        #expect(context.unsavedChangeCount == 0)
         #expect(try context.container.fetch(ToDo.self).map(\.title).sorted() == ["Other", "Typed"])
 
         context.insert(other)

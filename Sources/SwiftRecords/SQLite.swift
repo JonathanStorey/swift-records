@@ -20,7 +20,7 @@ enum SQLiteValue: Hashable, Sendable {
     }
 }
 
-public struct SQLiteError: Error, CustomStringConvertible {
+struct SQLiteError: Error, CustomStringConvertible {
     public let code: Int32
     public let message: String
 

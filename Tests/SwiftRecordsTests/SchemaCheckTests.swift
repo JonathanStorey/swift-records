@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record("Clash")

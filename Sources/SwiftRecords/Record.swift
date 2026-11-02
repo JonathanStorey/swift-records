@@ -20,6 +20,7 @@ import Foundation
 /// }
 /// ```
 public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
+    @_documentation(visibility: internal)
     static var schema: RecordSchema<Self> { get }
 }
 
@@ -154,14 +155,44 @@ public macro Reference<Linked: Record>(to type: Linked.Type, sort: [SortDescript
 
 /// What a stored pointer does when the record it points to is deleted. `.deleteSelf` is named after
 /// `CKRecord.ReferenceAction`.
-public enum ReferenceAction: String, Sendable, Hashable, Codable {
+public enum ReferenceAction: Sendable, Hashable, Codable {
     /// Keep the record and clear its pointer when the parent is deleted or drops it.
-    case nullify = "none"
+    case nullify
     /// Delete the record when the parent is deleted or drops it.
     case deleteSelf
+
+    /// The name it's stored and sent under, as CloudKit names it.
+    var storedName: String {
+        switch self {
+        case .nullify: "none"
+        case .deleteSelf: "deleteSelf"
+        }
+    }
+
+    init?(storedName: String) {
+        switch storedName {
+        case "none": self = .nullify
+        case "deleteSelf": self = .deleteSelf
+        default: return nil
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let name = try decoder.singleValueContainer().decode(String.self)
+        guard let action = Self(storedName: name) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "No reference action \(name)"))
+        }
+        self = action
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storedName)
+    }
 }
 
 /// The property list `@Record` generates for a type. Only the macro's generated code builds one.
+@_documentation(visibility: internal)
 public struct RecordSchema<Root: Record>: @unchecked Sendable {
     let table: String
     let fields: [Field]

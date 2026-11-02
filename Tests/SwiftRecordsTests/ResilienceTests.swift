@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -23,7 +23,7 @@ import Testing
             Issue.record("A failed save should show in status, not \(context.status)")
             return
         }
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
 
         // Once the other write ends, the next save commits the change.
         try other.execute("COMMIT")
@@ -172,7 +172,7 @@ import Testing
         var edited = todos
         edited[2].title = "Changed"
         context.apply(edited, replacing: todos)
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
 
         context.rollback()
         // The order isn't stored, so a move saves nothing and the view shows the records by ID again.

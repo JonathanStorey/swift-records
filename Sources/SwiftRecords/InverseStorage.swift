@@ -4,6 +4,7 @@ import Foundation
 /// `@Reference(to: \Owner.links)`. The container fills it from the owners' links, and you change it by
 /// linking from the owner's side.
 @propertyWrapper
+@_documentation(visibility: internal)
 public struct InverseStorage: Hashable, Sendable, Codable {
     var ids: Set<UUID>
 
@@ -29,6 +30,7 @@ public struct InverseStorage: Hashable, Sendable, Codable {
 
 extension KeyedDecodingContainer {
     /// Lets a record decode without its inverse key, as a plain optional property would.
+    @_documentation(visibility: internal)
     public func decode(_ type: InverseStorage.Type, forKey key: Key) throws -> InverseStorage {
         try decodeIfPresent(type, forKey: key) ?? InverseStorage()
     }

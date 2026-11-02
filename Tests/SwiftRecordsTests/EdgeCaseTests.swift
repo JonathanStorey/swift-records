@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record
@@ -209,7 +209,7 @@ struct DishV3 {
         context.insert(Measurement(value: .nan))
         context.insert(Person(name: "Kept"))
         #expect(throws: RecordsError.invalidValue(type: "Measurement", property: "value")) { try context.save() }
-        #expect(context.unsavedChanges == 2)
+        #expect(context.unsavedChangeCount == 2)
         #expect(try context.container.fetch(Person.self).isEmpty)
 
         // Fixing the bad change lets the rest save.

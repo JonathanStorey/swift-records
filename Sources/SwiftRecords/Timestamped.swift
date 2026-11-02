@@ -25,7 +25,7 @@ import Foundation
 public macro Timestamped(_ kind: TimestampKind = .modified) = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
 /// What the container stamps into a `@Timestamped` property.
-public enum TimestampKind: String, Sendable {
+public enum TimestampKind: Sendable, Hashable {
     case created
     case modified
     case synced
@@ -33,6 +33,7 @@ public enum TimestampKind: String, Sendable {
 
 /// The wrapper `@Record` adds to each `@Timestamped` property. Write `@Timestamped` rather than this.
 @propertyWrapper
+@_documentation(visibility: internal)
 public struct TimestampStorage: Hashable, Sendable, Codable {
     var date: Date?
 
@@ -56,6 +57,7 @@ public struct TimestampStorage: Hashable, Sendable, Codable {
 
 extension KeyedDecodingContainer {
     /// Lets a record decode without its timestamp key, as a plain optional property would.
+    @_documentation(visibility: internal)
     public func decode(_ type: TimestampStorage.Type, forKey key: Key) throws -> TimestampStorage {
         try decodeIfPresent(type, forKey: key) ?? TimestampStorage(date: nil)
     }
