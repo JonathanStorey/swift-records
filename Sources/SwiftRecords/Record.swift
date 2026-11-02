@@ -8,18 +8,19 @@ import Foundation
 /// ```swift
 /// @Record
 /// struct ToDo {
-///     var id = UUID.ordered()
+///     var id = UUID.timestamp
 ///     var title: String
 ///     @Reference(to: \Note.todo) var notes: [Note] = []
 /// }
 ///
 /// @Record
 /// struct Note {
-///     var id = UUID.ordered()
+///     var id = UUID.timestamp
 ///     @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
 /// }
 /// ```
 public protocol Record: Identifiable, Codable, Sendable where ID == UUID {
+    @_documentation(visibility: internal)
     static var schema: RecordSchema<Self> { get }
 }
 
@@ -74,6 +75,20 @@ public macro Renamed(from names: String...) = #externalMacro(module: "SwiftRecor
 @attached(peer)
 public macro Indexed() = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
 
+/// Stores a property end-to-end encrypted on the sync server: with CloudKit, in the record's
+/// `encryptedValues`, readable only on the person's own devices. On this device it's stored as any other
+/// property, protected by the system's data protection.
+///
+/// ```swift
+/// @Encrypted var diagnosis = ""
+/// ```
+///
+/// A property can't move between encrypted and plain once it has synced, because CloudKit fixes each
+/// field's type on the server: store it under a new name instead. Pointers and assets can't be encrypted,
+/// and transports other than CloudKit store the value as they store any other.
+@attached(peer)
+public macro Encrypted() = #externalMacro(module: "SwiftRecordsMacros", type: "MarkerMacro")
+
 /// Declares a stored pointer: the ID of the record this one comes from, or `nil` while it has none. The
 /// property's type is `Parent.ID?`. It is the only place a one-to-many or one-to-one relationship is
 /// stored, and the parent's `@Reference(to:)` property is filled from it. With a sync provider it crosses
@@ -104,20 +119,20 @@ public macro Reference<Parent: Record>(from parent: Parent.Type) =
 /// @Reference(to: \Recipe.tags) var recipes: Set<Recipe.ID>
 /// ```
 @attached(peer)
-public macro Reference<Target: Record, Value>(to keyPath: KeyPath<Target, Value>) =
+public macro Reference<Child: Record, Property>(to keyPath: KeyPath<Child, Property>) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares the records that point here, in the order of a key path on them.
 @attached(peer)
-public macro Reference<Target: Record, Value, Key: Comparable>(to keyPath: KeyPath<Target, Value>, sort: KeyPath<Target, Key>) =
+public macro Reference<Child: Record, Property, Key: Comparable>(to keyPath: KeyPath<Child, Property>, sort: KeyPath<Child, Key>) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares the records that point here, in the order of sort descriptors.
 @attached(peer)
-public macro Reference<Target: Record, Value>(to keyPath: KeyPath<Target, Value>, sort: [SortDescriptor<Target>]) =
+public macro Reference<Child: Record, Property>(to keyPath: KeyPath<Child, Property>, sort: [SortDescriptor<Child>]) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
-/// Declares a many-to-many relationship: the records of another type this one links to, as `[Target]`.
+/// Declares a many-to-many relationship: the records of another type this one links to, as `[Linked]`.
 /// Each pair is stored as one small link record, so neither record holds the other's ID. Without `sort:`,
 /// the records come back in the order they were linked.
 ///
@@ -125,29 +140,59 @@ public macro Reference<Target: Record, Value>(to keyPath: KeyPath<Target, Value>
 /// @Reference(to: Tag.self) var tags: [Tag] = []
 /// ```
 @attached(peer)
-public macro Reference<Target: Record>(to type: Target.Type) =
+public macro Reference<Linked: Record>(to type: Linked.Type) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares a many-to-many relationship in the order of a key path on the linked records.
 @attached(peer)
-public macro Reference<Target: Record, Key: Comparable>(to type: Target.Type, sort: KeyPath<Target, Key>) =
+public macro Reference<Linked: Record, Key: Comparable>(to type: Linked.Type, sort: KeyPath<Linked, Key>) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// Declares a many-to-many relationship in the order of sort descriptors.
 @attached(peer)
-public macro Reference<Target: Record>(to type: Target.Type, sort: [SortDescriptor<Target>]) =
+public macro Reference<Linked: Record>(to type: Linked.Type, sort: [SortDescriptor<Linked>]) =
     #externalMacro(module: "SwiftRecordsMacros", type: "ReferenceMacro")
 
 /// What a stored pointer does when the record it points to is deleted. `.deleteSelf` is named after
 /// `CKRecord.ReferenceAction`.
-public enum ReferenceAction: String, Sendable, Hashable, Codable {
+public enum ReferenceAction: Sendable, Hashable, Codable {
     /// Keep the record and clear its pointer when the parent is deleted or drops it.
-    case nullify = "none"
+    case nullify
     /// Delete the record when the parent is deleted or drops it.
     case deleteSelf
+
+    /// The name it's stored and sent under, as CloudKit names it.
+    var storedName: String {
+        switch self {
+        case .nullify: "none"
+        case .deleteSelf: "deleteSelf"
+        }
+    }
+
+    init?(storedName: String) {
+        switch storedName {
+        case "none": self = .nullify
+        case "deleteSelf": self = .deleteSelf
+        default: return nil
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let name = try decoder.singleValueContainer().decode(String.self)
+        guard let action = Self(storedName: name) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "No reference action \(name)"))
+        }
+        self = action
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storedName)
+    }
 }
 
 /// The property list `@Record` generates for a type. Only the macro's generated code builds one.
+@_documentation(visibility: internal)
 public struct RecordSchema<Root: Record>: @unchecked Sendable {
     let table: String
     let fields: [Field]
@@ -174,8 +219,8 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         let inverse: AnyKeyPath?
         /// True for an `@Asset` property, whose file lives beside the database.
         let isAsset: Bool
-        /// The extension for an asset's new files.
-        let fileExtension: String
+        /// How an asset both sides replaced merges, or `nil` for the later edit.
+        let assetMerge: AssetMerge?
         /// The property's declared default, used when a stored row has no value for it, such as a row
         /// saved before the property existed.
         private(set) var defaultValue: (@Sendable () -> Any)?
@@ -183,13 +228,15 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         private(set) var previousNames: [String] = []
         /// True for an `@Indexed` property.
         private(set) var isIndexed = false
+        /// True for an `@Encrypted` property, which a sync server stores end-to-end encrypted.
+        private(set) var isEncrypted = false
         /// What the container stamps into a `@Timestamped` property.
         private(set) var timestamp: TimestampKind?
 
         init(
             name: String, keyPath: PartialKeyPath<Root>, isPointer: Bool = false, pointerTarget: (any Record.Type)? = nil,
             action: ReferenceAction = .nullify, relationship: Relationship? = nil, order: RelationshipOrder? = nil,
-            inverse: AnyKeyPath? = nil, isAsset: Bool = false, fileExtension: String = ""
+            inverse: AnyKeyPath? = nil, isAsset: Bool = false, assetMerge: AssetMerge? = nil
         ) {
             self.name = name
             self.keyPath = keyPath
@@ -200,7 +247,7 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
             self.order = order
             self.inverse = inverse
             self.isAsset = isAsset
-            self.fileExtension = fileExtension
+            self.assetMerge = assetMerge
         }
 
         /// True when the field is a column of the record's own row: neither a relationship nor an inverse.
@@ -222,6 +269,12 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
         public func indexed() -> Field {
             var field = self
             field.isIndexed = true
+            return field
+        }
+
+        public func encrypted() -> Field {
+            var field = self
+            field.isEncrypted = true
             return field
         }
 
@@ -285,8 +338,20 @@ public struct RecordSchema<Root: Record>: @unchecked Sendable {
             return field
         }
 
-        public static func asset(_ name: String, _ keyPath: KeyPath<Root, Data?>, fileExtension: String = "") -> Field {
-            Field(name: name, keyPath: keyPath, isAsset: true, fileExtension: fileExtension)
+        public static func asset(_ name: String, _ keyPath: KeyPath<Root, Data?>) -> Field {
+            Field(name: name, keyPath: keyPath, isAsset: true)
+        }
+
+        public static func asset<Strategy: MergeStrategy<Data>>(
+            _ name: String, _ keyPath: KeyPath<Root, Data?>, merge strategy: Strategy
+        ) -> Field {
+            Field(name: name, keyPath: keyPath, isAsset: true, assetMerge: AssetMerge(strategy))
+        }
+
+        public static func asset<Side: SideMarker>(
+            _ name: String, _ keyPath: KeyPath<Root, Data?>, merge strategy: KeepShortcut<Side>
+        ) -> Field {
+            Field(name: name, keyPath: keyPath, isAsset: true, assetMerge: AssetMerge(keeping: Side.side))
         }
 
         /// The IDs of the records whose many-to-many array at `inverse` links here.
@@ -321,7 +386,7 @@ enum Relationship {
 }
 
 /// A relationship's sort descriptors, without their record type, so the store can order any relationship's
-/// records. With none, children come in ID order, which `UUID.ordered()` makes creation order, and links in
+/// records. With none, children come in ID order, which `UUID.timestamp` makes creation order, and links in
 /// the order they were made.
 struct RelationshipOrder: @unchecked Sendable {
     let isEmpty: Bool

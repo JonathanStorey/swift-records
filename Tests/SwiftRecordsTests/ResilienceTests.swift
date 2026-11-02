@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -8,30 +8,33 @@ import Testing
 
     @Test func leavingSaveKeepsChangesWhileAnotherProcessHoldsTheFile() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         let context = container.mainContext
         context.insert(Person(name: "Ana"))
         try await context.save()
         container.initialStorage.store.db.setBusyTimeout(0)
 
         // A second connection stands in for a widget in the middle of a write.
-        let other = try SQLiteDatabase(url: try #require(container.url))
+        let other = try SQLiteDatabase(url: try #require(container.url(for: .default)))
         try other.execute("BEGIN IMMEDIATE")
         context.insert(Person(name: "Bea"))
         context.saveBeforeLeaving()
-        #expect(context.lastSaveError is RecordsError)
-        #expect(context.unsavedChanges == 1)
+        guard case .failed = context.status else {
+            Issue.record("A failed save should show in status, not \(context.status)")
+            return
+        }
+        #expect(context.unsavedChangeCount == 1)
 
         // Once the other write ends, the next save commits the change.
         try other.execute("COMMIT")
         context.saveBeforeLeaving()
-        #expect(context.lastSaveError == nil)
+        #expect(context.status == .saved)
         #expect(try container.fetch(Person.self).map(\.name) == ["Ana", "Bea"])
     }
 
     @Test func changesWaitForASave() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         let context = container.mainContext
         context.insert(Person(name: "Ana"))
         for _ in 0..<20 {
@@ -44,10 +47,10 @@ import Testing
 
     @Test func writesHoldTheLockFromTheStart() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         try container.save(Person(name: "Ana"))
         let store = container.initialStorage.store
-        let other = try SQLiteDatabase(url: try #require(container.url))
+        let other = try SQLiteDatabase(url: try #require(container.url(for: .default)))
         other.setBusyTimeout(0)
 
         // Reading first doesn't leave room for another process to commit before this transaction writes.
@@ -169,7 +172,7 @@ import Testing
         var edited = todos
         edited[2].title = "Changed"
         context.apply(edited, replacing: todos)
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
 
         context.rollback()
         // The order isn't stored, so a move saves nothing and the view shows the records by ID again.

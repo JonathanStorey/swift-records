@@ -1,6 +1,6 @@
 import Foundation
 
-/// A context for work off the main actor, handed to you by `RecordContainer.performBackgroundTask(in:_:)`.
+/// A context for work off the main actor, handed to you by `RecordContext.performInBackground(in:_:)`.
 ///
 /// Unlike the main context it has no pending changes or observation. Each insert or delete
 /// commits right away, and `transaction(_:)` groups several into one commit. The main context refreshes

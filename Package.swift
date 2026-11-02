@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "swift-records",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
         .library(name: "SwiftRecordsFileSync", targets: ["SwiftRecordsFileSync"]),
@@ -13,7 +13,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.0"..<"603.0.0"),
-        .package(url: "https://github.com/JonathanStorey/swift-merging.git", from: "0.1.0"),
+        .package(url: "https://github.com/JonathanStorey/swift-merging.git", .upToNextMinor(from: "0.2.0")),
+        .package(url: "https://github.com/JonathanStorey/swift-identification.git", .upToNextMinor(from: "0.2.0")),
     ],
     targets: [
         // Apple platforms ship SQLite3 in the SDK. Linux links the system library (for CI and local tests).
@@ -33,6 +34,7 @@ let package = Package(
             dependencies: [
                 "SwiftRecordsMacros",
                 .product(name: "Merging", package: "swift-merging"),
+                .product(name: "Identification", package: "swift-identification"),
                 .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ]
         ),
@@ -49,11 +51,14 @@ let package = Package(
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["SwiftRecords"]
+            dependencies: ["SwiftRecords", .product(name: "Identification", package: "swift-identification")]
         ),
         .testTarget(
             name: "SwiftRecordsTests",
-            dependencies: ["SwiftRecords", "SwiftRecordsFileSync", "SwiftRecordsCloudKit"]
+            dependencies: [
+                "SwiftRecords", "SwiftRecordsFileSync", "SwiftRecordsCloudKit",
+                .product(name: "Identification", package: "swift-identification"),
+            ]
         ),
         .testTarget(
             name: "SwiftRecordsMacrosTests",

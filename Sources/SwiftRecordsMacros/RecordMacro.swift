@@ -115,7 +115,9 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
             // Another attribute may be a property wrapper, whose initial value isn't the stored value.
             let wrapped = variable.attributes.contains { element in
                 guard let name = element.as(AttributeSyntax.self)?.attributeName.trimmedDescription else { return false }
-                return !["Reference", "Renamed", "Indexed", "Asset", "SwiftRecords.Asset", "Timestamped", "SwiftRecords.Timestamped"].contains(name)
+                return ![
+                    "Reference", "Renamed", "Indexed", "Encrypted", "Asset", "SwiftRecords.Asset", "Timestamped", "SwiftRecords.Timestamped",
+                ].contains(name)
             }
             for binding in variable.bindings {
                 guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription else {
@@ -140,8 +142,13 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
                         )))
                         continue
                     }
-                    let fileExtension = asset.fileExtension.map { ", fileExtension: \($0)" } ?? ""
-                    fields.append(".asset(\"\(name)\", \(keyPath)\(fileExtension))" + modifiers)
+                    if let encrypted = encryptedAttribute(variable.attributes) {
+                        context.diagnose(Diagnostic(node: encrypted, message: MacroError.message(
+                            "An asset can't be @Encrypted: CloudKit encrypts only values stored inside a record"
+                        )))
+                    }
+                    let merge = asset.strategy.map { ", merge: \($0)" } ?? ""
+                    fields.append(".asset(\"\(name)\", \(keyPath)\(merge))" + modifiers)
                     continue
                 }
                 if let kind = timestampKind(variable.attributes) {
@@ -155,6 +162,11 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
                     continue
                 }
                 if let reference {
+                    if reference.from != nil, let encrypted = encryptedAttribute(variable.attributes) {
+                        context.diagnose(Diagnostic(node: encrypted, message: MacroError.message(
+                            "A @Reference(from:) pointer can't be @Encrypted: the server reads it to share and delete records with their parent"
+                        )))
+                    }
                     if let field = referenceField(reference, name: name, keyPath: keyPath, binding: binding, in: context) {
                         fields.append(field + modifiers)
                     }
@@ -207,7 +219,8 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
     }
 
     private struct AssetAttribute {
-        var fileExtension: String?
+        /// The merge strategy expression, such as `.keep(.ours)`, or nil for the later edit.
+        var strategy: String?
     }
 
     /// Reads a property's `@Asset` attribute, or returns nil when it has none.
@@ -215,11 +228,11 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
         for element in attributes {
             guard let attribute = element.as(AttributeSyntax.self),
                   ["Asset", "SwiftRecords.Asset"].contains(attribute.attributeName.trimmedDescription) else { continue }
-            var fileExtension: String?
+            var strategy: String?
             if case .argumentList(let arguments) = attribute.arguments {
-                fileExtension = arguments.first { $0.label?.text == "fileExtension" }?.expression.trimmedDescription
+                strategy = arguments.first { $0.label == nil }?.expression.trimmedDescription
             }
-            return AssetAttribute(fileExtension: fileExtension)
+            return AssetAttribute(strategy: strategy)
         }
         return nil
     }
@@ -260,11 +273,20 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
                 }
             case "Indexed":
                 modifiers += ".indexed()"
+            case "Encrypted", "SwiftRecords.Encrypted":
+                modifiers += ".encrypted()"
             default:
                 break
             }
         }
         return modifiers
+    }
+
+    /// A property's `@Encrypted` attribute, or nil when it has none.
+    private static func encryptedAttribute(_ attributes: AttributeListSyntax) -> AttributeSyntax? {
+        attributes.lazy.compactMap { $0.as(AttributeSyntax.self) }.first {
+            ["Encrypted", "SwiftRecords.Encrypted"].contains($0.attributeName.trimmedDescription)
+        }
     }
 
     /// The kind in a property's `@Timestamped` attribute, such as `.created`, or nil when it has none.
@@ -436,7 +458,7 @@ public struct RecordMacro: ExtensionMacro, MemberMacro, MemberAttributeMacro {
     }
 }
 
-/// `@Renamed`, `@Indexed` and `@Timestamped` are markers read by `@Record`. They generate no code
+/// `@Renamed`, `@Indexed`, `@Encrypted` and `@Timestamped` are markers read by `@Record`. They generate no code
 /// themselves, and warn when they're used outside a `@Record` struct, where nothing reads them.
 public struct MarkerMacro: PeerMacro {
     public static func expansion(

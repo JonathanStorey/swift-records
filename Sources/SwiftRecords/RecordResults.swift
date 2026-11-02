@@ -12,7 +12,7 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
     public typealias Index = Int
 
     /// The records the view holds, in the query's order.
-    public internal(set) var elements: [R]
+    var elements: [R]
     /// How many records come before the page. `startIndex` is this offset.
     public let fetchOffset: Int
     /// The page size the descriptor chose, or `nil` for no limit. `appendNextPage()` adds pages without changing it.
@@ -41,7 +41,7 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
         self.pager = pager
     }
 
-    public init() {
+    init() {
         self.init([])
     }
 
@@ -142,7 +142,8 @@ public struct RecordResults<R: Record>: RandomAccessCollection, MutableCollectio
 
 /// What lets `Binding<RecordResults<R>>` page through records, since an extension's properties can't be
 /// generic over `R`.
-public protocol RecordResultsProtocol {
+@_documentation(visibility: internal)
+public protocol _RecordResultsProtocol {
     var totalCount: Int { get }
     var fetchLimit: Int? { get }
     var fetchOffset: Int { get }
@@ -160,7 +161,7 @@ public protocol RecordResultsProtocol {
     @MainActor func save() throws
 }
 
-extension RecordResults: RecordResultsProtocol {}
+extension RecordResults: _RecordResultsProtocol {}
 
 /// Moves a `@Records` view's page and refreshes its context.
 @MainActor

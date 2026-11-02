@@ -1,10 +1,11 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record
 struct SyncNote {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text = ""
     @Timestamped(.modified) var edited: Date?
 }

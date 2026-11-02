@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// What `@Records` shows before the context saves.
@@ -93,7 +93,7 @@ import Testing
         #expect(try shown().map(\.id) == drafts.map(\.id).sorted { $0.precedes($1) })
         // A binding that moves records changes nothing, since the order isn't stored.
         context.apply(try shown().reversed(), replacing: try shown())
-        #expect(context.unsavedChanges == 5)
+        #expect(context.unsavedChangeCount == 5)
     }
 
     @Test func changesFromOthersAreTracked() throws {

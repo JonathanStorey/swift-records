@@ -40,7 +40,7 @@ public struct RecordMetadata: Hashable, Sendable {
     public let version: Int
     /// When the latest of those changes was saved.
     public let modified: Date?
-    /// Sync bookkeeping: the server's `synced` date for the copy this one is based on. Setting it never
-    /// changes `version`.
-    public let tag: Data?
+    /// Sync bookkeeping: the server's tag for the copy this one is based on. Setting it never changes
+    /// `version`.
+    package let tag: Data?
 }

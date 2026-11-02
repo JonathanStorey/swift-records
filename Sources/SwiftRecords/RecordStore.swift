@@ -63,6 +63,16 @@ final class RecordStore: @unchecked Sendable {
     lazy var releasedAssetsDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-records-undo-\(UUID().uuidString)", isDirectory: true)
 
+    /// Files that came with the server changes being applied, by asset name, for merging an asset's bytes
+    /// before the files are placed.
+    var incomingAssetFiles: [String: URL] = [:]
+    /// The asset each changed record property holds once the open transaction commits, or `nil` for none,
+    /// to point its stable file at.
+    var assetLinkChanges: [AssetLinkKey: String?] = [:]
+    /// Where an asset merge writes its result until the record's save copies it in.
+    lazy var mergedAssetsDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swift-records-merged-\(UUID().uuidString)", isDirectory: true)
+
     var structureVersion: Int { locked { structuralChanges } }
 
     /// The first record of each type that no longer decodes, such as after a property changed type. Fetches
@@ -154,6 +164,7 @@ final class RecordStore: @unchecked Sendable {
             try? FileManager.default.removeItem(at: assetsDirectory)
         }
         try? FileManager.default.removeItem(at: releasedAssetsDirectory)
+        try? FileManager.default.removeItem(at: mergedAssetsDirectory)
     }
 
     // MARK: Transactions
@@ -180,6 +191,8 @@ final class RecordStore: @unchecked Sendable {
                 let rows = touched.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
+                    applyAssetLinks()
+                    pruneAssetBases()
                     if changedData {
                         changedData = false
                         commits += 1
@@ -199,6 +212,7 @@ final class RecordStore: @unchecked Sendable {
                 if fileChanges.count == 1 {
                     changedData = false
                     orphans = []
+                    assetLinkChanges = [:]
                 }
                 // Files written by the rolled-back work go with it, and released ones stay.
                 for url in fileChanges.removeLast().created {
@@ -407,8 +421,7 @@ final class RecordStore: @unchecked Sendable {
             ).first?["name"]
             var stored: SQLiteValue?
             if let asset = assets[field], let storage = asset.storage {
-                let fileExtension = assetFields.first { $0.name == field }?.fileExtension ?? ""
-                stored = .text(try storeAsset(storage, fileExtension: fileExtension, owner: R.table, id: id, field: field))
+                stored = .text(try storeAsset(storage, owner: R.table, id: id, field: field))
                 columns.append((field, stored!))
             }
             if let previous, case .text(let name) = previous, previous != stored {
@@ -419,11 +432,9 @@ final class RecordStore: @unchecked Sendable {
     }
 
     private func storeAsset(
-        _ asset: Asset.Storage, fileExtension: String, owner table: String, id: SQLiteValue, field: String
+        _ asset: Asset.Storage, owner table: String, id: SQLiteValue, field: String
     ) throws -> String {
-        // A new asset's name gets the extension from `@Asset(fileExtension:)` if it has none of its own.
-        let hasExtension = !(asset.name as NSString).pathExtension.isEmpty
-        let fileName = hasExtension || fileExtension.isEmpty ? asset.name : asset.name + "." + fileExtension
+        let fileName = asset.name
         let owner = try db.run(
             "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(fileName)]
         ).first
@@ -456,16 +467,27 @@ final class RecordStore: @unchecked Sendable {
             "INSERT INTO \"_records_assets\" (name, owner_table, owner_id, field) VALUES (?, ?, ?, ?)",
             [.text(name), .text(table), id, .text(field)]
         )
+        assetLinkChanges[AssetLinkKey(table: table, id: id, field: field)] = .some(name)
         return name
     }
 
     /// Unlinks an asset. Its file is removed once the outermost transaction commits.
     private func releaseAsset(named name: String) throws {
+        if let owner = try db.run(
+            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(name)]
+        ).first, case .text(let table)? = owner["owner_table"], case .text(let field)? = owner["field"] {
+            let key = AssetLinkKey(table: table, id: owner["owner_id"] ?? .null, field: field)
+            // A property that already holds a new asset keeps it.
+            if assetLinkChanges[key] == nil || assetLinkChanges[key] == .some(name) {
+                assetLinkChanges[key] = .some(nil)
+            }
+        }
         try db.run("DELETE FROM \"_records_assets\" WHERE name = ?", [.text(name)])
         fileChanges[fileChanges.count - 1].released.append(name)
     }
 
     private func removeReleasedFiles(_ names: [String]) {
+        retainAssetBases(Set(names))
         for name in Set(names) {
             // A released name can be stored again later in the same transaction.
             let held = (try? db.run("SELECT 1 FROM \"_records_assets\" WHERE name = ?", [.text(name)]).isEmpty == false) ?? true
@@ -1173,7 +1195,7 @@ final class RecordStore: @unchecked Sendable {
                   case .text(let action) = row["action"] else { return nil }
             var target: String?
             if case .text(let name) = row["target_table"] { target = name }
-            return PointerInfo(table: table, field: field, target: target, action: ReferenceAction(rawValue: action) ?? .nullify)
+            return PointerInfo(table: table, field: field, target: target, action: ReferenceAction(storedName: action) ?? .nullify)
         }
         pointerInfo = loaded
         return loaded
@@ -1183,7 +1205,7 @@ final class RecordStore: @unchecked Sendable {
         guard !pointers().contains(info) else { return }
         try db.run(
             "INSERT OR REPLACE INTO \"_records_pointers\" (record_table, field, target_table, action) VALUES (?, ?, ?, ?)",
-            [.text(info.table), .text(info.field), info.target.map { .text($0) } ?? .null, .text(info.action.rawValue)]
+            [.text(info.table), .text(info.field), info.target.map { .text($0) } ?? .null, .text(info.action.storedName)]
         )
         pointerInfo = pointers().filter { !($0.table == info.table && $0.field == info.field) } + [info]
     }

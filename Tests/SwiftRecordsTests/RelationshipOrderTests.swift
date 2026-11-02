@@ -1,10 +1,11 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record
 struct Playlist {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     @Reference(to: \Track.playlist, sort: \.position) var tracks: [Track] = []
     @Reference(to: \Cover.playlist) var cover: Cover? = nil
@@ -14,7 +15,7 @@ struct Playlist {
 
 @Record
 struct Track {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
     var position = 0
     @Reference(from: Playlist.self, action: .deleteSelf) var playlist: Playlist.ID?
@@ -22,21 +23,21 @@ struct Track {
 
 @Record
 struct Cover {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var caption = ""
     @Reference(from: Playlist.self, action: .deleteSelf) var playlist: Playlist.ID?
 }
 
 @Record
 struct Genre {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
     @Reference(to: \Playlist.genres) var playlistIDs: Set<Playlist.ID>
 }
 
 @Record
 struct Artist {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
 }
 
@@ -102,7 +103,7 @@ struct Artist {
     // MARK: IDs
 
     @Test func orderedIDsAreVersion7AndIncrease() {
-        let ids = (0..<1000).map { _ in UUID.ordered() }
+        let ids = (0..<1000).map { _ in UUID.timestamp }
         #expect(ids.allSatisfy { $0.uuid.6 >> 4 == 7 && $0.uuid.8 >> 6 == 0b10 })
         #expect(zip(ids, ids.dropFirst()).allSatisfy { $0.uuidString < $1.uuidString })
     }
@@ -110,11 +111,11 @@ struct Artist {
     @Test func nameBasedIDsMatchRFC9562() {
         // The RFC's version 5 example: "www.example.com" in the DNS namespace.
         let dns = UUID(uuidString: "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")!
-        #expect(UUID(named: "www.example.com", in: dns) == UUID(uuidString: "2ED6657D-E927-568B-95E1-2665A8AEA6A2"))
+        #expect(UUID(name: "www.example.com", namespace: dns) == UUID(uuidString: "2ED6657D-E927-568B-95E1-2665A8AEA6A2"))
     }
 
     @Test func aLinkHasTheSameIDOnEveryDevice() {
-        let from = UUID.ordered(), to = UUID.ordered()
+        let from = UUID.timestamp, to = UUID.timestamp
         #expect(_RecordLink.id(relation: "Playlist.genres", from: from, to: to) == _RecordLink.id(relation: "Playlist.genres", from: from, to: to))
         #expect(_RecordLink.id(relation: "Playlist.genres", from: from, to: to) != _RecordLink.id(relation: "Playlist.genres", from: to, to: from))
     }

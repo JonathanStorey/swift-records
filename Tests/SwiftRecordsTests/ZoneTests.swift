@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -8,14 +8,15 @@ import Testing
 
     @Test func zonesAreFilesInTheFolder() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         let context = container.mainContext
         context.insert(ToDo(title: "Main"))
         context.zone = "drafts"
         context.insert(ToDo(title: "Draft"))
         try context.save()
 
-        #expect(container.url() == directory.appendingPathComponent("_default.sqlite"))
+        #expect(container.url(for: .default) == directory.appendingPathComponent("_default.sqlite"))
+        #expect(container.url() == directory)
         #expect(container.url(for: "drafts") == directory.appendingPathComponent("drafts.sqlite"))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drafts.sqlite").path))
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Draft"])
@@ -25,13 +26,13 @@ import Testing
 
     @Test func theInitialZoneIsWhereEverythingStarts() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory, initialZone: "family")
+        let container = try RecordContainer(location: .directory(directory), initialZone: "family")
         let context = container.mainContext
         #expect(context.zone == "family")
-        #expect(container.url() == directory.appendingPathComponent("family.sqlite"))
+        #expect(container.url(for: "family") == directory.appendingPathComponent("family.sqlite"))
         context.insert(ToDo(title: "Dinner"))
         try await context.save()
-        #expect(try await container.performBackgroundTask { try $0.fetch(ToDo.self) }.map(\.title) == ["Dinner"])
+        #expect(try await container.mainContext.performInBackground { try $0.fetch(ToDo.self) }.map(\.title) == ["Dinner"])
         // The default zone's file only appears once something uses it.
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("_default.sqlite").path))
     }
@@ -41,7 +42,7 @@ import Testing
         context.insert(ToDo(title: "Main"))
         context.zone = "archive"
         context.insert(ToDo(title: "Old"))
-        #expect(context.unsavedChanges == 2)
+        #expect(context.unsavedChangeCount == 2)
 
         #expect(try context.fetch(ToDo.self).map(\.title) == ["Old"])
         context.zone = .default
@@ -59,11 +60,11 @@ import Testing
 
     @Test func eachZoneKeepsItsOwnData() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
-        try await container.performBackgroundTask(in: "archive") { try $0.insert(ToDo(title: "Old")) }
+        let container = try RecordContainer(location: .directory(directory))
+        try await container.mainContext.performInBackground(in: "archive") { try $0.insert(ToDo(title: "Old")) }
         #expect(try container.fetch(ToDo.self).isEmpty)
 
-        let reopened = try RecordContainer(directory: directory).mainContext
+        let reopened = try RecordContainer(location: .directory(directory)).mainContext
         reopened.zone = "archive"
         #expect(try await reopened.fetch(ToDo.self).map(\.title) == ["Old"])
 
@@ -106,34 +107,25 @@ import Testing
 
     @Test func inMemoryZoneWritesNoFile() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
-        try await container.performBackgroundTask(in: .inMemory) { try $0.insert(ToDo(title: "Scratch")) }
+        let container = try RecordContainer(location: .directory(directory))
+        try await container.mainContext.performInBackground(in: .inMemory) { try $0.insert(ToDo(title: "Scratch")) }
         #expect(container.url(for: .inMemory) == nil)
-        #expect(try await container.performBackgroundTask(in: .inMemory) { try $0.fetch(ToDo.self) }.map(\.title) == ["Scratch"])
+        #expect(try await container.mainContext.performInBackground(in: .inMemory) { try $0.fetch(ToDo.self) }.map(\.title) == ["Scratch"])
         let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         #expect(!files.contains { $0.hasPrefix("_memory") })
     }
 
-    @Test func reservedZonesNeverAskWhetherToSync() throws {
-        let asked = AskedZones()
-        let context = try RecordContainer(inMemory: true, syncProvider: SilentProvider(), syncs: { asked.add($0) }).mainContext
-        for zone: Zone in [.inMemory, .localOnly, "drafts"] {
-            context.zone = zone
-            _ = try context.fetch(ToDo.self)
+    @Test func localZonesNeverSync() throws {
+        let container = try RecordContainer(inMemory: true, syncProvider: SilentProvider())
+        let drafts = try Zone.local("Drafts")
+        #expect(drafts.description == "_local.drafts")
+        #expect(drafts != "drafts")
+        #expect(Zone(stored: drafts.name) == drafts)
+        for zone: Zone in [.inMemory, .localOnly, drafts] {
+            #expect(try container.storage(for: zone).sync == nil)
         }
-        #expect(asked.zones == [.default, "drafts"])
-    }
-
-    /// Records the zones it's asked about, and keeps every one on the device.
-    private final class AskedZones: @unchecked Sendable {
-        private let lock = NSLock()
-        private var list: [Zone] = []
-        var zones: [Zone] { lock.withLock { list } }
-
-        func add(_ zone: Zone) -> Bool {
-            lock.withLock { list.append(zone) }
-            return false
-        }
+        #expect(try container.storage(for: "drafts").sync != nil)
+        #expect(throws: RecordsError.invalidZoneName("a/b")) { try Zone.local("a/b") }
     }
 
     @Test func defaultDirectoryIsApplicationSupport() {
@@ -154,7 +146,7 @@ import Testing
         let value = Array("com.apple.backupd".utf8)
         #expect(setxattr(directory.path, excludeAttribute, value, value.count, 0, 0) == 0)
 
-        _ = try RecordContainer(directory: directory)
+        _ = try RecordContainer(location: .directory(directory))
         #expect(getxattr(directory.path, excludeAttribute, nil, 0, 0, 0) < 0)
     }
 

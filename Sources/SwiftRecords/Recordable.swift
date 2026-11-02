@@ -128,23 +128,6 @@ public struct Recordable<R: Record>: DynamicProperty {
             && !context.unsynced(in: zone.zone(in: context)).contains(tracker.value.id)
     }
 
-    /// How much of the record's asset files are on this device, from 0 to 1, or `nil` once all of them are.
-    /// With a transport that moves files on their own, such as `FileSyncTransport`, a received record's
-    /// files follow it, and this moves as they land. With CloudKit, files arrive inside their record, so
-    /// it stays `nil`.
-    ///
-    /// ```swift
-    /// if let progress = $recipe.downloadProgress {
-    ///     ProgressView(value: progress)
-    /// } else if let url = recipe.$photo {
-    ///     AsyncImage(url: url)
-    /// }
-    /// ```
-    public var downloadProgress: Double? {
-        guard let context else { return nil }
-        return context.downloadProgress(of: value, in: zone.zone(in: context))
-    }
-
     /// The record as stored, when a change from elsewhere conflicted with this record's unsaved edit: a sync
     /// or another view changed a field the edit had also changed, and the edit kept its value. `nil` when
     /// there's no conflict, and once the edit saves, rolls back, or is resolved.
@@ -152,8 +135,8 @@ public struct Recordable<R: Record>: DynamicProperty {
     /// ```swift
     /// if let other = $note.conflict {
     ///     Text("Changed on another device: \(other.title)")
-    ///     Button("Use theirs") { $note.resolve(favoring: .theirs) }
-    ///     Button("Keep mine") { $note.resolve(favoring: .ours) }
+    ///     Button("Use theirs") { $note.resolveConflict(favoring: .theirs) }
+    ///     Button("Keep mine") { $note.resolveConflict(favoring: .ours) }
     /// }
     /// ```
     public var conflict: R? {
@@ -172,7 +155,7 @@ public struct Recordable<R: Record>: DynamicProperty {
 
     /// Settles the conflict: `.ours` keeps the edit's values, and `.theirs` takes the other version's at
     /// the fields in conflict. The edit stays unsaved until the context saves.
-    public func resolve(favoring side: MergeSide) {
+    public func resolveConflict(favoring side: MergeSide) {
         guard let context else { return }
         cache.tracker.resolve(favoring: side, context: context, zone: zone.zone(in: context))
         withAnimation(animation) { cache.version += 1 }

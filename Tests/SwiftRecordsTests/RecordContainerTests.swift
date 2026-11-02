@@ -1,17 +1,18 @@
 import Foundation
-import SwiftRecords
+import Identification
+@_spi(SyncProvider) import SwiftRecords
 import Testing
 
 @Record
 struct Person {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \ToDo.owner) var todos: [ToDo] = []
 }
 
 @Record
 struct ToDo {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     var done = false
     var priority = 0
@@ -24,14 +25,14 @@ struct ToDo {
 
 @Record
 struct Note {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text: String
     @Reference(to: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct Subtask {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
     @Reference(from: Folder.self, action: .deleteSelf) var folder: Folder.ID?
@@ -39,7 +40,7 @@ struct Subtask {
 
 @Record
 struct Folder {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \Subtask.folder) var items: [Subtask] = []
 }
@@ -211,10 +212,10 @@ struct Folder {
         defer { try? FileManager.default.removeItem(at: directory) }
         let todo = ToDo(title: "Saved", notes: [Note(text: "On disk")])
         do {
-            let store = try RecordContainer(directory: directory)
+            let store = try RecordContainer(location: .directory(directory))
             try store.save(todo)
         }
-        let reopened = try RecordContainer(directory: directory)
+        let reopened = try RecordContainer(location: .directory(directory))
         let fetched = try #require(try reopened.fetch(ToDo.self, id: todo.id))
         #expect(fetched.notes.map(\.text) == ["On disk"])
         // Pointers survive a relaunch because they are stored with the schema.

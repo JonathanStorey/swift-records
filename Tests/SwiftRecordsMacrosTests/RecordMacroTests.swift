@@ -299,15 +299,17 @@ final class RecordMacroTests: XCTestCase {
             @Record
             struct Photo {
                 var id = UUID()
-                @Asset(fileExtension: "jpg") var image: Data?
+                @Asset(.keep(.ours)) var image: Data?
                 @Asset var raw: Data?
+                @Encrypted var secret = ""
             }
             """,
             expandedSource: """
             struct Photo {
                 var id = UUID()
-                @Asset(fileExtension: "jpg") var image: Data?
+                @Asset(.keep(.ours)) var image: Data?
                 @Asset var raw: Data?
+                @Encrypted var secret = ""
 
                 typealias ID = UUID
             }
@@ -316,8 +318,9 @@ final class RecordMacroTests: XCTestCase {
                 static var schema: RecordSchema<Photo> {
                     RecordSchema(table: "Photo", fields: [
                         .field("id", \\Photo.id),
-                        .asset("image", \\Photo.image, fileExtension: "jpg"),
-                        .asset("raw", \\Photo.raw)
+                        .asset("image", \\Photo.image, merge: .keep(.ours)),
+                        .asset("raw", \\Photo.raw),
+                        .field("secret", \\Photo.secret).defaulting("").encrypted()
                     ])
                 }
             }

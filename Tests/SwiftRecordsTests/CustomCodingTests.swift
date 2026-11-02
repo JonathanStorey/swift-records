@@ -1,11 +1,12 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// A record whose own Codable groups properties into nested containers.
 @Record
 struct Place {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     var street: String
     var city: String
@@ -64,10 +65,10 @@ struct Place {
     @Test func sharedReturnsTheLatestContainerForAFolder() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shared-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let mine = try RecordContainer(directory: directory)
+        let mine = try RecordContainer(location: .directory(directory))
         #expect(try RecordContainer.shared(in: directory) === mine)
 
-        let newer = try RecordContainer(directory: directory)
+        let newer = try RecordContainer(location: .directory(directory))
         #expect(try RecordContainer.shared(in: directory) === newer)
     }
 

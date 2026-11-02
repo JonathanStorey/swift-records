@@ -1,5 +1,6 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// Relationships across devices, where each side may hold an older copy or see records in any order.
@@ -192,7 +193,7 @@ import Testing
     @Test func aLinkArrivingBeforeItsRecipeResolvesLater() async throws {
         let phone = try Device(server)
         _ = try await phone.recipes()
-        let recipeID = UUID.ordered()
+        let recipeID = UUID.timestamp
         let cook = SyncCook(name: "Ana")
         server.put("SyncCook", id: cook.id, fields: ["name": .string("Ana")])
         server.put("RecordLink", id: _RecordLink.id(relation: "SyncRecipe.cooks", from: recipeID, to: cook.id), fields: [

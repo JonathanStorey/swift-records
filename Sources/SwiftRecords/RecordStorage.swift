@@ -18,7 +18,7 @@ import SwiftUI
 /// and on other devices once a save commits them and they sync.
 ///
 /// If two devices each store the setting before they sync, the zone briefly holds two records. Every device
-/// shows the one with the lower ID, the older with `UUID.ordered()`, and the next edit deletes the other.
+/// shows the one with the lower ID, the older with `UUID.timestamp`, and the next edit deletes the other.
 @MainActor
 @propertyWrapper
 @dynamicMemberLookup
@@ -35,7 +35,7 @@ public struct RecordStorage<R: Record>: DynamicProperty {
     public init(wrappedValue: R, _ key: String? = nil, animation: Animation? = .default) {
         defaultValue = wrappedValue
         zone = .settings(key ?? Zone.settingsKey(for: R.table))
-        _records = Records(zone, RecordDescriptor(), animation: animation)
+        _records = Records(RecordDescriptor(), zone: zone, animation: animation)
     }
 
     /// The setting, or the default value until it's stored. Setting it stores it.

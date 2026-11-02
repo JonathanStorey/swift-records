@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @MainActor
@@ -49,7 +49,7 @@ import Testing
     @Test func failedAsyncSaveKeepsChangesPending() async throws {
         context.insert(Measurement(value: .nan))
         await #expect(throws: RecordsError.self) { try await context.save() }
-        #expect(context.unsavedChanges == 1)
+        #expect(context.unsavedChangeCount == 1)
     }
 }
 
@@ -59,14 +59,14 @@ import Testing
 
     @Test func refreshPicksUpAnotherProcessesWrites() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
-        let container = try RecordContainer(directory: directory)
+        let container = try RecordContainer(location: .directory(directory))
         let context = container.mainContext
         let person = Person(name: "Ana")
         context.insert(person)
         try await context.save()
 
         // A second connection stands in for an app extension.
-        let other = try SQLiteDatabase(url: try #require(container.url))
+        let other = try SQLiteDatabase(url: try #require(container.url(for: .default)))
         _ = try other.run("UPDATE \"Person\" SET name = 'Bea'")
         try other.execute("CREATE TABLE \"Extra\" (\"id\" PRIMARY KEY)")
 

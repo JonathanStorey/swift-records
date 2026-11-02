@@ -1,7 +1,7 @@
 #if canImport(CloudKit)
 import CloudKit
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 
 /// Sharing with zone-wide `CKShare`s: one share per zone, saved in the owner's private database. People who
 /// accept it see the zone in their shared database, which the provider's second engine syncs.
@@ -54,7 +54,7 @@ extension CloudKitSyncProvider: ZoneSharing {
     }
 
     /// Accepts a share the system handed the app, and returns its zone as the person now sees it.
-    public func accept(_ metadata: CKShare.Metadata) async throws -> Zone {
+    package func accept(_ metadata: CKShare.Metadata) async throws -> Zone {
         let zoneID = metadata.share.recordID.zoneID
         guard let zone = Self.zone(for: zoneID, scope: .shared) else {
             throw RecordsError.sharingUnavailable(zone: zoneID.zoneName)

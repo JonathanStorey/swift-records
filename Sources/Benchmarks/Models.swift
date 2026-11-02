@@ -1,9 +1,10 @@
 import Foundation
+import Identification
 import SwiftRecords
 
 @Record
 struct Recipe {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Indexed var servings: Int
     var rating: Double
@@ -14,7 +15,7 @@ struct Recipe {
 
 @Record
 struct Step {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text: String
     var minutes: Int
     var position = 0.0

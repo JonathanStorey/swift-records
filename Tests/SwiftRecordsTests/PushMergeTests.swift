@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftRecords
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 /// A save or a sync from elsewhere merges into a record's unsaved edit as it arrives, so views show the

@@ -1,6 +1,6 @@
 import Foundation
 
-/// One zone's side of sync: where it stands, its asset transfers, and the calls its contexts make. The
+/// One zone's side of sync: where it stands, and the calls its contexts make. The
 /// container's `SyncHub` does the work with the engine.
 final class ZoneSync: @unchecked Sendable {
     /// Where syncing stands, which a context combines with its own saves into `status`.
@@ -12,24 +12,6 @@ final class ZoneSync: @unchecked Sendable {
         case failed(RecordsError)
     }
 
-    /// How far the current asset transfers have got, by file count, and the file downloading now.
-    struct Transfer: Sendable, Hashable {
-        var done: Int
-        var total: Int
-        /// The asset file downloading now.
-        var downloading: String?
-        /// How much of it has arrived, when the transfer reports that.
-        var fraction: Double?
-    }
-
-    /// A transfer update, numbered so one reported late from a progress callback can't undo a newer one.
-    struct TransferReport: Sendable {
-        var transfer: Transfer?
-        /// Whether a downloaded file just landed.
-        var landed: Bool
-        var number: Int
-    }
-
     private static let accountKey = "provider.account"
     private static let identifierKey = "provider.identifier"
     private static let refetchKey = "provider.refetch"
@@ -38,8 +20,8 @@ final class ZoneSync: @unchecked Sendable {
     let store: RecordStore
     private let hub: SyncHub
     private let phaseChanged: @Sendable (Phase) -> Void
-    /// Reports transfer progress, `nil` when none are running, and whether a downloaded file just landed.
-    private let transferChanged: @Sendable (TransferReport) async -> Void
+    /// Reports that asset files that came with records are in place, so views show them.
+    private let filesLanded: @Sendable () async -> Void
     /// Whether a context is showing the zone, so its changes are fetched first.
     private let shown: @Sendable () -> Bool
 
@@ -51,22 +33,18 @@ final class ZoneSync: @unchecked Sendable {
     private var signedOut = false
     private var prepared = false
     private var commitObserver: UUID?
-    /// The asset transfers running now, and whether a sync has finished since they started.
-    private var transferring: Task<Void, Never>?
-    private var transferRequested = false
-    private var reports = 0
 
     init(
         zone: Zone, store: RecordStore, hub: SyncHub,
         phaseChanged: @escaping @Sendable (Phase) -> Void,
-        transferChanged: @escaping @Sendable (TransferReport) async -> Void = { _ in },
+        filesLanded: @escaping @Sendable () async -> Void = {},
         shown: @escaping @Sendable () -> Bool = { false }
     ) {
         self.zone = zone
         self.store = store
         self.hub = hub
         self.phaseChanged = phaseChanged
-        self.transferChanged = transferChanged
+        self.filesLanded = filesLanded
         self.shown = shown
         hub.registry.add(self)
         // Each commit's changes are pending, which the engine hears of.
@@ -107,13 +85,6 @@ final class ZoneSync: @unchecked Sendable {
     /// Fetches the server's changes without sending first.
     func download() async {
         await hub.download(self)
-    }
-
-    /// Waits for the asset transfers running now, and any a finished sync has asked for.
-    func transfers() async {
-        while let transferring = lock.withLock({ transferring }) {
-            await transferring.value
-        }
     }
 
     // MARK: Phase
@@ -178,7 +149,6 @@ final class ZoneSync: @unchecked Sendable {
             }
         }
         setPhase(new)
-        startTransfers()
     }
 
     func setSignedOut(_ value: Bool) {
@@ -284,9 +254,8 @@ final class ZoneSync: @unchecked Sendable {
             }
         }
         if landed {
-            let report = TransferReport(transfer: nil, landed: true, number: nextReport())
-            let transferChanged = transferChanged
-            Task { await transferChanged(report) }
+            let filesLanded = filesLanded
+            Task { await filesLanded() }
         }
     }
 
@@ -323,88 +292,5 @@ final class ZoneSync: @unchecked Sendable {
 
     private static func recordsError(_ error: any Error) -> RecordsError {
         (RecordsError.mapping(error) as? RecordsError) ?? .database(code: -1, message: "\(error)")
-    }
-
-    // MARK: Assets
-
-    private func startTransfers() {
-        guard hub.provider.assetTransfer != nil else { return }
-        lock.withLock {
-            if transferring != nil {
-                transferRequested = true
-                return
-            }
-            transferring = Task { await self.transferLoop() }
-        }
-    }
-
-    private func transferLoop() async {
-        while true {
-            lock.withLock { transferRequested = false }
-            await transferAssets()
-            let again = lock.withLock {
-                if transferRequested { return true }
-                transferring = nil
-                return false
-            }
-            if !again { return }
-        }
-    }
-
-    /// Uploads the files the server doesn't have, then downloads the ones records here are waiting for,
-    /// one file at a time. A file that fails waits for the next sync, as when its record arrived before
-    /// the device that made it finished uploading it.
-    private func transferAssets() async {
-        guard let transfer = hub.provider.assetTransfer else { return }
-        let signedOut = lock.withLock { self.signedOut }
-        let uploads = signedOut ? [] : (try? store.unsentAssets(zone: zone)) ?? []
-        let downloads = signedOut ? [] : (try? store.missingAssets()) ?? []
-        var progress = Transfer(done: 0, total: uploads.count + downloads.count)
-        guard progress.total > 0 else { return }
-        await report(progress)
-        for asset in uploads {
-            if (try? await transfer.uploadAssets([asset])) != nil {
-                try? store.markAssetsUploaded([asset.id])
-            }
-            progress.done += 1
-            await report(progress)
-        }
-        for id in downloads {
-            progress.downloading = id
-            await report(progress)
-            let landed = (try? await downloadAsset(id, with: transfer, progress: progress)) ?? false
-            progress.downloading = nil
-            progress.done += 1
-            await report(progress, landed: landed)
-        }
-        await report(nil)
-    }
-
-    private func nextReport() -> Int {
-        lock.withLock {
-            reports += 1
-            return reports
-        }
-    }
-
-    private func report(_ transfer: Transfer?, landed: Bool = false) async {
-        await transferChanged(TransferReport(transfer: transfer, landed: landed, number: nextReport()))
-    }
-
-    private func downloadAsset(_ id: String, with transfer: any AssetTransfer, progress: Transfer) async throws -> Bool {
-        let manager = FileManager.default
-        let directory = manager.temporaryDirectory.appendingPathComponent("SwiftRecords-\(UUID().uuidString)")
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: directory) }
-        let transferChanged = transferChanged
-        let file = try await transfer.downloadAsset(id: id, zone: zone, into: directory) { [weak self] fraction in
-            guard let self else { return }
-            var progress = progress
-            progress.fraction = min(max(fraction, 0), 1)
-            // The number is taken now, so a report that reaches views after a newer one is dropped.
-            let report = TransferReport(transfer: progress, landed: false, number: self.nextReport())
-            Task { await transferChanged(report) }
-        }
-        return try store.placeDownloadedAsset(at: file, id: id)
     }
 }

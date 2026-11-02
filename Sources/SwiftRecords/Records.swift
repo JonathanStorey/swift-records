@@ -81,7 +81,7 @@ public struct Records<R: Record>: DynamicProperty {
     /// The records a descriptor matches, as `@Query` takes a `FetchDescriptor`. A zone pins the wrapper to it
     /// whatever the context's is, and `nil` follows the context. With a `fetchLimit`, the view shows at most
     /// that many, so `RecordDescriptor<Recipe>(fetchLimit: 20)` shows the first 20.
-    public init(_ zone: Zone?, _ descriptor: RecordDescriptor<R>, animation: Animation? = .default) {
+    public init(_ descriptor: RecordDescriptor<R>, zone: Zone? = nil, animation: Animation? = .default) {
         self.init(zone: zone, query: .list(descriptor), animation: animation)
     }
 
@@ -92,7 +92,7 @@ public struct Records<R: Record>: DynamicProperty {
         _ zone: Zone? = nil, filter predicate: Predicate<R>? = nil, sort: [SortDescriptor<R>] = [],
         animation: Animation? = .default
     ) {
-        self.init(zone, RecordDescriptor(predicate: predicate, sortBy: sort), animation: animation)
+        self.init(RecordDescriptor(predicate: predicate, sortBy: sort), zone: zone, animation: animation)
     }
 
     private var resolvedContext: RecordContext? { mainContext(of: container) }
@@ -245,11 +245,6 @@ extension Records {
         self.init(zone: zone, query: .list(ids: ids), animation: animation)
     }
 
-    /// The records a descriptor matches in the context's current zone.
-    public init(_ descriptor: RecordDescriptor<R>, animation: Animation? = .default) {
-        self.init(nil, descriptor, animation: animation)
-    }
-
     /// Records sorted by one property, as `@Query(sort: \.title)`.
     public init<Property: Comparable>(
         _ zone: Zone? = nil, filter predicate: Predicate<R>? = nil, sort keyPath: any KeyPath<R, Property> & Sendable,
@@ -310,7 +305,7 @@ extension Records.Query {
 
 /// Paging read naturally off `$todos`, such as `$todos.page += 1`.
 @MainActor
-extension Binding where Value: RecordResultsProtocol {
+extension Binding where Value: _RecordResultsProtocol {
     /// Every saved record the query matches, not only the page's.
     public var totalCount: Int { wrappedValue.totalCount }
     /// The page size the descriptor chose, or `nil` for no limit.

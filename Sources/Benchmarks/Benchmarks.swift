@@ -83,7 +83,7 @@ struct Run {
     mutating func all(recipes count: Int, in folder: URL) async throws {
         let server = BenchmarkServer(name: "first")
         var phone: RecordContainer? = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: server.makeEngine()
+            for: [Recipe.self], location: .directory(folder.appendingPathComponent("phone")), syncProvider: server.makeEngine()
         )
         let context = phone!.mainContext
         say("Store of \(count) recipes with 5 steps each (\(count * 6) records)\n")
@@ -92,7 +92,7 @@ struct Run {
 
         let chunk = 500
         try await measure("Import recipes with steps, 500 per save", records: count * 6) {
-            try await phone!.performBackgroundTask { background in
+            try await phone!.mainContext.performInBackground { background in
                 for start in stride(from: 0, to: count, by: chunk) {
                     let recipes = (start..<min(start + chunk, count)).map(Recipe.sample)
                     try background.transaction { try background.insert(recipes) }
@@ -193,7 +193,7 @@ struct Run {
         try expect(server.count == remaining * 6, "server has \(server.count) of \(remaining * 6) records")
 
         let tablet = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("tablet"), syncProvider: server.makeEngine()
+            for: [Recipe.self], location: .directory(folder.appendingPathComponent("tablet")), syncProvider: server.makeEngine()
         )
         let tabletContext = tablet.mainContext
         _ = try tabletContext.fetchCount(RecordDescriptor<Recipe>())
@@ -221,7 +221,7 @@ struct Run {
         // that started before it, and two devices editing the same records.
         let mergeIDs = try context.fetch(RecordDescriptor<Recipe>(fetchLimit: 1_000, fetchOffset: remaining / 2)).map(\.id)
         let backgroundEdit: (Int) async throws -> Void = { round in
-            try await phone!.performBackgroundTask { background in
+            try await phone!.mainContext.performInBackground { background in
                 var batch: [Recipe] = []
                 for id in mergeIDs {
                     guard var recipe = try background.record(Recipe.self, for: id) else { continue }
@@ -279,7 +279,7 @@ struct Run {
         phone = nil
         let newServer = BenchmarkServer(name: "second")
         let moved = try RecordContainer(
-            for: [Recipe.self], directory: folder.appendingPathComponent("phone"), syncProvider: newServer.makeEngine()
+            for: [Recipe.self], location: .directory(folder.appendingPathComponent("phone")), syncProvider: newServer.makeEngine()
         )
         let movedContext = moved.mainContext
         _ = try movedContext.fetchCount(RecordDescriptor<Recipe>())

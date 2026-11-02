@@ -1,12 +1,13 @@
 import Foundation
-import SwiftRecords
+import Identification
+@_spi(SyncProvider) import SwiftRecords
 import Testing
 
 // Two versions of one record type, sharing a table through `@Record(_:)`.
 
 @Record("Dish")
 struct DishV1 {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     var minutes: Int
     @Reference(to: Ingredient.self) var shelf: [Ingredient] = []
@@ -14,7 +15,7 @@ struct DishV1 {
 
 @Record("Dish")
 struct DishV2 {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Renamed(from: "minutes") var duration: Int = 0
     @Renamed(from: "shelf") @Reference(to: Ingredient.self) var ingredients: [Ingredient] = []
@@ -26,7 +27,7 @@ struct DishV2 {
 
 @Record
 struct Ingredient {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
 }

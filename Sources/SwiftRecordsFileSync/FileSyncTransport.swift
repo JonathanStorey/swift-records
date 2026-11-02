@@ -1,5 +1,5 @@
 import Foundation
-import SwiftRecords
+@_spi(SyncProvider) import SwiftRecords
 
 /// Syncs through a folder of files, such as the app's iCloud container, which the system then copies
 /// between the person's devices. No server code is needed.
@@ -10,7 +10,8 @@ import SwiftRecords
 /// ```
 ///
 /// Each record is one readable JSON file, at `Records/<zone>/<type>/<id>.json`, and each asset is a plain
-/// file in `Records/<zone>/_assets/`. A deletion stays behind as a small file so other devices hear of it.
+/// file in `Records/<zone>/_assets/`, written before its record so the two arrive together. A record whose
+/// files iCloud hasn't downloaded yet waits for them. A deletion stays behind as a small file so other devices hear of it.
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
 /// can't miss each other's changes. Deleting a zone's folder deletes the zone, and its records leave
 /// every device.
@@ -28,7 +29,7 @@ import SwiftRecords
 /// Sharing a zone hands out its folder's URL. Whoever opens that URL from their own `FileSyncTransport`,
 /// such as through a shared network drive or App Group, joins the zone and syncs it in place. A shared
 /// folder isn't watched, so its changes arrive with the next sync.
-public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing, @unchecked Sendable {
+public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sendable {
     /// Where the files live.
     public enum Location: Sendable, Hashable {
         /// The app's iCloud container, hidden from the Files app.
@@ -125,9 +126,9 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
     // MARK: SyncTransport
 
     /// The location, so moving to another folder uploads everything to it.
-    public var identifier: String { "FileSyncTransport.\(location)" }
+    @_spi(SyncProvider) public var identifier: String { "FileSyncTransport.\(location)" }
 
-    public func currentUser() async throws -> String? {
+    @_spi(SyncProvider) public func currentUser() async throws -> String? {
         guard location.isICloud else { return "local" }
         #if canImport(Darwin)
         // The token changes with the iCloud account, and is nil while signed out.
@@ -141,15 +142,20 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
         #endif
     }
 
-    public var scopes: Set<Zone.Scope> { [.private, .shared] }
+    @_spi(SyncProvider) public var scopes: Set<Zone.Scope> { [.private, .shared] }
 
-    public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
+    @_spi(SyncProvider) public func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         let root = try root()
         let changes = batch.changes
         defer { mark(Set(changes.map(\.zone)), in: root) }
         var folders: [Zone: URL] = [:]
         for zone in Set(changes.map(\.zone)) {
             folders[zone] = try? folder(for: zone, in: root)
+        }
+        // A record's files go up before the record, so a device that sees the record can find them.
+        for change in changes {
+            guard let folder = folders[change.zone] else { continue }
+            try Self.storeFiles(change.assetFiles, in: folder)
         }
         return try lock.withLock {
             var result = SentRecordChanges()
@@ -171,6 +177,7 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
                 stored.synced = Self.stamp(after: current?.synced)
                 stored.tag = stored.synced.map(Self.tag)
                 stored.zone = (try? Zone(change.zone.name)) ?? change.zone
+                stored.assetFiles = [:]
                 try Self.write(stored, to: file)
                 if change.isDeletion {
                     result.deleted.append(RecordDeletion(id: change.id, zone: change.zone, type: change.type))
@@ -191,7 +198,7 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
 
     /// Every zone folder, so each is checked for new files, and the zones whose folders were deleted or
     /// replaced since `token`, which holds each folder's identity.
-    public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
+    @_spi(SyncProvider) public func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
         let root = try root()
         if scope == .shared {
             return try sharedDatabaseChanges(in: root, since: token)
@@ -212,16 +219,18 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
         return DatabaseChanges(modified: modified, deleted: deleted.sorted { $0.zone.name < $1.zone.name }, token: try JSONEncoder().encode(epochs))
     }
 
-    public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
+    @_spi(SyncProvider) public func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
         let folder = try folder(for: zone, in: root())
         var state = token.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
         var found: [(key: String, change: RecordChangeData)] = []
         for file in Self.recordFiles(in: folder) {
-            guard let change = try? Self.read(file).map({ Self.seen($0, in: zone) }), let tag = change.tag else { continue }
+            guard var change = try? Self.read(file).map({ Self.seen($0, in: zone) }), let tag = change.tag else { continue }
             let key = "\(change.type)/\(change.id)"
-            if state.seen[key] != tag {
-                found.append((key, change))
-            }
+            guard state.seen[key] != tag else { continue }
+            // A record arrives with its files. One whose files are still downloading waits for the next fetch.
+            guard let files = Self.files(of: change, in: folder) else { continue }
+            change.assetFiles = files
+            found.append((key, change))
         }
         found.sort {
             ($0.change.synced ?? .distantPast, $0.key) < ($1.change.synced ?? .distantPast, $1.key)
@@ -238,39 +247,45 @@ public final class FileSyncTransport: SyncTransport, AssetTransfer, ZoneSharing,
         )
     }
 
-    public func uploadAssets(_ assets: [RecordAssetData]) async throws {
-        let root = try root()
-        defer { mark(Set(assets.map(\.zone)), in: root) }
+    /// Copies a record's asset files into the zone's assets folder. A file never changes once stored, so
+    /// one already there is left alone.
+    private static func storeFiles(_ files: [String: URL], in zone: URL) throws {
+        guard !files.isEmpty else { return }
         let manager = FileManager.default
-        for asset in assets {
-            let folder = try folder(for: asset.zone, in: root).appendingPathComponent(Self.assetsFolder, isDirectory: true)
-            let destination = folder.appendingPathComponent(asset.id)
-            // A file never changes once stored.
+        let folder = zone.appendingPathComponent(assetsFolder, isDirectory: true)
+        for (id, file) in files.sorted(by: { $0.key < $1.key }) {
+            let destination = folder.appendingPathComponent(id)
             guard !manager.fileExists(atPath: destination.path) else { continue }
-            try Self.mapping {
+            try mapping {
                 try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-                try Self.coordinate(writing: destination) { url in
-                    let partial = folder.appendingPathComponent(".\(asset.id).partial")
+                try coordinate(writing: destination) { url in
+                    let partial = folder.appendingPathComponent(".\(id).partial")
                     try? manager.removeItem(at: partial)
-                    try manager.copyItem(at: asset.file, to: partial)
+                    try manager.copyItem(at: file, to: partial)
                     try manager.moveItem(at: partial, to: url)
                 }
             }
         }
     }
 
-    public func downloadAsset(id: String, zone: Zone, into directory: URL) async throws -> URL {
-        let source = try folder(for: zone, in: root())
-            .appendingPathComponent(Self.assetsFolder, isDirectory: true).appendingPathComponent(id)
-        let destination = directory.appendingPathComponent(id)
-        guard Self.isAvailable(source) else { throw SyncFailure.networkUnavailable }
-        try Self.coordinate(reading: source) { url in
-            try FileManager.default.copyItem(at: url, to: destination)
+    /// The files behind a change's assets, ready to copy in, or `nil` while one is still downloading, such
+    /// as from iCloud. A file that is gone for good is left out, and the record arrives without it.
+    private static func files(of change: RecordChangeData, in zone: URL) -> [String: URL]? {
+        let folder = zone.appendingPathComponent(assetsFolder, isDirectory: true)
+        var files: [String: URL] = [:]
+        var waiting = false
+        for case .asset(let id) in change.fields?.values.map({ $0 }) ?? [] {
+            let file = folder.appendingPathComponent(id)
+            if isAvailable(file) {
+                files[id] = file
+            } else if FileManager.default.fileExists(atPath: folder.appendingPathComponent(".\(id).icloud").path) {
+                waiting = true
+            }
         }
-        return destination
+        return waiting ? nil : files
     }
 
-    public func changeNotifications() -> AsyncStream<[Zone]>? {
+    @_spi(SyncProvider) public func changeNotifications() -> AsyncStream<[Zone]>? {
         let (stream, continuation) = AsyncStream<[Zone]>.makeStream()
         let id = UUID()
         lock.withLock { pushes[id] = continuation }

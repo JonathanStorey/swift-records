@@ -1,20 +1,21 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 @Record
 struct Draft {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     var tags: Set<String> = []
     @Reference(to: DraftStep.self) var steps: [DraftStep] = []
-    @Asset(fileExtension: "png") var image: Data?
+    @Asset var image: Data?
     @Timestamped var modified: Date?
 }
 
 @Record
 struct DraftStep {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text = ""
     @Reference(to: \Draft.steps) var drafts: Set<Draft.ID>
 }
@@ -94,7 +95,7 @@ struct DraftStep {
 
     @Test func backgroundContextsCompareWithTheStore() async throws {
         let draft = Draft(title: "Soup")
-        try await container.performBackgroundTask { context in
+        try await container.mainContext.performInBackground { context in
             #expect(try context.hasChanges(draft))
             try context.insert(draft)
             #expect(try !context.hasChanges(draft))

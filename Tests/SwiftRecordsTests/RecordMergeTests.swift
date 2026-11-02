@@ -1,5 +1,6 @@
 import Foundation
-@testable import SwiftRecords
+import Identification
+@_spi(SyncProvider) @testable import SwiftRecords
 import Testing
 
 struct Address: Codable, Hashable, Sendable {
@@ -9,7 +10,7 @@ struct Address: Codable, Hashable, Sendable {
 
 @Record
 struct MergeContact {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = "Ann"
     var place = Address()
     var tags: Set<String> = ["family"]
@@ -21,11 +22,11 @@ struct MergeContact {
 /// Merges itself: a confirmed booking wins every conflict.
 @Record
 struct MergeBooking: Mergeable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var note = ""
     var confirmed = false
 
-    func merging(with theirs: MergeBooking, from base: MergeBooking) -> MergeBooking {
+    func merging(with theirs: MergeBooking, from base: MergeBooking) -> MergeBooking? {
         confirmed ? self : theirs
     }
 }
@@ -33,12 +34,12 @@ struct MergeBooking: Mergeable {
 /// Merges itself, but gives up on a conflict, so the usual merge decides.
 @Record
 struct MergeTicket: Mergeable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var seat = ""
     var place = Address()
 
-    func merging(with theirs: MergeTicket, from base: MergeTicket) throws(MergeConflict<MergeTicket>) -> MergeTicket {
-        throw MergeConflict(base: base, ours: self, theirs: theirs)
+    func merging(with theirs: MergeTicket, from base: MergeTicket) -> MergeTicket? {
+        nil
     }
 }
 

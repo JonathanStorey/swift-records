@@ -43,9 +43,20 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     /// doesn't ask its sync provider about it.
     public static let localOnly = Zone(unchecked: "_local")
 
+    /// A named zone stored on this device that never syncs, such as `Zone.local("drafts")`, for when one
+    /// `.localOnly` isn't enough. It is stored as `_local.drafts.sqlite`, apart from a synced `"drafts"`.
+    /// The name follows the rules for zone names.
+    public static func local(_ name: String) throws -> Zone {
+        let name = name.lowercased()
+        guard isValid(name) else { throw RecordsError.invalidZoneName(name) }
+        return Zone(unchecked: localPrefix + name)
+    }
+
+    private static let localPrefix = "_local."
+
     /// The zone `@RecordStorage` keeps one setting in, `_settings.favorite` for the key `"favorite"`, so
     /// each setting syncs, resets and fails on its own. The key follows the rules for zone names.
-    public static func settings(_ key: String) -> Zone {
+    static func settings(_ key: String) -> Zone {
         let key = key.lowercased()
         precondition(isValid(key), "\"\(key)\" is not a valid settings key. Use 1 to 64 letters, digits, - or _, starting with a letter.")
         return Zone(unchecked: settingsPrefix + key)
@@ -63,7 +74,8 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     package init?(stored name: String) {
         if let zone = Zone.reserved.first(where: { $0.name == name }) {
             self = zone
-        } else if name.hasPrefix(Zone.settingsPrefix), Zone.isValid(String(name.dropFirst(Zone.settingsPrefix.count))) {
+        } else if let prefix = [Zone.settingsPrefix, Zone.localPrefix].first(where: name.hasPrefix),
+                  Zone.isValid(String(name.dropFirst(prefix.count))) {
             self.init(unchecked: name)
         } else if let zone = try? Zone(name) {
             self = zone
@@ -173,7 +185,7 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
     }
 
     /// Whether the container asks its sync provider about this zone.
-    var canSync: Bool { self != .inMemory && self != .localOnly }
+    var canSync: Bool { self != .inMemory && self != .localOnly && !name.hasPrefix(Zone.localPrefix) }
 
     private static let reserved: [Zone] = [.default, .inMemory, .localOnly]
 
@@ -189,7 +201,7 @@ public struct Zone: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Cus
 extension RecordContainer {
     /// The folder a container uses when given none: `Application Support/Records`. On macOS the folder sits inside one
     /// named for the app's bundle identifier, because Application Support is shared by every app there.
-    public static var defaultDirectory: URL {
+    static var defaultDirectory: URL {
         var directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         #if os(macOS)
         directory.appendPathComponent(Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName)
@@ -200,13 +212,28 @@ extension RecordContainer {
 
     #if canImport(Darwin)
     /// The folder for zone files shared with an app extension, such as a widget: `Library/Application
-    /// Support/Records` inside the App Group's container. Returns `nil` when the app doesn't have the
-    /// App Group entitlement. Pass it as the container's `directory`.
-    public static func directory(appGroup identifier: String) -> URL? {
+    /// Support/Records` inside the App Group's container, or `nil` without the App Group entitlement.
+    static func directory(appGroup identifier: String) -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)?
             .appendingPathComponent("Library/Application Support/Records", isDirectory: true)
     }
     #endif
+
+    /// The folder a location names, or `nil` in memory. Throws for an App Group the app can't open.
+    static func directory(for location: Location) throws -> URL? {
+        switch location {
+        case .applicationSupport: return defaultDirectory
+        #if canImport(Darwin)
+        case .appGroup(let identifier):
+            guard let directory = directory(appGroup: identifier) else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "No App Group container for \(identifier)"])
+            }
+            return directory
+        #endif
+        case .directory(let url): return url
+        case .inMemory: return nil
+        }
+    }
 
     /// Creates the directory if needed and makes sure it is included in device backups. The flag is
     /// cleared explicitly because earlier versions excluded the folder.

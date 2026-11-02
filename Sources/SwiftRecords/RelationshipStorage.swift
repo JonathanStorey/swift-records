@@ -6,6 +6,7 @@ import Foundation
 ///
 /// Two values are equal when they hold the same records, whenever each was fetched.
 @propertyWrapper
+@_documentation(visibility: internal)
 public struct RelationshipStorage<Value> {
     public var wrappedValue: Value
     /// The value as fetched, or nil for a value that wasn't, which replaces whatever is stored. An array
@@ -63,6 +64,7 @@ extension RelationshipStorage: AnyRelationshipStorage where Value: RecordCollect
 
 extension KeyedDecodingContainer {
     /// Lets a record decode without its relationship's key, as an empty array or nil.
+    @_documentation(visibility: internal)
     public func decode<Value: Codable>(_ type: RelationshipStorage<Value>.Type, forKey key: Key) throws -> RelationshipStorage<Value> {
         func decoded<T: Decodable>(_ type: T.Type) throws -> T { try decode(type, forKey: key) }
         if !contains(key), let collection = Value.self as? any RecordCollection.Type {
