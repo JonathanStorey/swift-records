@@ -1,17 +1,18 @@
 import Foundation
+import Identification
 import SwiftRecords
 import Testing
 
 @Record
 struct Person {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \ToDo.owner) var todos: [ToDo] = []
 }
 
 @Record
 struct ToDo {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     var done = false
     var priority = 0
@@ -24,14 +25,14 @@ struct ToDo {
 
 @Record
 struct Note {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text: String
     @Reference(to: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct Subtask {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
     @Reference(from: Folder.self, action: .deleteSelf) var folder: Folder.ID?
@@ -39,7 +40,7 @@ struct Subtask {
 
 @Record
 struct Folder {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \Subtask.folder) var items: [Subtask] = []
 }

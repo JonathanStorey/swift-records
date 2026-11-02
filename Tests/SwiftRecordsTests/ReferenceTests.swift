@@ -1,10 +1,11 @@
 import Foundation
+import Identification
 import SwiftRecords
 import Testing
 
 @Record
 struct Board {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     @Reference(to: \Card.board) var cards: [Card] = []
     @Reference(to: Sticker.self) var stickers: [Sticker] = []
@@ -12,41 +13,41 @@ struct Board {
 
 @Record
 struct Card {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text = ""
     @Reference(from: Board.self, action: .deleteSelf) var board: Board.ID?
 }
 
 @Record
 struct Sticker {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
     @Reference(to: \Board.stickers) var boardIDs: Set<Board.ID>
 }
 
 @Record
 struct Shelf {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: \Book.shelf) var books: [Book] = []
 }
 
 @Record
 struct Book {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     @Reference(from: Shelf.self) var shelf: Shelf.ID?
 }
 
 @Record
 struct Member {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
     @Reference(to: \Membership.member) var memberships: [Membership] = []
 }
 
 @Record
 struct Team {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
     @Reference(to: \Membership.team) var memberships: [Membership] = []
 }
@@ -54,7 +55,7 @@ struct Team {
 /// A link with properties of its own, which belongs to both ends.
 @Record
 struct Membership {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var role = ""
     @Reference(from: Member.self, action: .deleteSelf) var member: Member.ID?
     @Reference(from: Team.self, action: .deleteSelf) var team: Team.ID?
@@ -63,7 +64,7 @@ struct Membership {
 /// Children read through a pointer that names another type.
 @Record
 struct MisplacedReference {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: \Card.board) var cards: [Card] = []
 }
 

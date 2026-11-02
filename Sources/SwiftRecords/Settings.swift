@@ -2,7 +2,7 @@ import Foundation
 
 extension Array where Element: Record {
     /// The record `@RecordStorage` shows when a zone holds several, which happens only when devices each
-    /// stored one before syncing: the lowest ID, which `UUID.ordered()` makes the oldest. Every device picks
+    /// stored one before syncing: the lowest ID, which `UUID.timestamp` makes the oldest. Every device picks
     /// the same one without asking the others.
     var setting: Element? {
         self.min { $0.id.uuidString < $1.id.uuidString }

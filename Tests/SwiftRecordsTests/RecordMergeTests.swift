@@ -1,4 +1,5 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
@@ -9,7 +10,7 @@ struct Address: Codable, Hashable, Sendable {
 
 @Record
 struct MergeContact {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = "Ann"
     var place = Address()
     var tags: Set<String> = ["family"]
@@ -21,7 +22,7 @@ struct MergeContact {
 /// Merges itself: a confirmed booking wins every conflict.
 @Record
 struct MergeBooking: Mergeable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var note = ""
     var confirmed = false
 
@@ -33,7 +34,7 @@ struct MergeBooking: Mergeable {
 /// Merges itself, but gives up on a conflict, so the usual merge decides.
 @Record
 struct MergeTicket: Mergeable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var seat = ""
     var place = Address()
 

@@ -32,7 +32,7 @@ struct Label {
 ```
 
 Every record's `id` is a `UUID`, so records created on different devices never collide. IDs are
-stored as 16-byte blobs, which keeps primary keys and indexes compact. `UUID.ordered()` makes a version 7
+stored as 16-byte blobs, which keeps primary keys and indexes compact. `UUID.timestamp` makes a version 7
 UUID that sorts after every ID made before it, so records list in the order they were created.
 
 ## Containers and contexts
@@ -286,7 +286,7 @@ pointer names it, and `Child?` holds one, for a one-to-one.
 - A fetched array remembers what it held, so saving it removes only the children you took out. A child
   that arrived from another device, or another save, after the fetch stays. A value you build rather
   than fetch says exactly what the parent holds. Many-to-many arrays work the same way.
-- Without `sort:`, children come in ID order, which is creation order with `UUID.ordered()` IDs.
+- Without `sort:`, children come in ID order, which is creation order with `UUID.timestamp` IDs.
   `sort: \.position` or an array of `SortDescriptor`s orders them by the children's own properties, so
   reordering is an edit to the children, and the pointer and sort columns share an index.
 
@@ -990,7 +990,7 @@ Toggle("Metric", isOn: $preferences.metric)
 Each key lives in a zone of its own, `Zone.settings("favorite")`, so settings never mix with each other or
 with app data, and switching `context.zone` leaves them alone. The setting reads as the default value until
 the first edit stores it, and `$preferences.restoreDefault()` deletes it again. If two devices each store a
-setting before they sync, every device shows the one with the lower ID, the older with `UUID.ordered()`,
+setting before they sync, every device shows the one with the lower ID, the older with `UUID.timestamp`,
 and the next edit deletes the other. Each key is a file and a server zone, which suits dozens of settings
 rather than hundreds.
 

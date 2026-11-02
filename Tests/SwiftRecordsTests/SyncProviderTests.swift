@@ -1,10 +1,11 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record("SyncRecipe")
 struct SyncRecipe {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     var servings = 1
     @Renamed(from: "notes") var summary = ""
@@ -17,14 +18,14 @@ struct SyncRecipe {
 
 @Record
 struct SyncStep {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text: String
     @Reference(from: SyncRecipe.self, action: .deleteSelf) var recipe: SyncRecipe.ID?
 }
 
 @Record
 struct SyncCook {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \SyncRecipe.cooks) var recipeIDs: Set<SyncRecipe.ID>
 }
@@ -359,7 +360,7 @@ struct Device {
     @Test func childrenArrivingBeforeTheirParentResolveLater() async throws {
         let phone = try Device(server)
         _ = try await phone.recipes()
-        let recipeID = UUID.ordered()
+        let recipeID = UUID.timestamp
         server.put("SyncStep", fields: ["text": .string("Whisk"), "recipe": .reference(recipeID, action: .deleteSelf)])
         await phone.download()
         #expect(try phone.context.fetch(SyncStep.self).map(\.recipe) == [recipeID])
@@ -372,7 +373,7 @@ struct Device {
     @Test func linksArrivingBeforeTheirTargetsResolveLater() async throws {
         let phone = try Device(server)
         _ = try await phone.recipes()
-        let recipeID = UUID.ordered()
+        let recipeID = UUID.timestamp
         let cook = SyncCook(name: "Ana")
         server.put("SyncRecipe", id: recipeID, fields: ["title": .string("Omelette")])
         server.put("RecordLink", id: _RecordLink.id(relation: "SyncRecipe.cooks", from: recipeID, to: cook.id), fields: [

@@ -1,4 +1,5 @@
 import Foundation
+import Identification
 import SwiftRecords
 import Testing
 
@@ -6,7 +7,7 @@ import Testing
 
 @Record("Dish")
 struct DishV1 {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     var minutes: Int
     @Reference(to: Ingredient.self) var shelf: [Ingredient] = []
@@ -14,7 +15,7 @@ struct DishV1 {
 
 @Record("Dish")
 struct DishV2 {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Renamed(from: "minutes") var duration: Int = 0
     @Renamed(from: "shelf") @Reference(to: Ingredient.self) var ingredients: [Ingredient] = []
@@ -26,7 +27,7 @@ struct DishV2 {
 
 @Record
 struct Ingredient {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \DishV2.ingredients) var dishIDs: Set<DishV2.ID>
 }

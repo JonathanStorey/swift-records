@@ -51,11 +51,14 @@ let package = Package(
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["SwiftRecords"]
+            dependencies: ["SwiftRecords", .product(name: "Identification", package: "swift-identification")]
         ),
         .testTarget(
             name: "SwiftRecordsTests",
-            dependencies: ["SwiftRecords", "SwiftRecordsFileSync", "SwiftRecordsCloudKit"]
+            dependencies: [
+                "SwiftRecords", "SwiftRecordsFileSync", "SwiftRecordsCloudKit",
+                .product(name: "Identification", package: "swift-identification"),
+            ]
         ),
         .testTarget(
             name: "SwiftRecordsMacrosTests",

@@ -1,10 +1,11 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record
 struct Journal {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text: String
     @Timestamped(.created) var created: Date?
     @Timestamped(.modified) var modified: Date?

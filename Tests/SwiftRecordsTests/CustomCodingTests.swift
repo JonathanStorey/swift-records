@@ -1,11 +1,12 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 /// A record whose own Codable groups properties into nested containers.
 @Record
 struct Place {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     var street: String
     var city: String

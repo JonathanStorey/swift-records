@@ -1,10 +1,11 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record
 struct Draft {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     var tags: Set<String> = []
     @Reference(to: DraftStep.self) var steps: [DraftStep] = []
@@ -14,7 +15,7 @@ struct Draft {
 
 @Record
 struct DraftStep {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var text = ""
     @Reference(to: \Draft.steps) var drafts: Set<Draft.ID>
 }

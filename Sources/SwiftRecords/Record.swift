@@ -8,14 +8,14 @@ import Foundation
 /// ```swift
 /// @Record
 /// struct ToDo {
-///     var id = UUID.ordered()
+///     var id = UUID.timestamp
 ///     var title: String
 ///     @Reference(to: \Note.todo) var notes: [Note] = []
 /// }
 ///
 /// @Record
 /// struct Note {
-///     var id = UUID.ordered()
+///     var id = UUID.timestamp
 ///     @Reference(from: ToDo.self, action: .deleteSelf) var todo: ToDo.ID?
 /// }
 /// ```
@@ -321,7 +321,7 @@ enum Relationship {
 }
 
 /// A relationship's sort descriptors, without their record type, so the store can order any relationship's
-/// records. With none, children come in ID order, which `UUID.ordered()` makes creation order, and links in
+/// records. With none, children come in ID order, which `UUID.timestamp` makes creation order, and links in
 /// the order they were made.
 struct RelationshipOrder: @unchecked Sendable {
     let isEmpty: Bool

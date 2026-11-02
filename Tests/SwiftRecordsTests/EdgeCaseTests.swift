@@ -1,17 +1,18 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record
 struct Bag: Equatable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var members: Set<String> = []
     var labels: [Int: String] = [:]
 }
 
 @Record
 struct Measurement {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var count: UInt64 = 0
     var value: Double = 0
     var text = ""
@@ -20,7 +21,7 @@ struct Measurement {
 
 @Record
 struct TreeFolder: Equatable {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name: String
     @Reference(to: \TreeFolder.parent) var subfolders: [TreeFolder] = []
     @Reference(from: TreeFolder.self, action: .deleteSelf) var parent: TreeFolder.ID?
@@ -28,7 +29,7 @@ struct TreeFolder: Equatable {
 
 @Record("Dish")
 struct DishV3 {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title: String
     @Renamed(from: "minutes", "duration") var time: Int = 0
 }

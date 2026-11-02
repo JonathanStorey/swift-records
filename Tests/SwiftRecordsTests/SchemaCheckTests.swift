@@ -1,55 +1,56 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record("Clash")
 struct ClashA {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var name = ""
 }
 
 @Record("Clash")
 struct ClashB {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
 }
 
 @Record
 struct ClashOwner {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: ClashA.self) var a: [ClashA] = []
     @Reference(to: ClashB.self) var b: [ClashB] = []
 }
 
 @Record
 struct WrongInverse {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: \ToDo.tags) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct InverseOfAnotherType {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: \ToDo.notes) var todos: Set<ToDo.ID>
 }
 
 @Record
 struct RenamedOntoAProperty {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var title = ""
     @Renamed(from: "title") var name = ""
 }
 
 @Record
 struct RenamedTwice {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Renamed(from: "label") var name = ""
     @Renamed(from: "label") var caption = ""
 }
 
 @Record
 struct UnsyncableField {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var _hidden = ""
 }
 

@@ -18,7 +18,7 @@ import SwiftUI
 /// and on other devices once a save commits them and they sync.
 ///
 /// If two devices each store the setting before they sync, the zone briefly holds two records. Every device
-/// shows the one with the lower ID, the older with `UUID.ordered()`, and the next edit deletes the other.
+/// shows the one with the lower ID, the older with `UUID.timestamp`, and the next edit deletes the other.
 @MainActor
 @propertyWrapper
 @dynamicMemberLookup

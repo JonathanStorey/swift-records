@@ -1,10 +1,11 @@
 import Foundation
+import Identification
 @testable import SwiftRecords
 import Testing
 
 @Record
 struct Photo {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     var caption = ""
     @Asset(fileExtension: "jpg") var image: Data? = nil
     @Reference(from: Album.self, action: .deleteSelf) var album: Album.ID?
@@ -12,7 +13,7 @@ struct Photo {
 
 @Record
 struct Album {
-    var id = UUID.ordered()
+    var id = UUID.timestamp
     @Reference(to: \Photo.album) var photos: [Photo] = []
 }
 
