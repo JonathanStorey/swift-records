@@ -32,7 +32,7 @@ struct Label {
 ```
 
 Every record's `id` is a `UUID`, so records created on different devices never collide. IDs are
-stored as 16-byte blobs, which keeps primary keys and indexes compact. `UUID.timestamp` makes a version 7
+stored as 16-byte blobs, which keeps primary keys and indexes compact. `UUID.timestamp`, from swift-identification (`import Identification`), makes a version 7
 UUID that sorts after every ID made before it, so records list in the order they were created.
 
 ## Containers and contexts
