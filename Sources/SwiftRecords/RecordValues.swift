@@ -173,14 +173,3 @@ extension RecordValue {
         }
     }
 }
-
-extension RecordStore {
-    /// The extension an asset property gives its files, or "" for none.
-    func assetExtension(type: String, field: String) -> String {
-        guard let type = registered[type] else { return "" }
-        func find<R: Record>(_ type: R.Type) -> String {
-            R.cachedSchema.fields.first { $0.name == field || $0.previousNames.contains(field) }?.fileExtension ?? ""
-        }
-        return find(type)
-    }
-}

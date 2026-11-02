@@ -407,8 +407,7 @@ final class RecordStore: @unchecked Sendable {
             ).first?["name"]
             var stored: SQLiteValue?
             if let asset = assets[field], let storage = asset.storage {
-                let fileExtension = assetFields.first { $0.name == field }?.fileExtension ?? ""
-                stored = .text(try storeAsset(storage, fileExtension: fileExtension, owner: R.table, id: id, field: field))
+                stored = .text(try storeAsset(storage, owner: R.table, id: id, field: field))
                 columns.append((field, stored!))
             }
             if let previous, case .text(let name) = previous, previous != stored {
@@ -419,11 +418,9 @@ final class RecordStore: @unchecked Sendable {
     }
 
     private func storeAsset(
-        _ asset: Asset.Storage, fileExtension: String, owner table: String, id: SQLiteValue, field: String
+        _ asset: Asset.Storage, owner table: String, id: SQLiteValue, field: String
     ) throws -> String {
-        // A new asset's name gets the extension from `@Asset(fileExtension:)` if it has none of its own.
-        let hasExtension = !(asset.name as NSString).pathExtension.isEmpty
-        let fileName = hasExtension || fileExtension.isEmpty ? asset.name : asset.name + "." + fileExtension
+        let fileName = asset.name
         let owner = try db.run(
             "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(fileName)]
         ).first

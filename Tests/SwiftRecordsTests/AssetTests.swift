@@ -7,7 +7,7 @@ import Testing
 struct Photo {
     var id = UUID.timestamp
     var caption = ""
-    @Asset(fileExtension: "jpg") var image: Data? = nil
+    @Asset var image: Data? = nil
     @Reference(from: Album.self, action: .deleteSelf) var album: Album.ID?
 }
 
@@ -31,7 +31,7 @@ struct Album {
 
         let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
         let url = try #require(fetched.$image)
-        #expect(url.pathExtension == "jpg")
+        #expect(url.pathExtension == "asset")
         #expect(url.deletingLastPathComponent().standardizedFileURL.path == container.assetsDirectory.standardizedFileURL.path)
         #expect(try Data(contentsOf: url) == Data("pixels".utf8))
         #expect(fetched.image == Data("pixels".utf8))

@@ -148,11 +148,6 @@ public final class RecordContainer: @unchecked Sendable {
         try storage(for: zone).store.assetURL(named: name)
     }
 
-    /// The extension an asset property gives its files, or "" for none.
-    package func assetExtension(type: String, field: String, in zone: Zone) throws -> String {
-        try storage(for: zone).store.assetExtension(type: type, field: field)
-    }
-
     /// The zone's database file, the initial zone's by default, or `nil` in memory.
     public func url(for zone: Zone? = nil) -> URL? {
         directory.flatMap { (zone ?? initialZone).url(in: $0) }

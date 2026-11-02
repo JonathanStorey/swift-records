@@ -7,7 +7,7 @@ import Foundation
 /// @Record
 /// struct Recipe {
 ///     var id = UUID()
-///     @Asset(fileExtension: "jpg") var photo: Data?
+///     @Asset var photo: Data?
 /// }
 ///
 /// recipe.photo = jpegData                 // written to disk when the record is saved
@@ -64,29 +64,38 @@ public struct Asset: Hashable, Sendable, Codable {
 
     var storage: Storage?
 
-    /// The extension given to new files, such as `"jpg"`.
-    public let fileExtension: String
+    public init(wrappedValue: Data? = nil) {
+        storage = wrappedValue.map { Storage(name: Self.makeName(), source: .data($0)) }
+    }
 
-    public init(wrappedValue: Data? = nil, fileExtension: String = "") {
-        self.fileExtension = fileExtension
-        storage = wrappedValue.map { Storage(name: Self.makeName(fileExtension: fileExtension), source: .data($0)) }
+    /// An asset that merges with `strategy` when two devices both replaced it. The strategy gets the bytes
+    /// of the version both started from and of each side, and returns `nil` to leave it to the later edit.
+    ///
+    /// ```swift
+    /// @Asset(DrawingMerge()) var drawing: Data?
+    /// ```
+    public init<Strategy: MergeStrategy<Data>>(wrappedValue: Data? = nil, _ strategy: Strategy) {
+        self.init(wrappedValue: wrappedValue)
+    }
+
+    /// An asset that keeps one side when two devices both replaced it: `@Asset(.keep(.ours))`.
+    public init<Side: SideMarker>(wrappedValue: Data? = nil, _ strategy: KeepShortcut<Side>) {
+        self.init(wrappedValue: wrappedValue)
     }
 
     /// An asset copied from the file at `url` when its record is saved, without reading it into memory.
     init(contentsOf url: URL) {
-        fileExtension = url.pathExtension
         storage = Storage(name: Self.makeName(fileExtension: url.pathExtension), source: .file(url))
     }
 
     init(storedName name: String, url: URL) {
-        fileExtension = (name as NSString).pathExtension
         storage = Storage(name: name, source: .stored(url))
     }
 
     /// The contents, read from disk the first time they're needed.
     public var wrappedValue: Data? {
         get { storage?.data() }
-        set { storage = newValue.map { Storage(name: Self.makeName(fileExtension: fileExtension), source: .data($0)) } }
+        set { storage = newValue.map { Storage(name: Self.makeName(), source: .data($0)) } }
     }
 
     /// The stored file: `recipe.$photo`. It's `nil` until the record has been saved and fetched back, for
@@ -96,7 +105,7 @@ public struct Asset: Hashable, Sendable, Codable {
     /// and assigning `nil` clears the asset.
     public var projectedValue: URL? {
         get { url }
-        set { self = newValue.map { Asset(contentsOf: $0) } ?? Asset(fileExtension: fileExtension) }
+        set { self = newValue.map { Asset(contentsOf: $0) } ?? Asset() }
     }
 
     /// The stored file, or `nil` when it isn't on disk.
@@ -114,8 +123,12 @@ public struct Asset: Hashable, Sendable, Codable {
         return storage?.name
     }
 
-    static func makeName(fileExtension: String) -> String {
-        fileExtension.isEmpty ? UUID().uuidString : UUID().uuidString + "." + fileExtension
+    /// The extension a file written from bytes gets, since the bytes don't say what they are.
+    package static let defaultExtension = "asset"
+
+    /// A new unique file name, with the extension of the file it came from, or `.asset` for bytes.
+    static func makeName(fileExtension: String = Asset.defaultExtension) -> String {
+        UUID().uuidString + "." + (fileExtension.isEmpty ? defaultExtension : fileExtension)
     }
 
     // Identity is the file name, because the contents behind a name never change. Comparing names keeps
@@ -130,6 +143,22 @@ public struct Asset: Hashable, Sendable, Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(wrappedValue)
+    }
+}
+
+/// How an `@Asset` property merges when both sides replaced its file since the version they started from.
+struct AssetMerge: Sendable {
+    /// Returns the merged bytes from the base, ours and theirs, or `nil` to leave it to the later edit.
+    let merge: @Sendable (_ base: Data?, _ ours: Data, _ theirs: Data) -> Data?
+
+    init<Strategy: MergeStrategy<Data>>(_ strategy: Strategy) {
+        merge = { base, ours, theirs in
+            base.map { strategy.merge(base: $0, ours: ours, theirs: theirs) } ?? strategy.merge(ours: ours, theirs: theirs)
+        }
+    }
+
+    init(keeping side: MergeSide) {
+        merge = { _, ours, theirs in side == .ours ? ours : theirs }
     }
 }
 

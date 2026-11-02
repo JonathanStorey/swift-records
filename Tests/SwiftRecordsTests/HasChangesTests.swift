@@ -9,7 +9,7 @@ struct Draft {
     var title = ""
     var tags: Set<String> = []
     @Reference(to: DraftStep.self) var steps: [DraftStep] = []
-    @Asset(fileExtension: "png") var image: Data?
+    @Asset var image: Data?
     @Timestamped var modified: Date?
 }
 

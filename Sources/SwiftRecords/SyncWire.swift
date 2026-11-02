@@ -24,6 +24,9 @@ extension RecordStore {
     func change(for record: SyncRecord, zone: Zone, base: SyncFields? = nil) throws -> RecordChangeData {
         let values = try record.fields.map(wireValues(of: record.type))
         var change = RecordChangeData(id: record.id, zone: zone, type: record.type, fields: values, tag: record.tag)
+        if values != nil {
+            change.encryptedKeys = encryptedKeys(of: record.type)
+        }
         // The files behind its assets, for a server that keeps them inside records.
         for case .asset(let id) in values?.values.map({ $0 }) ?? [] {
             let file = assetURL(named: id)
@@ -37,6 +40,15 @@ extension RecordStore {
             change.clearedKeys = Set(old.keys.filter { values[$0] == nil })
         }
         return change
+    }
+
+    /// The fields a type's `@Encrypted` properties are stored under.
+    private func encryptedKeys(of type: String) -> Set<String> {
+        guard let type = registered[type] else { return [] }
+        func keys<R: Record>(_ type: R.Type) -> Set<String> {
+            Set(R.cachedSchema.fields.filter(\.isEncrypted).map(\.name))
+        }
+        return keys(type)
     }
 
     private func wireValues(of type: String) -> (SyncFields) throws -> [String: RecordValue] {

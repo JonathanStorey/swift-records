@@ -27,9 +27,9 @@ extension RecordContainer {
         } ?? CKRecord(recordType: change.type, recordID: Self.recordID(for: change.id, in: zoneID))
         let file = { [self] (id: String) in change.assetFiles[id] ?? (try? self.assetURL(named: id, in: zone)) }
         if change.tag != nil, let changedKeys = change.changedKeys {
-            record.fill(fields, only: changedKeys, clearing: change.clearedKeys, file: file)
+            record.fill(fields, only: changedKeys, clearing: change.clearedKeys, encrypted: change.encryptedKeys, file: file)
         } else {
-            record.fill(fields, file: file)
+            record.fill(fields, encrypted: change.encryptedKeys, file: file)
         }
         return record
     }
@@ -45,8 +45,10 @@ extension RecordContainer {
         }
         var fields: [String: RecordValue] = [:]
         var assets: [RecordAssetData] = []
-        for key in record.allKeys() {
-            guard let value = record[key] else { continue }
+        // `@Encrypted` properties arrive in `encryptedValues`, under the same names.
+        let plain = record.allKeys().compactMap { key in record[key].map { (key, $0) } }
+        let encrypted = record.encryptedValues.allKeys().compactMap { key in record.encryptedValues[key].map { (key, $0) } }
+        for (key, value) in plain + encrypted {
             // An asset's ID rides beside it, so a download needn't hash the file again.
             if key.hasSuffix(CKRecord.assetIDSuffix) {
                 let base = String(key.dropLast(CKRecord.assetIDSuffix.count))
@@ -64,8 +66,7 @@ extension RecordContainer {
                 } else {
                     let digest = SHA256.hash(data: try Data(contentsOf: file, options: .mappedIfSafe))
                     name = digest.map { String(format: "%02x", $0) }.joined()
-                    let fileExtension = try assetExtension(type: record.recordType, field: key, in: zone)
-                    if !fileExtension.isEmpty { name += "." + fileExtension }
+                    name += "." + Asset.defaultExtension
                 }
                 fields[key] = .asset(name)
                 assets.append(RecordAssetData(id: name, zone: zone, file: file))
@@ -128,18 +129,36 @@ extension CKRecord {
     static let assetIDSuffix = "_assetID"
     /// Writes these values and clears the fields it no longer has. `file` finds an asset's file by its ID,
     /// and an asset whose file isn't there, such as one still downloading, keeps the record's value.
-    func fill(_ values: [String: RecordValue], file: (String) -> URL?) {
+    func fill(_ values: [String: RecordValue], encrypted: Set<String>, file: (String) -> URL?) {
         for key in allKeys() where values[key] == nil {
             setObject(nil, forKey: key)
         }
-        fill(values, only: Set(values.keys), clearing: [], file: file)
+        for key in encryptedValues.allKeys() where values[key] == nil {
+            encryptedValues.setObject(nil, forKey: key)
+        }
+        fill(values, only: Set(values.keys), clearing: [], encrypted: encrypted, file: file)
     }
 
     /// Writes only the `keys` among these values and clears `cleared`, so CloudKit sends nothing else.
-    func fill(_ values: [String: RecordValue], only keys: Set<String>, clearing cleared: Set<String>, file: (String) -> URL?) {
+    func fill(
+        _ values: [String: RecordValue], only keys: Set<String>, clearing cleared: Set<String>, encrypted: Set<String>,
+        file: (String) -> URL?
+    ) {
         for key in cleared {
             // A cleared asset's ID field stays, and is ignored without its asset.
-            setObject(nil, forKey: key)
+            if encrypted.contains(key) {
+                encryptedValues.setObject(nil, forKey: key)
+            } else {
+                setObject(nil, forKey: key)
+            }
+        }
+        /// Writes a value in the clear, or in `encryptedValues` for an `@Encrypted` property.
+        func put<Value: CKRecordValueProtocol>(_ value: Value, _ key: String) {
+            if encrypted.contains(key) {
+                encryptedValues[key] = value
+            } else {
+                self[key] = value
+            }
         }
         // The record belongs to what its first `.deleteSelf` pointer names, which is how sharing finds it.
         let parent = values.keys.sorted().lazy.compactMap { key -> CKRecord.Reference? in
@@ -151,15 +170,15 @@ extension CKRecord {
         }
         for (key, value) in values where keys.contains(key) {
             switch value {
-            case .string(let value): self[key] = value
-            case .int(let value): self[key] = value
-            case .double(let value): self[key] = value
-            case .date(let value): self[key] = value
-            case .bytes(let value): self[key] = value
-            case .strings(let value): self[key] = value
-            case .ints(let value): self[key] = value
-            case .doubles(let value): self[key] = value
-            case .dates(let value): self[key] = value
+            case .string(let value): put(value, key)
+            case .int(let value): put(value, key)
+            case .double(let value): put(value, key)
+            case .date(let value): put(value, key)
+            case .bytes(let value): put(value, key)
+            case .strings(let value): put(value, key)
+            case .ints(let value): put(value, key)
+            case .doubles(let value): put(value, key)
+            case .dates(let value): put(value, key)
             case .reference(let id, let action):
                 self[key] = CKRecord.Reference(
                     recordID: RecordContainer.recordID(for: id, in: recordID.zoneID),

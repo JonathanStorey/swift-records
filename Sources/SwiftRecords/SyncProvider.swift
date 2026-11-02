@@ -402,10 +402,15 @@ public struct RecordChangeData: Sendable, Hashable {
     /// download names the files that came with it, which the container copies in before the event that
     /// carried them ends. Never encoded.
     public var assetFiles: [String: URL]
+    /// The fields of `@Encrypted` properties, which a server that can stores end-to-end encrypted, as
+    /// CloudKit does in `encryptedValues`. Set on uploads. A download needs none, since the container knows
+    /// its own schema.
+    public var encryptedKeys: Set<String>
 
     public init(
         id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil,
-        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil, assetFiles: [String: URL] = [:]
+        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil, assetFiles: [String: URL] = [:],
+        encryptedKeys: Set<String> = []
     ) {
         self.id = id
         self.zone = zone
@@ -417,6 +422,7 @@ public struct RecordChangeData: Sendable, Hashable {
         self.clearedKeys = clearedKeys
         self.baseTag = baseTag
         self.assetFiles = assetFiles
+        self.encryptedKeys = encryptedKeys
     }
 
     public var isDeletion: Bool { fields == nil }
