@@ -36,8 +36,9 @@ public protocol SyncTransport: Sendable {
     /// container asks when it lacks the copy a partial change builds on. The default throws.
     @_spi(SyncProvider) func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
 
-    /// Zones the server says have changed, such as from a push. Each call returns a new stream. `nil`, the
-    /// default, means the transport can't tell.
+    /// Zones the server says have changed, such as from a push. An empty list means anything may have
+    /// changed, such as after the account did. Each call returns a new stream. `nil`, the default, means the
+    /// transport can't tell.
     @_spi(SyncProvider) func changeNotifications() -> AsyncStream<[Zone]>?
 }
 
@@ -156,8 +157,8 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
             let task = Task { [weak self] in
                 for await zones in changes {
                     guard let self else { return }
-                    try? await self.fetch(FetchOptions(scope: .zones(Set(zones))), reason: .scheduled)
-                    try? await self.send(SendOptions(scope: .zones(Set(zones))), reason: .scheduled)
+                    try? await self.fetch(zones.isEmpty ? FetchOptions() : FetchOptions(scope: .zones(Set(zones))), reason: .scheduled)
+                    try? await self.send(zones.isEmpty ? SendOptions() : SendOptions(scope: .zones(Set(zones))), reason: .scheduled)
                 }
             }
             lock.withLock { listener = task }

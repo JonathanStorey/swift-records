@@ -339,10 +339,12 @@ import Testing
         let directory = try #require(transport.directory)
         #expect(directory.lastPathComponent == "Records")
         #expect(directory.deletingLastPathComponent().resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path)
-        #expect(try await transport.currentUser() == "local")
+        // A picked folder is its own account, named by where it is, so a refreshed bookmark is the same one.
+        let user = try #require(try await transport.currentUser())
+        #expect(user.hasPrefix("folder:"))
+        #expect(try await FileSyncTransport(location: .userSelected(bookmark: bookmark)).currentUser() == user)
         #expect(transport.refreshedBookmark == nil)
-        // A picked folder is named by where it is, so a refreshed bookmark doesn't read as a new server.
-        #expect(transport.identifier.hasPrefix("FileSyncTransport.userSelected("))
+        #expect(transport.identifier == "FileSyncTransport.userSelected")
 
         let phone = try device()
         let tablet = try device()
@@ -350,6 +352,59 @@ import Testing
         try await phone.mainContext.save()
         try await tablet.mainContext.refresh()
         #expect(try await recipes(tablet).map(\.title) == ["Soup"])
+    }
+
+    @Test func syncStartsOnceAFolderIsPicked() async throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // The app makes its container at launch, before anyone has picked a folder.
+        let transport = FileSyncTransport(location: .userSelected(bookmark: nil))
+        let phone = try RecordContainer(
+            for: [SyncRecipe.self], inMemory: true,
+            syncProvider: PollingSyncEngine(transport: transport, automaticallySync: false)
+        )
+        #expect(transport.directory == nil)
+        #expect(try await transport.currentUser() == nil)
+        phone.mainContext.insert(SyncRecipe(title: "Soup"))
+        try await phone.mainContext.save()
+        try await phone.mainContext.refresh()
+        #expect(phone.mainContext.status == .signedOut)
+
+        // Picking a folder signs in, and what the device already had uploads to it.
+        let bookmark = try transport.useFolder(folder)
+        try await phone.mainContext.refresh()
+        #expect(phone.mainContext.status != .signedOut)
+        let tablet = try RecordContainer(
+            for: [SyncRecipe.self], inMemory: true,
+            syncProvider: PollingSyncEngine(transport: FileSyncTransport(location: .userSelected(bookmark: bookmark)), automaticallySync: false)
+        )
+        try await tablet.mainContext.refresh()
+        #expect(try await recipes(tablet).map(\.title) == ["Soup"])
+
+        // Forgetting the folder signs out again, and keeps the records.
+        transport.forgetFolder()
+        try await phone.mainContext.refresh()
+        #expect(phone.mainContext.status == .signedOut)
+        #expect(try await recipes(phone).map(\.title) == ["Soup"])
+    }
+
+    @Test func pickingAFolderSyncsOnItsOwn() async throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let transport = FileSyncTransport(location: .userSelected(bookmark: nil))
+        transport.watchMode = .none
+        let phone = try RecordContainer(
+            for: [SyncRecipe.self], inMemory: true,
+            syncProvider: PollingSyncEngine(transport: transport, automaticallySync: true, sendDelay: .milliseconds(10))
+        )
+        let recipe = SyncRecipe(title: "Soup")
+        phone.mainContext.insert(recipe)
+        try await phone.mainContext.save()
+
+        try transport.useFolder(folder)
+        let file = recordFile(recipe.id)
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: file.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
     @Test func locations() async throws {

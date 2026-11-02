@@ -29,6 +29,9 @@ import Foundation
 /// Without an iCloud entitlement, `.userSelected(bookmark:)` syncs through a folder the person picks in
 /// iCloud Drive, or any other synced folder. Changes from other devices arrive as the system downloads
 /// them, which for a folder in iCloud Drive can wait until the app asks, so they come with the next sync.
+/// The container is made at launch, before anyone picks a folder, so the transport can start with
+/// `.userSelected(bookmark: nil)`. Until `useFolder(_:)` is called it reports `signedOut` and records stay
+/// on the device. Picking a folder then reads as signing in: everything uploads to it and syncs from then on.
 ///
 /// Sharing a zone hands out its folder's URL. Whoever opens that URL from their own `FileSyncTransport`,
 /// such as through a shared network drive or App Group, joins the zone and syncs it in place. A shared
@@ -48,9 +51,10 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         /// Any folder, such as a network drive.
         case other(directory: URL)
         /// A folder the person picked, such as one in iCloud Drive, kept as a bookmark from
-        /// `FileSyncTransport.bookmark(for:)`. It needs no iCloud entitlement: the system syncs the folder
-        /// as it syncs any file in iCloud Drive, and the person can see it in the Files app.
-        case userSelected(bookmark: Data)
+        /// `useFolder(_:)` or `FileSyncTransport.bookmark(for:)`. It needs no iCloud entitlement: the system
+        /// syncs the folder as it syncs any file in iCloud Drive, and the person can see it in the Files app.
+        /// `nil` means no folder has been picked yet, which reads as signed out.
+        case userSelected(bookmark: Data?)
     }
 
     public let location: Location
@@ -74,9 +78,12 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
     /// The picked folder this provider is reading, held open for the provider's life.
     private var accessedFolder: URL?
     private var staleBookmarkReplacement: Data?
+    /// The picked folder's bookmark, which `useFolder(_:)` replaces.
+    private var pickedBookmark: Data?
 
     public init(location: Location = .iCloud) {
         self.location = location
+        if case .userSelected(let bookmark) = location { pickedBookmark = bookmark }
         watchMode = switch location {
         case .iCloud, .iCloudDrive: .metadata
         case .appGroup, .other, .userSelected: .folder
@@ -100,8 +107,8 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         lock.withLock {
             if let resolved { return resolved }
             let url: URL?
-            if case .userSelected(let bookmark) = location {
-                url = openPickedFolder(bookmark)?.appendingPathComponent("Records", isDirectory: true)
+            if location.isUserSelected {
+                url = pickedBookmark.flatMap(openPickedFolder)?.appendingPathComponent("Records", isDirectory: true)
             } else {
                 url = Self.resolve(location)?.appendingPathComponent("Records", isDirectory: true)
             }
@@ -147,8 +154,61 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
 
     // MARK: Picked folders
 
+    /// Starts syncing through a folder the person just picked, such as with `fileImporter`, and returns its
+    /// bookmark to save and pass as `.userSelected(bookmark:)` on later launches. Call it from wherever the
+    /// app offers sync, such as Settings or onboarding, not at launch.
+    ///
+    /// Picking the first folder reads as signing in, so the records on this device upload to it. Picking
+    /// another folder later reads as switching accounts. With `automaticallySync` on, sync starts on its
+    /// own. Otherwise call `refresh()` on a context afterwards.
+    ///
+    /// ```swift
+    /// .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+    ///     if case .success(let folder) = result {
+    ///         savedBookmark = try? transport.useFolder(folder)
+    ///     }
+    /// }
+    /// ```
+    @discardableResult
+    public func useFolder(_ folder: URL) throws -> Data {
+        precondition(location.isUserSelected, "useFolder(_:) needs a transport made with .userSelected(bookmark:)")
+        let bookmark = try Self.bookmark(for: folder)
+        replaceFolder(with: bookmark)
+        return bookmark
+    }
+
+    /// Stops syncing through the picked folder, which reads as signing out. The records stay on the device
+    /// and in the folder. Forget the saved bookmark too.
+    public func forgetFolder() {
+        precondition(location.isUserSelected, "forgetFolder() needs a transport made with .userSelected(bookmark:)")
+        replaceFolder(with: nil)
+    }
+
+    private func replaceFolder(with bookmark: Data?) {
+        let restart = lock.withLock {
+            #if canImport(Darwin)
+            accessedFolder?.stopAccessingSecurityScopedResource()
+            folderSource?.cancel()
+            folderSource = nil
+            #endif
+            accessedFolder = nil
+            pickedBookmark = bookmark
+            resolved = nil
+            staleBookmarkReplacement = nil
+            lastMarks = [:]
+            defer { watching = false }
+            return watching
+        }
+        if restart { startWatching() }
+        // An empty list asks the engine to sync everything, which checks the account first.
+        for continuation in lock.withLock({ Array(pushes.values) }) {
+            continuation.yield([])
+        }
+    }
+
     /// A bookmark to a folder the person picked, such as with `fileImporter` or
     /// `UIDocumentPickerViewController`, to keep and pass as `.userSelected(bookmark:)` on every launch.
+    /// `useFolder(_:)` makes one too, and starts syncing through the folder at once.
     ///
     /// ```swift
     /// .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
@@ -221,14 +281,20 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
 
     // MARK: SyncTransport
 
-    /// The location, so moving to another folder uploads everything to it.
+    /// The location, so moving to another folder uploads everything to it. A picked folder can change while
+    /// the provider runs, so it's told apart by `currentUser()` instead.
     @_spi(SyncProvider) public var identifier: String {
-        // A bookmark's bytes change when it's refreshed, so a picked folder is named by where it is.
-        if location.isUserSelected { return "FileSyncTransport.userSelected(\(directory?.path ?? "unavailable"))" }
+        if location.isUserSelected { return "FileSyncTransport.userSelected" }
         return "FileSyncTransport.\(location)"
     }
 
     @_spi(SyncProvider) public func currentUser() async throws -> String? {
+        if location.isUserSelected {
+            // Nobody is signed in until a folder is picked, and another folder reads as another account. A
+            // refreshed bookmark names the same folder, so it's named by its path.
+            guard let directory else { return nil }
+            return "folder:" + Self.hash(Data(directory.standardizedFileURL.resolvingSymlinksInPath().path.utf8))
+        }
         guard location.isICloud else { return "local" }
         #if canImport(Darwin)
         // The token changes with the iCloud account, and is nil while signed out.

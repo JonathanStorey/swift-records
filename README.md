@@ -807,12 +807,23 @@ it, and iCloud Drive syncs it like any other folder. Pushes don't reach a picked
 changes arrive as iCloud downloads them, at the latest with the sync as the app returns. Save the bookmark
 again when `refreshedBookmark` offers a new one, such as after the folder moved.
 
-```swift
-.fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
-    if case .success(let folder) = result { savedBookmark = try? FileSyncTransport.bookmark(for: folder) }
-}
+The container is made at launch, before anyone has picked a folder, so start the transport with the saved
+bookmark, or `nil` on first launch. Without a folder it reports `.signedOut` and records stay on the device.
+Offer the picker from Settings or onboarding, and hand the folder to `useFolder(_:)`, which reads as
+signing in: the device's records upload and sync carries on from there. It returns the bookmark to save.
+Picking another folder later reads as switching accounts, and `forgetFolder()` signs out. With
+`automaticallySync` off, call `refresh()` on a context after picking.
 
-let transport = FileSyncTransport(location: .userSelected(bookmark: savedBookmark))
+```swift
+// At launch. @AppStorage isn't readable yet in the App's init, so read UserDefaults directly.
+let transport = FileSyncTransport(location: .userSelected(bookmark: UserDefaults.standard.data(forKey: "syncFolder")))
+
+// In Settings, with the same transport.
+@AppStorage("syncFolder") private var syncFolder: Data?
+
+.fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+    if case .success(let folder) = result { syncFolder = try? transport.useFolder(folder) }
+}
 ```
 
 Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
