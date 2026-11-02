@@ -16,7 +16,9 @@ import Foundation
 /// ```
 ///
 /// The app needs the iCloud capability with CloudKit on, and Background Modes with remote notifications,
-/// so pushes start fetches. A field-level change sets only its changed keys on the `CKRecord`, built on
+/// so pushes start fetches. The provider checks both as it starts. A missing capability or a container
+/// CloudKit doesn't know logs the Xcode steps to fix it and shows in `status` as
+/// `.failed(.syncNotConfigured(problem:fix:))`, and a missing background mode logs a warning. A field-level change sets only its changed keys on the `CKRecord`, built on
 /// the server copy's system fields, so an unchanged asset or long field never uploads again. Asset files
 /// travel inside their records as `CKAsset`s and land as the records do, with no separate transfer.
 public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
@@ -37,6 +39,9 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
     private var manualFetches = 0
     /// Takes the engines' delegate calls, which the engines hold weakly.
     private let engineDelegate = EngineDelegate()
+    /// What keeps the app from syncing, such as a missing iCloud capability, once found. Sends and fetches
+    /// throw it, so contexts show it in `status`.
+    private var configurationError: RecordsError?
 
     /// - Parameters:
     ///   - container: The CloudKit container, `CKContainer.default()` unless the app uses another.
@@ -53,6 +58,10 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         self.linkPermission = linkPermission
         self.automaticallySync = automaticallySync
         engineDelegate.provider = self
+        if let problem = CloudKitConfiguration.entitlementProblem(container: container.containerIdentifier) {
+            configurationError = problem
+            CloudKitConfiguration.report(problem)
+        }
     }
 
     public var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
@@ -67,6 +76,8 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
     // MARK: SyncProvider
 
     @_spi(SyncProvider) public func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
+        lock.withLock { self.delegate = delegate }
+        guard await checkConfiguration(firstScope: scope == .private) else { return }
         let serialization = state.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         let database = scope == .shared ? ckContainer.sharedCloudDatabase : ckContainer.privateCloudDatabase
         var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: serialization, delegate: engineDelegate)
@@ -113,17 +124,19 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
     }
 
     @_spi(SyncProvider) public func sendChanges(_ options: SendOptions) async throws {
+        try throwIfNotConfigured()
         for (scope, engine) in allEngines {
             guard let ckOptions = Self.sendOptions(options, scope: scope) else { continue }
             do {
                 try await engine.sendChanges(ckOptions)
             } catch {
-                throw Self.failure(error)
+                throw configurationProblem(error) ?? Self.failure(error)
             }
         }
     }
 
     @_spi(SyncProvider) public func fetchChanges(_ options: FetchOptions) async throws {
+        try throwIfNotConfigured()
         lock.withLock { manualFetches += 1 }
         defer { lock.withLock { manualFetches -= 1 } }
         for (scope, engine) in allEngines {
@@ -132,7 +145,7 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
             do {
                 try await engine.fetchChanges(ckOptions)
             } catch {
-                throw Self.failure(error)
+                throw configurationProblem(error) ?? Self.failure(error)
             }
         }
     }
@@ -141,6 +154,41 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         for (_, engine) in allEngines {
             await engine.cancelOperations()
         }
+    }
+
+    // MARK: Configuration
+
+    /// Checks the app is set up for CloudKit before an engine starts: once for the entitlements and Info.plist,
+    /// and with the account status, which fails for a container CloudKit doesn't know. Returns whether the
+    /// engine can start.
+    private func checkConfiguration(firstScope: Bool) async -> Bool {
+        if lock.withLock({ configurationError }) != nil { return false }
+        guard firstScope else { return true }
+        CloudKitConfiguration.checkPushes()
+        do {
+            _ = try await ckContainer.accountStatus()
+        } catch {
+            // Offline and signed out aren't setup problems: the engine handles them.
+            if configurationProblem(error) != nil { return false }
+        }
+        return true
+    }
+
+    /// Records and reports the setup problem behind a CloudKit error, if it is one.
+    private func configurationProblem(_ error: any Error) -> RecordsError? {
+        guard let problem = CloudKitConfiguration.problem(for: error, container: ckContainer.containerIdentifier) else {
+            return nil
+        }
+        let first = lock.withLock {
+            defer { configurationError = problem }
+            return configurationError == nil
+        }
+        if first { CloudKitConfiguration.report(problem) }
+        return problem
+    }
+
+    private func throwIfNotConfigured() throws {
+        if let error = lock.withLock({ configurationError }) { throw error }
     }
 
     private func engine(_ scope: Zone.Scope) -> CKSyncEngine? {

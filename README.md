@@ -744,7 +744,12 @@ share the system hands the scene delegate with `try await container.acceptShare(
 `linkPermission: .readWrite` to let the link alone admit people, rather than only those invited.
 
 The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
-notifications so pushes start fetches.
+notifications so pushes start fetches. The provider checks as it starts. A missing capability, a container
+the entitlements don't list, or one CloudKit doesn't know logs the steps to fix it in Xcode, and contexts
+show `.failed(.syncNotConfigured(problem:fix:))` until the app is rebuilt. A missing background mode logs a
+warning, and changes then arrive when the app returns to the foreground. Entitlements are read from the
+signature on macOS and from the provisioning profile on an iOS device, so the simulator learns of a problem
+from CloudKit's first answer instead.
 
 ### CloudKit records
 

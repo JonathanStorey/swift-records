@@ -29,6 +29,9 @@ public enum RecordsError: Error, Hashable, Sendable {
     /// The zone can't be shared or left: the sync provider can't share, the zone stays on this device,
     /// or someone else owns it and only the owner shares.
     case sharingUnavailable(zone: String)
+    /// The app isn't set up for its sync provider, such as a missing iCloud capability. `problem` says
+    /// what's missing and `fix` gives the steps in Xcode. Nothing syncs until the app is rebuilt with it.
+    case syncNotConfigured(problem: String, fix: String)
 }
 
 extension RecordsError {

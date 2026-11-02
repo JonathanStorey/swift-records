@@ -86,7 +86,7 @@ import Testing
 
 #if canImport(CloudKit)
 import CloudKit
-import SwiftRecordsCloudKit
+@testable import SwiftRecordsCloudKit
 
 @MainActor
 @Suite struct CKRecordTests {
@@ -243,6 +243,39 @@ import SwiftRecordsCloudKit
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()
         return coder.encodedData
+    }
+}
+@Suite struct CloudKitConfigurationTests {
+    private let services = "com.apple.developer.icloud-services"
+    private let containers = "com.apple.developer.icloud-container-identifiers"
+    private let id = "iCloud.com.example.app"
+
+    private func isNotConfigured(_ error: RecordsError?) -> Bool {
+        if case .syncNotConfigured = error { return true }
+        return false
+    }
+
+    @Test func entitlementsWithTheContainerPass() {
+        #expect(CloudKitConfiguration.problem(in: [services: ["CloudKit"], containers: [id]], container: id) == nil)
+        #expect(CloudKitConfiguration.problem(in: [services: ["*"], containers: ["iCloud.com.example.*"]], container: id) == nil)
+    }
+
+    @Test func missingCloudKitIsReportedWithTheSteps() throws {
+        let error = CloudKitConfiguration.problem(in: [:], container: id)
+        guard case .syncNotConfigured(_, let fix)? = error else { Issue.record("no problem found"); return }
+        #expect(fix.contains("Signing & Capabilities"))
+        #expect(fix.contains(id))
+    }
+
+    @Test func anUnlistedContainerIsReported() {
+        let error = CloudKitConfiguration.problem(in: [services: ["CloudKit"], containers: ["iCloud.com.example.other"]], container: id)
+        #expect(isNotConfigured(error))
+    }
+
+    @Test func cloudKitSetupErrorsAreRecognized() {
+        #expect(isNotConfigured(CloudKitConfiguration.problem(for: CKError(.missingEntitlement), container: id)))
+        #expect(isNotConfigured(CloudKitConfiguration.problem(for: CKError(.badContainer), container: id)))
+        #expect(CloudKitConfiguration.problem(for: CKError(.networkUnavailable), container: id) == nil)
     }
 }
 #endif
