@@ -14,7 +14,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.0"..<"603.0.0"),
         .package(url: "https://github.com/JonathanStorey/swift-merging.git", .upToNextMinor(from: "0.2.0")),
-        .package(url: "https://github.com/JonathanStorey/swift-identification.git", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/JonathanStorey/swift-identification.git", .upToNextMinor(from: "0.2.0")),
     ],
     targets: [
         // Apple platforms ship SQLite3 in the SDK. Linux links the system library (for CI and local tests).

@@ -61,7 +61,7 @@ Changes live in memory until `save()` or `transaction { }` commits them to disk.
 shows them at once, so the interface is live before anything saves, but widgets, background contexts and
 other devices see them only after a save. The one save the context makes on its own is when the app stops
 being active, such as when the user switches apps or the app quits, so nothing entered is lost. Until a
-save, `rollback()` discards changes, and `unsavedChanges` counts them. Every fetch
+save, `rollback()` discards changes, and `unsavedChangeCount` counts them. Every fetch
 lays unsaved changes over what's stored, so results include your own edits without saving them. Records come back in a descriptor's `sortBy` order, and
 by ID where that leaves a tie or when there's none. ID order is stable but carries no meaning. A
 `@Timestamped(.created)` property gives you creation order, and a property of your own can hold a manual
@@ -99,8 +99,8 @@ With `.after`, each edit starts the wait again, so a burst of typing makes one s
 
 If a save fails, its changes stay pending so you can fix the cause and save again, or discard them
 with `rollback()`. If the save the context makes when the app stops being active fails, such as while a
-widget is writing at the same moment, it sets `lastSaveError` and its changes stay pending for the next
-`save()`.
+widget is writing at the same moment, `status` shows `.failed(_:)` and its changes stay pending for the
+next `save()`.
 Every error the library throws is a `RecordsError`, such as `.invalidValue(type:property:)` for a NaN.
 A stored record that no longer decodes, such as after a property changed type, is left out of fetches
 rather than failing them, and `status` shows `.failed(.incompatibleRecord(type:id:))` until it decodes
@@ -113,7 +113,7 @@ For work off the main actor, such as an import, use a background context. Its sa
 `transaction(_:)` groups several into one commit, and the main context refreshes after each commit.
 
 ```swift
-try await container.performBackgroundTask { context in
+try await context.performInBackground { context in
     for start in stride(from: 0, to: downloaded.count, by: 200) {
         let batch = Array(downloaded[start..<min(start + 200, downloaded.count)])
         try context.transaction { try context.insert(batch) }
@@ -162,10 +162,12 @@ context.insert(draft)                     // drafts.sqlite, opened on first use
 let drafts = try context.fetch(Recipe.self)
 context.zone = .default                   // back to the default zone
 
-try await container.performBackgroundTask(in: "drafts") { try $0.insert(imported) }
+try await context.performInBackground(in: "drafts") { try $0.insert(imported) }
 context.zone = .inMemory                  // never written to disk, never synced
 context.zone = .localOnly                 // _local.sqlite, never synced
+context.zone = try .local("scratch")      // _local.scratch.sqlite, never synced
 let family = try RecordContainer(initialZone: "family")   // its main context starts in family.sqlite
+container.url(for: "drafts")              // drafts.sqlite, or with no zone, the folder
 ```
 
 Switching zones refetches every `@Records` view that doesn't name a zone of its own. Pending changes stay
@@ -175,7 +177,7 @@ Relationships stay within one zone, and the same record type can be stored in se
 A zone name is lowercased, then must be 1 to 64 letters, digits, `-` or `_`, starting with a letter, so
 `"Drafts"` and `"drafts"` are the same zone. A string literal with an invalid name stops the app, and
 `try Zone(name)` throws for names that come from elsewhere. Names starting with an underscore are reserved
-for `.default`, `.inMemory` and `.localOnly`.
+for `.default`, `.inMemory`, `.localOnly` and `Zone.local(_:)`.
 
 A zone someone else shared with the signed-in person names its owner, as the server knows them:
 
@@ -215,13 +217,12 @@ folder sits inside one named for the app's bundle identifier.
 To share a zone with a widget or other app extension, open it in the App Group's container from both:
 
 ```swift
-let directory = RecordContainer.directory(appGroup: "group.com.example.todo")!
-let container = try RecordContainer(directory: directory)
+let container = try RecordContainer(location: .appGroup("group.com.example.todo"))
 ```
 
 Files use SQLite's write-ahead log, so the app and an extension can read while the other writes. Every
 save and fetch sees the other process's latest commits. Views refresh for them when the app becomes
-active, or right away when you call `context.refresh()`.
+active, or right away when you call `try await context.refresh()`.
 Containers opened on the same file within one process share a connection, so each sees the other's
 changes and their main contexts refresh together.
 
@@ -314,7 +315,7 @@ file beside the database instead of inside it.
 @Record
 struct Photo {
     var id = UUID()
-    @Asset(fileExtension: "jpg") var image: Data? = nil
+    @Asset var image: Data? = nil
 }
 
 context.insert(Photo(image: jpeg))
@@ -325,12 +326,36 @@ let bytes = photo?.image         // read from disk on first access, then cached
 
 - Fetching never reads asset files. The bytes load the first time the property is read, so prefer
   `$image` where a URL will do.
+- `$image` keeps its path for the life of the record, such as `Photo/<id>/image.asset`, as the asset is
+  replaced, merged or synced. Each change swaps the file in one step, so a reader that opened the old
+  contents keeps them. Something that caches by URL, such as `AsyncImage`, won't notice new contents,
+  so give it an identity that changes with the record. Treat the file as read-only and assign new data
+  to change it.
+- Bytes are stored as `.asset`. A file copied in with `$image = url` keeps its extension.
 - Files live in a folder named after the database file, such as `Records/_default.assets/`, so they
   are included in device backups along with the zone.
 - Assigning new data or `nil` removes the old file when the record is saved, and deleting a record
   (directly or by cascade) removes its files. Rolled-back transactions leave no files behind.
 - To copy a large file in without loading it, assign `photo.$image = url`.
 - Outside a container, such as with `JSONEncoder`, the property encodes as plain `Data?`.
+
+When two devices both replace an asset before syncing, the later edit wins, as with any other
+property. A merge strategy can decide instead. It gets the bytes of the version both started from and
+of each side, so a format you can read inside can merge for real:
+
+```swift
+struct SketchMerge: MergeStrategy {
+    func merge(base: Data, ours: Data, theirs: Data) -> Data? { ... }   // nil: the later edit wins
+    func merge(ours: Data, theirs: Data) -> Data? { nil }                // both added one at once
+}
+
+@Asset(SketchMerge()) var sketch: Data?
+@Asset(.keep(.ours)) var signature: Data?      // this device's copy always wins
+```
+
+The result stays at the property's path, and the device that merged sends it. Merging holds all three
+versions in memory. Data that is small and structured fits better in a `Codable` property with
+`@Merged`, which merges value by value.
 
 ## Sorting
 
@@ -401,11 +426,10 @@ holds only its ID and its properties:
 let meta = try context.metadata(ToDo.self, id: todo.id)
 meta?.version     // goes up once per save that changes the record's values or links
 meta?.modified    // when that save happened
-meta?.tag         // sync bookkeeping: the server's change tag for this copy, if any
 ```
 
-Reading metadata saves the context's pending edits first. Storing a tag never changes the version,
-and fetches never load tags. Files from version 0.3.0, which kept this in hidden columns beside each
+Reading metadata saves the context's pending edits first. The sync bookkeeping kept in the same row,
+such as the server's change tag, never changes the version, and fetches never load it. Files from version 0.3.0, which kept this in hidden columns beside each
 record, aren't supported, so start 0.4.0 with a new file.
 
 That row is also the change log, which is how sync knows what the server doesn't have yet, and it keeps
@@ -419,15 +443,12 @@ written by a background context or a sync provider.
 ## Sync
 
 A `SyncProvider` keeps zones in step with a server. Pass one when the container opens, and it syncs
-every zone except `.inMemory` and `.localOnly`. To keep another zone on the device, pass `syncs:`, which
-is asked once as each zone opens. The same app code works with or without a provider: sync adds to
-saving, it doesn't replace it.
+every zone except `.inMemory`, `.localOnly` and the zones `Zone.local(_:)` names, which stay on the
+device. The same app code works with or without a provider: sync adds to saving, it doesn't replace it.
 
 ```swift
-let container = try RecordContainer(
-    for: [ToDo.self], syncProvider: provider,
-    syncs: { $0 != "drafts" }      // keep drafts on the device
-)
+let container = try RecordContainer(for: [ToDo.self], syncProvider: provider)
+context.zone = try .local("drafts")   // drafts stay on the device
 
 try await context.save()       // commits, then sends what the server doesn't have
 try await context.refresh()    // also fetches the server's changes, for pull-to-refresh
@@ -435,13 +456,13 @@ try await context.refresh()    // also fetches the server's changes, for pull-to
 
 The async `save()` sends. The synchronous `save()` only commits, and its changes go with
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
-errors, and changes wait on the device until they can go. `unsyncedChanges` counts the saved records
-the server hasn't confirmed. It stays at 0 without a provider and grows while offline or signed out.
-`context.unsynced` names those records in the context's zone, `$notes.unsynced` narrows it to a
+errors, and changes wait on the device until they can go. `context.unsynced` names the saved records in
+the context's zone that the server hasn't confirmed. It stays empty without a provider and grows while
+offline or signed out. `unsynced.count` counts them, `$notes.unsynced` narrows it to a
 `@Records` list, and `$note.isSynced` says whether one `@Recordable` record is saved and confirmed.
 
-Besides pushes, the one sync the context starts on its own is when the app becomes active after being
-away for `resumeSyncInterval`, five minutes by default. It downloads and sends what's already saved,
+Besides pushes, the one sync the context starts on its own is when the app becomes active again, since
+pushes can be missed while it's away. It downloads and sends what the save on leaving committed,
 and never saves, so an edit you're in the middle of stays unsaved.
 
 You can switch providers later, for example to a bigger server as traffic grows. Each provider has an
@@ -451,6 +472,13 @@ it keeps every local record, uploads them all and downloads from the beginning, 
 looks different, since a new server's user IDs needn't match the old one's.
 
 ### The provider is a sync engine
+
+Apps only pass a provider in. Writing one means importing the provider layer, which stays out of the
+app-facing surface:
+
+```swift
+@_spi(SyncProvider) import SwiftRecords
+```
 
 CloudKit's `CKSyncEngine` is the model. A provider is an engine and the container is its delegate: the
 container tells the engine what is pending, the engine decides when to send and fetch, asks the container
@@ -529,6 +557,8 @@ public struct RecordChangeData {
     var changedKeys: Set<String>?          // the fields set since the copy it builds on, nil for the whole record
     var clearedKeys: Set<String>           // the fields set to nil since that copy
     var baseTag: Data?                     // for a partial download, the tag of that copy
+    var assetFiles: [String: URL]          // the files behind its .asset values
+    var encryptedKeys: Set<String>         // the fields its @Encrypted properties store
 }
 ```
 
@@ -565,25 +595,26 @@ every save overwrites. `synced` is optional: when a server gives one, `@Timestam
 and otherwise it shows when this device heard the save went through. A provider's tags never reach
 another provider, because changing a zone's provider `identifier` clears them and uploads everything again.
 
-A server that keeps files inside their records, as CloudKit does with `CKAsset`, gets them through
-`assetFiles` on each change: an upload names the file behind every `.asset` value, and a download names
-the files that came with it. The container copies those in while the event that carried them runs, so a
-file lands with its record and needs no separate pass. With a field-level edit, an unchanged asset isn't
-among `changedKeys`, so it never goes up again.
+Files travel inside their records, as CloudKit's `CKAsset`s do. An upload names the file behind every
+`.asset` value in `assetFiles`, and a download names the files that came with it. The container copies
+them in while the event that carried them runs, so a file lands with its record and needs no separate
+pass or progress of its own. A server should hold a record back until its files can go with it. With a
+field-level edit, an unchanged asset isn't among `changedKeys`, so it never goes up again. Each version of
+a file has its own ID and never changes once stored, so a new version uploads once and an old one never
+needs to.
 
-Otherwise assets travel on their own, in the background, through the provider's `assetTransfer`.
-`PollingSyncEngine` uses its transport when it conforms to `AssetTransfer`. `refresh()` syncs records
-only and returns once they're stored. After each pass the container uploads files the server doesn't
-have and downloads the ones received records point to, one file at a time. Until a file lands, its
-record's asset reads `nil` and `$image` is `nil`, and views refresh when it arrives. `$photo.downloadProgress`
-on a `@Recordable` shows how far a record's files have got, and `context.assetURL(\.$image, of: photo)` waits
-for one. A file that
-fails, such as one whose record arrived before its upload finished, is tried again after the next pass.
-A file never changes once stored, so an asset can't conflict, and each one is uploaded once.
+A record's `@Encrypted` properties are named in `encryptedKeys`. CloudKit stores them in the record's
+`encryptedValues`, so they're encrypted with the person's keys and Apple can't read them. A server
+without encryption of its own can ignore the set or encrypt those fields itself. Assets and
+`@Reference(from:)` pointers can't be encrypted, since CloudKit can't encrypt a `CKAsset` or a
+`CKRecord.Reference`.
 
 ```swift
-if let progress = context.assetProgress {
-    ProgressView(value: progress)    // 0 to 1 by file count, nil when nothing is moving
+@Record
+struct Account {
+    var id = UUID.timestamp
+    var name = ""
+    @Encrypted var number = ""
 }
 ```
 
@@ -717,13 +748,8 @@ notifications so pushes start fetches.
 
 ### CloudKit records
 
-A change converts to a `CKRecord` and back, value for value, so records are stored exactly as CloudKit
-expects:
-
-```swift
-let record = try container.ckRecord(for: change, in: zoneID)   // nil for a deletion
-let (change, assets) = try container.change(from: record, zone: zone)
-```
+The provider converts each change to a `CKRecord` and back, value for value, so records are stored
+exactly as CloudKit expects:
 
 | Record | CKRecord |
 | --- | --- |
@@ -734,26 +760,26 @@ let (change, assets) = try container.change(from: record, zone: zone)
 | a child's `@Reference(from:action:)` | a `CKRecord.Reference` with that action, and the first `.deleteSelf` one as `parent` |
 | a many-to-many link | a `RecordLink` record with two `.deleteSelf` references |
 | `@Asset` | a `CKAsset` |
+| `@Encrypted` | the same field in `encryptedValues` |
 | children, many-to-many arrays, their other sides, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
 
 Each child is its own `CKRecord`, and locally it still appears in its parent's array. Coming
-back, `change(from:zone:)` archives the record's system fields as the change's `tag` and takes its
+back, the provider archives the record's system fields as the change's `tag` and takes its
 `modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
 change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, or by the `<field>_assetID` field beside them, and
-`change(from:zone:)` puts them in the change's `assetFiles`. A server deletion converts with
-`deletion(of:type:zone:)`.
+they go in the change's `assetFiles`.
 
 A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and each
-many-to-many link is a `RecordLink` record. Build `CKRecord`s from the container's changes rather than
-from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
+many-to-many link is a `RecordLink` record. The provider builds `CKRecord`s from the container's changes
+rather than from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
 a newer app version added.
 
 ### Syncing through iCloud files
 
 `FileSyncTransport` syncs through a folder, and the system copies the folder between devices. No server
 is needed. It lives in its own library, `SwiftRecordsFileSync`, so apps that sync another way don't build
-it. Add that product to your target and import it beside `SwiftRecords`. It uses only the public
-`SyncTransport` API, so it doubles as a worked example of a transport.
+it. Add that product to your target and import it beside `SwiftRecords`. It uses only the
+`SyncTransport` API that any provider imports, so it doubles as a worked example of a transport.
 
 ```swift
 import SwiftRecordsFileSync
@@ -852,8 +878,8 @@ switches every list at once. `@Records("pantry")` pins a property to one zone in
 
 Like `@Query`, `@Records` also takes a descriptor, which can limit how many records a view holds:
 `@Records(RecordDescriptor<ToDo>(predicate: #Predicate { !$0.done }, fetchLimit: 20)) var firstOpen: [ToDo]`.
-Unsaved new records still count toward it, so the view never shows more than the limit. Pass a zone first,
-`@Records("pantry", descriptor)`, to pin it.
+Unsaved new records still count toward it, so the view never shows more than the limit. Pass `zone:`,
+`@Records(descriptor, zone: "pantry")`, to pin it.
 
 `todos` is a plain `[ToDo]`, and `$todos` is a `Binding<Records<ToDo>.Results>`. `Results` is a
 random-access, mutable collection, so `ForEach($todos)` binds each row as it does on an array's binding,
@@ -1032,5 +1058,5 @@ Some timings from that run, for 60,000 records:
 
 ## Requirements
 
-iOS 17, macOS 14, Swift 6. The package also builds on Linux with `libsqlite3-dev`, which is how CI and
+iOS 18, macOS 15, Swift 6. The package also builds on Linux with `libsqlite3-dev`, which is how CI and
 the tests run outside Xcode.

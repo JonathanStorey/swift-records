@@ -1,13 +1,13 @@
 {
-  "originHash" : "37ecfb591ff94615f08cbfe430c68f10c9875ddd7f5ffcdf429146b0d0e5dad9",
+  "originHash" : "1762ea164106de9421b39b6e3f0e3a080da6df3f933f6a435661ce47e8ba75de",
   "pins" : [
     {
       "identity" : "swift-identification",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/JonathanStorey/swift-identification.git",
       "state" : {
-        "revision" : "a4fbeb2b050ebbb6ff65e36a6d58beff8571ef27",
-        "version" : "0.1.0"
+        "revision" : "820edfb3a67e566dfbafc412d82d175290f727d5",
+        "version" : "0.2.0"
       }
     },
     {

@@ -6,7 +6,7 @@ import Foundation
 /// A `Zone` names a database file in the folder: `"drafts"` is `drafts.sqlite`, and `.default` is
 /// `_default.sqlite`. Each zone opens the first time it's used. You read and write records
 /// through `mainContext` on the main actor, whose `zone` picks the zone, or through the context that
-/// `performBackgroundTask(in:_:)` hands you for work off the main actor. Containers opened on the same
+/// `RecordContext.performInBackground(in:_:)` hands you for work off the main actor. Containers opened on the same
 /// folder share each file's connection, so they see each other's changes.
 ///
 /// ```swift

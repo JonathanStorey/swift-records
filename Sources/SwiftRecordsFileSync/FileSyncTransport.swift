@@ -10,7 +10,8 @@ import Foundation
 /// ```
 ///
 /// Each record is one readable JSON file, at `Records/<zone>/<type>/<id>.json`, and each asset is a plain
-/// file in `Records/<zone>/_assets/`. A deletion stays behind as a small file so other devices hear of it.
+/// file in `Records/<zone>/_assets/`, written before its record so the two arrive together. A record whose
+/// files iCloud hasn't downloaded yet waits for them. A deletion stays behind as a small file so other devices hear of it.
 /// Downloads remember every file they have seen rather than a time, so devices whose clocks disagree
 /// can't miss each other's changes. Deleting a zone's folder deletes the zone, and its records leave
 /// every device.

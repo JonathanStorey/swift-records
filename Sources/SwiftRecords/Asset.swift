@@ -12,18 +12,20 @@ import Foundation
 ///
 /// recipe.photo = jpegData                 // written to disk when the record is saved
 /// recipe.$photo = movieURL                // or copied in from a file, without loading it
-/// let url = saved.$photo                  // the stored file, for AsyncImage or QuickLook
+/// let url = saved.$photo                  // the record's file, for AsyncImage or QuickLook
 /// let bytes = saved.photo                 // read from disk on first access, then cached
 /// ```
 ///
 /// A fetched record doesn't load its files. Reading the property loads the file once and keeps it with
 /// that copy of the record, so prefer `$photo` where a URL will do, such as for images in a list.
 ///
-/// With CloudKit, a record's files arrive inside it. With a transport that moves files on their own,
-/// such as `FileSyncTransport`, records arrive first and their files follow in the background, so a
-/// received record's asset reads `nil` until its file lands. Views refresh when it does.
-/// `$recipe.downloadProgress` on a `@Recordable` shows how far a record's files have got, and
-/// `RecordContext.assetURL(_:of:)` waits for one.
+/// `$photo` keeps its path for the life of the record as the asset is replaced, merged or synced. Each
+/// change swaps the file in one step, so a reader that opened the old contents keeps them. Treat the file
+/// as read-only, and assign new data to change it.
+///
+/// A record's files sync inside it, as `CKAsset`s do, so they arrive with it. When two devices both
+/// replace an asset, the later edit wins, unless a merge strategy decides: `@Asset(.keep(.ours))`, or
+/// a `MergeStrategy<Data>` that merges the bytes.
 ///
 /// Outside a container, such as with `JSONEncoder`, the property encodes and decodes as plain `Data?`.
 @propertyWrapper
