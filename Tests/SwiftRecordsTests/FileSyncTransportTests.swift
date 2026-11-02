@@ -335,8 +335,10 @@ import Testing
             return try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: engine)
         }
         let transport = FileSyncTransport(location: .userSelected(bookmark: bookmark))
-        #expect(transport.directory?.standardizedFileURL.resolvingSymlinksInPath().path
-            == folder.appendingPathComponent("Records").standardizedFileURL.resolvingSymlinksInPath().path)
+        // The bookmark resolves to the real path, such as /private/var for /var on macOS.
+        let directory = try #require(transport.directory)
+        #expect(directory.lastPathComponent == "Records")
+        #expect(directory.deletingLastPathComponent().resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path)
         #expect(try await transport.currentUser() == "local")
         #expect(transport.refreshedBookmark == nil)
         // A picked folder is named by where it is, so a refreshed bookmark doesn't read as a new server.
