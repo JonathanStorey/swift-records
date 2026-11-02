@@ -325,6 +325,31 @@ import Testing
         }
     }
 
+    @Test func aPickedFolderSyncsThroughItsBookmark() async throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let bookmark = try FileSyncTransport.bookmark(for: folder)
+        func device() throws -> RecordContainer {
+            let engine = PollingSyncEngine(
+                transport: FileSyncTransport(location: .userSelected(bookmark: bookmark)), automaticallySync: false
+            )
+            return try RecordContainer(for: [SyncRecipe.self], inMemory: true, syncProvider: engine)
+        }
+        let transport = FileSyncTransport(location: .userSelected(bookmark: bookmark))
+        #expect(transport.directory?.standardizedFileURL.resolvingSymlinksInPath().path
+            == folder.appendingPathComponent("Records").standardizedFileURL.resolvingSymlinksInPath().path)
+        #expect(try await transport.currentUser() == "local")
+        #expect(transport.refreshedBookmark == nil)
+        // A picked folder is named by where it is, so a refreshed bookmark doesn't read as a new server.
+        #expect(transport.identifier.hasPrefix("FileSyncTransport.userSelected("))
+
+        let phone = try device()
+        let tablet = try device()
+        phone.mainContext.insert(SyncRecipe(title: "Soup"))
+        try await phone.mainContext.save()
+        try await tablet.mainContext.refresh()
+        #expect(try await recipes(tablet).map(\.title) == ["Soup"])
+    }
+
     @Test func locations() async throws {
         let transport = FileSyncTransport(location: .other(directory: folder))
         #expect(transport.directory == folder.appendingPathComponent("Records", isDirectory: true))

@@ -799,6 +799,21 @@ let container = try RecordContainer(for: [Recipe.self], syncProvider: PollingSyn
 | `.appGroup("group.com.example")` | An App Group's folder, shared with extensions on one device |
 | `.applicationSupport` | Application Support on this device, for tests and the simulator |
 | `.other(directory: url)` | Any folder |
+| `.userSelected(bookmark:)` | A folder the person picked, such as one in iCloud Drive, with no iCloud entitlement |
+
+`.iCloud` and `.iCloudDrive` need the iCloud capability with iCloud Documents, which takes a paid developer
+account. A picked folder doesn't: the person chooses one in the Files picker, the app keeps a bookmark to
+it, and iCloud Drive syncs it like any other folder. Pushes don't reach a picked folder, so other devices'
+changes arrive as iCloud downloads them, at the latest with the sync as the app returns. Save the bookmark
+again when `refreshedBookmark` offers a new one, such as after the folder moved.
+
+```swift
+.fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+    if case .success(let folder) = result { savedBookmark = try? FileSyncTransport.bookmark(for: folder) }
+}
+
+let transport = FileSyncTransport(location: .userSelected(bookmark: savedBookmark))
+```
 
 Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
 kind, such as `"title":{"string":"Soup"}`, beside its save time, and assets are plain files

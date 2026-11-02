@@ -26,6 +26,10 @@ import Foundation
 /// iCloud needs the iCloud capability with iCloud Documents turned on. While the person is signed out of
 /// iCloud, the container reports `signedOut`.
 ///
+/// Without an iCloud entitlement, `.userSelected(bookmark:)` syncs through a folder the person picks in
+/// iCloud Drive, or any other synced folder. Changes from other devices arrive as the system downloads
+/// them, which for a folder in iCloud Drive can wait until the app asks, so they come with the next sync.
+///
 /// Sharing a zone hands out its folder's URL. Whoever opens that URL from their own `FileSyncTransport`,
 /// such as through a shared network drive or App Group, joins the zone and syncs it in place. A shared
 /// folder isn't watched, so its changes arrive with the next sync.
@@ -43,6 +47,10 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
         case applicationSupport
         /// Any folder, such as a network drive.
         case other(directory: URL)
+        /// A folder the person picked, such as one in iCloud Drive, kept as a bookmark from
+        /// `FileSyncTransport.bookmark(for:)`. It needs no iCloud entitlement: the system syncs the folder
+        /// as it syncs any file in iCloud Drive, and the person can see it in the Files app.
+        case userSelected(bookmark: Data)
     }
 
     public let location: Location
@@ -63,17 +71,23 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
     #if canImport(Darwin)
     private var query: MetadataWatcher?
     #endif
+    /// The picked folder this provider is reading, held open for the provider's life.
+    private var accessedFolder: URL?
+    private var staleBookmarkReplacement: Data?
 
     public init(location: Location = .iCloud) {
         self.location = location
         watchMode = switch location {
         case .iCloud, .iCloudDrive: .metadata
-        case .appGroup, .other: .folder
+        case .appGroup, .other, .userSelected: .folder
         case .applicationSupport: .none
         }
     }
 
     deinit {
+        #if canImport(Darwin)
+        accessedFolder?.stopAccessingSecurityScopedResource()
+        #endif
         poller?.cancel()
         #if canImport(Darwin)
         query?.stop()
@@ -85,9 +99,15 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
     public var directory: URL? {
         lock.withLock {
             if let resolved { return resolved }
-            let url = Self.resolve(location)?.appendingPathComponent("Records", isDirectory: true)
-            // An iCloud folder can appear later, once the person signs in.
-            if url != nil || !location.isICloud {
+            let url: URL?
+            if case .userSelected(let bookmark) = location {
+                url = openPickedFolder(bookmark)?.appendingPathComponent("Records", isDirectory: true)
+            } else {
+                url = Self.resolve(location)?.appendingPathComponent("Records", isDirectory: true)
+            }
+            // An iCloud folder can appear later, once the person signs in, and a picked one once it's
+            // reachable again.
+            if url != nil || !(location.isICloud || location.isUserSelected) {
                 resolved = .some(url)
             }
             return url
@@ -120,13 +140,93 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
                 .appendingPathComponent(Bundle.main.bundleIdentifier ?? "SwiftRecords", isDirectory: true)
         case .other(let directory):
             return directory
+        case .userSelected:
+            return nil
         }
+    }
+
+    // MARK: Picked folders
+
+    /// A bookmark to a folder the person picked, such as with `fileImporter` or
+    /// `UIDocumentPickerViewController`, to keep and pass as `.userSelected(bookmark:)` on every launch.
+    ///
+    /// ```swift
+    /// .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+    ///     if case .success(let folder) = result {
+    ///         savedBookmark = try? FileSyncTransport.bookmark(for: folder)
+    ///     }
+    /// }
+    /// ```
+    public static func bookmark(for folder: URL) throws -> Data {
+        #if canImport(Darwin)
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        return try makeBookmark(for: folder)
+        #else
+        return Data(folder.path.utf8)
+        #endif
+    }
+
+    /// A fresh bookmark for the picked folder, when the system reports the one passed in as stale, such as
+    /// after the folder moved. Save it in place of the old one. `nil` while the old one is still good.
+    public var refreshedBookmark: Data? {
+        _ = directory
+        return lock.withLock { staleBookmarkReplacement }
+    }
+
+    #if canImport(Darwin)
+    #if os(macOS)
+    private static let bookmarkCreationOptions: URL.BookmarkCreationOptions = [.withSecurityScope]
+    private static let bookmarkResolutionOptions: URL.BookmarkResolutionOptions = [.withSecurityScope]
+    #else
+    private static let bookmarkCreationOptions: URL.BookmarkCreationOptions = []
+    private static let bookmarkResolutionOptions: URL.BookmarkResolutionOptions = []
+    #endif
+    #endif
+
+    #if canImport(Darwin)
+    /// A bookmark that carries the folder's security scope where the platform has one. A process outside
+    /// the sandbox, such as a test runner, may not make scoped bookmarks, and makes a plain one.
+    private static func makeBookmark(for folder: URL) throws -> Data {
+        if let scoped = try? folder.bookmarkData(options: bookmarkCreationOptions, includingResourceValuesForKeys: nil, relativeTo: nil) {
+            return scoped
+        }
+        return try folder.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+
+    private static func resolveBookmark(_ bookmark: Data, stale: inout Bool) -> URL? {
+        if let folder = try? URL(resolvingBookmarkData: bookmark, options: bookmarkResolutionOptions, relativeTo: nil, bookmarkDataIsStale: &stale) {
+            return folder
+        }
+        return try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+    #endif
+
+    /// Resolves the picked folder's bookmark and keeps access to it open. Called under the lock.
+    private func openPickedFolder(_ bookmark: Data) -> URL? {
+        #if canImport(Darwin)
+        var stale = false
+        guard let folder = Self.resolveBookmark(bookmark, stale: &stale) else { return nil }
+        if folder.startAccessingSecurityScopedResource() {
+            accessedFolder = folder
+        }
+        if stale {
+            staleBookmarkReplacement = try? Self.makeBookmark(for: folder)
+        }
+        return folder
+        #else
+        return URL(fileURLWithPath: String(decoding: bookmark, as: UTF8.self), isDirectory: true)
+        #endif
     }
 
     // MARK: SyncTransport
 
     /// The location, so moving to another folder uploads everything to it.
-    @_spi(SyncProvider) public var identifier: String { "FileSyncTransport.\(location)" }
+    @_spi(SyncProvider) public var identifier: String {
+        // A bookmark's bytes change when it's refreshed, so a picked folder is named by where it is.
+        if location.isUserSelected { return "FileSyncTransport.userSelected(\(directory?.path ?? "unavailable"))" }
+        return "FileSyncTransport.\(location)"
+    }
 
     @_spi(SyncProvider) public func currentUser() async throws -> String? {
         guard location.isICloud else { return "local" }
@@ -407,8 +507,9 @@ public final class FileSyncTransport: SyncTransport, ZoneSharing, @unchecked Sen
               let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [:] }
         var marks: [Zone: String] = [:]
         for name in names {
-            guard let zone = Self.zone(named: name),
-                  let data = try? Data(contentsOf: root.appendingPathComponent(name).appendingPathComponent(Self.markFile)) else {
+            let file = root.appendingPathComponent(name).appendingPathComponent(Self.markFile)
+            // In iCloud Drive, a mark another device wrote may not have downloaded yet.
+            guard let zone = Self.zone(named: name), Self.isAvailable(file), let data = try? Data(contentsOf: file) else {
                 continue
             }
             marks[zone] = String(decoding: data, as: UTF8.self)
@@ -845,6 +946,11 @@ extension FileSyncTransport.Location {
         case .iCloud, .iCloudDrive: true
         default: false
         }
+    }
+
+    var isUserSelected: Bool {
+        if case .userSelected = self { return true }
+        return false
     }
 }
 
