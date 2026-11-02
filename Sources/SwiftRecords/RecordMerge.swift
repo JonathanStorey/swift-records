@@ -132,25 +132,31 @@ extension RecordStore {
         return _openExistential(source[keyPath: keyPath], do: set)
     }
 
-    /// Merges with the type's own merge when it's `Mergeable`, and otherwise, or when that throws, node by
-    /// node with every conflict going to the favored side.
+    /// Merges with the type's own merge when it's `Mergeable`, and otherwise, or when that returns `nil`, node
+    /// by node with every conflict going to the favored side.
     private static func merge<R: Record>(_ ours: R, _ theirs: R, base: R?, favoringOurs: Bool) -> R {
-        if let mergeable = ours as? any Mergeable, let merged = try? mergeOwn(mergeable, theirs, base: base) as? R {
+        if let mergeable = ours as? any Mergeable, let merged = mergeOwn(mergeable, theirs, base: base) as? R {
             return merged
         }
-        if favoringOurs {
-            let strategy = CodableTotalMerge<R, OursSide>()
-            return base.map { strategy.merge(base: $0, ours: ours, theirs: theirs) } ?? strategy.merge(ours: ours, theirs: theirs)
+        let merged: R? = if favoringOurs {
+            totalMerge(CodableTotalMerge<R, OursSide>(), ours, theirs, base: base)
+        } else {
+            totalMerge(CodableTotalMerge<R, TheirsSide>(), ours, theirs, base: base)
         }
-        let strategy = CodableTotalMerge<R, TheirsSide>()
-        return base.map { strategy.merge(base: $0, ours: ours, theirs: theirs) } ?? strategy.merge(ours: ours, theirs: theirs)
+        // A total merge settles every conflict, so it only fails when a side can't encode. Keep the favored one.
+        return merged ?? (favoringOurs ? ours : theirs)
     }
 
-    private static func mergeOwn<M: Mergeable>(_ ours: M, _ theirs: Any, base: Any?) throws -> M {
-        guard let theirs = theirs as? M else { throw CocoaError(.coderValueNotFound) }
-        guard let base else { return try ours.merging(with: theirs) }
-        guard let base = base as? M else { throw CocoaError(.coderValueNotFound) }
-        return try ours.merging(with: theirs, from: base)
+    private static func totalMerge<R, S: MergeStrategy<R>>(_ strategy: S, _ ours: R, _ theirs: R, base: R?) -> R? {
+        base.map { strategy.merge(base: $0, ours: ours, theirs: theirs) } ?? strategy.merge(ours: ours, theirs: theirs)
+    }
+
+    /// The type's own merge, or `nil` when the other copies aren't the same type or the type can't merge them.
+    private static func mergeOwn<M: Mergeable>(_ ours: M, _ theirs: Any, base: Any?) -> M? {
+        guard let theirs = theirs as? M else { return nil }
+        guard let base else { return ours.merging(with: theirs) }
+        guard let base = base as? M else { return nil }
+        return ours.merging(with: theirs, from: base)
     }
 
     private static let mergeID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!

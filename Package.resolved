@@ -1,13 +1,22 @@
 {
-  "originHash" : "fdddd6dfccf93efd6f1c6cf6044a52805f95ac3040e4e9301ea9be2d1b158190",
+  "originHash" : "37ecfb591ff94615f08cbfe430c68f10c9875ddd7f5ffcdf429146b0d0e5dad9",
   "pins" : [
+    {
+      "identity" : "swift-identification",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JonathanStorey/swift-identification.git",
+      "state" : {
+        "revision" : "a4fbeb2b050ebbb6ff65e36a6d58beff8571ef27",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "swift-merging",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/JonathanStorey/swift-merging.git",
       "state" : {
-        "revision" : "5967dc3e6ea2df779190e2ca8646879bee6a2441",
-        "version" : "0.1.0"
+        "revision" : "b46bc78444a3042392691e97e52fa8cb3f6e851b",
+        "version" : "0.2.0"
       }
     },
     {

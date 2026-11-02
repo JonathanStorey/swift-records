@@ -649,7 +649,7 @@ struct Contact {
 `@Merged` picks how one property merges when both sides changed it, from the strategies swift-merging
 provides or one of your own. A record that conforms to `Mergeable` and writes `merging(with:from:)`
 merges itself, with the whole record in view, and its result is final, so it never reports a conflict.
-If it throws, the usual merge decides, so a save or sync never stops, and an open editor sees a conflict
+If it returns `nil`, the usual merge decides, so a save or sync never stops, and an open editor sees a conflict
 at each value both sides changed. Pointers, assets and fields this version of the app doesn't know merge as whole values, and
 a record whose copies don't decode merges property by property.
 

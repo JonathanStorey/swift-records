@@ -25,7 +25,7 @@ struct MergeBooking: Mergeable {
     var note = ""
     var confirmed = false
 
-    func merging(with theirs: MergeBooking, from base: MergeBooking) -> MergeBooking {
+    func merging(with theirs: MergeBooking, from base: MergeBooking) -> MergeBooking? {
         confirmed ? self : theirs
     }
 }
@@ -37,8 +37,8 @@ struct MergeTicket: Mergeable {
     var seat = ""
     var place = Address()
 
-    func merging(with theirs: MergeTicket, from base: MergeTicket) throws(MergeConflict<MergeTicket>) -> MergeTicket {
-        throw MergeConflict(base: base, ours: self, theirs: theirs)
+    func merging(with theirs: MergeTicket, from base: MergeTicket) -> MergeTicket? {
+        nil
     }
 }
 
