@@ -1140,7 +1140,8 @@ private actor Seen {
         await tablet.settle()
         let received = try #require(try await tablet.recipes().first)
         #expect(received.photo == Data([1, 2, 3]))
-        #expect(received.$photo?.lastPathComponent == assetID)
+        #expect(received.$photo?.lastPathComponent == "photo.asset")
+        #expect(try tablet.container.initialStorage.store.assetData(named: assetID) == Data([1, 2, 3]))
     }
 
     @Test func anUnchangedFileIsntNamedAsChanged() async throws {

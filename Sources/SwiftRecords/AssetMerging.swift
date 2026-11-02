@@ -35,7 +35,7 @@ extension RecordStore {
 
     /// An asset's bytes, from wherever its file is: stored, just received, kept as a merge base, or kept
     /// aside for undo.
-    private func assetData(named name: String) -> Data? {
+    func assetData(named name: String) -> Data? {
         let candidates = [
             assetURL(named: name), incomingAssetFiles[name],
             assetBasesDirectory.appendingPathComponent(name), releasedAssetsDirectory.appendingPathComponent(name),
@@ -107,5 +107,59 @@ extension RecordStore {
             }
         }
         return names
+    }
+}
+
+// MARK: - Stable files
+
+/// A record's asset property, whose stable file follows the asset it holds.
+struct AssetLinkKey: Hashable {
+    let table: String
+    let id: SQLiteValue
+    let field: String
+}
+
+extension RecordStore {
+    /// The file a record's asset property is read through: `<assets>/<type>/<record id>/<property>.<ext>`.
+    /// It shares the contents of the asset's own file, which keeps a unique name for sync and undo.
+    func assetLink(table: String, id: SQLiteValue, field: String, name: String) -> URL? {
+        guard let uuid = try? ValueCoding.decode(UUID.self, from: id) else { return nil }
+        let fileExtension = (name as NSString).pathExtension
+        return assetLinkDirectory(table: table, id: uuid)
+            .appendingPathComponent(fileExtension.isEmpty ? field : field + "." + fileExtension)
+    }
+
+    private func assetLinkDirectory(table: String, id: UUID) -> URL {
+        assetsDirectory.appendingPathComponent(table, isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    /// Points the stable files of the properties the committed transaction changed at their new assets,
+    /// and removes those whose asset went. A file still downloading is placed when it's first read.
+    func applyAssetLinks() {
+        let changes = assetLinkChanges
+        assetLinkChanges = [:]
+        let manager = FileManager.default
+        for (key, name) in changes {
+            guard let uuid = try? ValueCoding.decode(UUID.self, from: key.id) else { continue }
+            let directory = assetLinkDirectory(table: key.table, id: uuid)
+            let link = name.flatMap { assetLink(table: key.table, id: key.id, field: key.field, name: $0) }
+            // An asset with another extension, or none, leaves its old file behind otherwise.
+            for entry in (try? manager.contentsOfDirectory(atPath: directory.path)) ?? []
+            where entry == key.field || entry.hasPrefix(key.field + ".") {
+                let old = directory.appendingPathComponent(entry)
+                if old != link { try? manager.removeItem(at: old) }
+            }
+            if let name, let link {
+                let file = assetURL(named: name)
+                if manager.fileExists(atPath: file.path) {
+                    Asset.place(file, at: link)
+                } else {
+                    try? manager.removeItem(at: link)
+                }
+            }
+            if ((try? manager.contentsOfDirectory(atPath: directory.path)) ?? ["kept"]).isEmpty {
+                try? manager.removeItem(at: directory)
+            }
+        }
     }
 }

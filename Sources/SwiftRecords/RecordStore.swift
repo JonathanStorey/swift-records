@@ -66,6 +66,9 @@ final class RecordStore: @unchecked Sendable {
     /// Files that came with the server changes being applied, by asset name, for merging an asset's bytes
     /// before the files are placed.
     var incomingAssetFiles: [String: URL] = [:]
+    /// The asset each changed record property holds once the open transaction commits, or `nil` for none,
+    /// to point its stable file at.
+    var assetLinkChanges: [AssetLinkKey: String?] = [:]
     /// Where an asset merge writes its result until the record's save copies it in.
     lazy var mergedAssetsDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-records-merged-\(UUID().uuidString)", isDirectory: true)
@@ -188,6 +191,7 @@ final class RecordStore: @unchecked Sendable {
                 let rows = touched.removeLast()
                 if fileChanges.isEmpty {
                     removeReleasedFiles(changes.released)
+                    applyAssetLinks()
                     pruneAssetBases()
                     if changedData {
                         changedData = false
@@ -208,6 +212,7 @@ final class RecordStore: @unchecked Sendable {
                 if fileChanges.count == 1 {
                     changedData = false
                     orphans = []
+                    assetLinkChanges = [:]
                 }
                 // Files written by the rolled-back work go with it, and released ones stay.
                 for url in fileChanges.removeLast().created {
@@ -462,11 +467,21 @@ final class RecordStore: @unchecked Sendable {
             "INSERT INTO \"_records_assets\" (name, owner_table, owner_id, field) VALUES (?, ?, ?, ?)",
             [.text(name), .text(table), id, .text(field)]
         )
+        assetLinkChanges[AssetLinkKey(table: table, id: id, field: field)] = .some(name)
         return name
     }
 
     /// Unlinks an asset. Its file is removed once the outermost transaction commits.
     private func releaseAsset(named name: String) throws {
+        if let owner = try db.run(
+            "SELECT owner_table, owner_id, field FROM \"_records_assets\" WHERE name = ?", [.text(name)]
+        ).first, case .text(let table)? = owner["owner_table"], case .text(let field)? = owner["field"] {
+            let key = AssetLinkKey(table: table, id: owner["owner_id"] ?? .null, field: field)
+            // A property that already holds a new asset keeps it.
+            if assetLinkChanges[key] == nil || assetLinkChanges[key] == .some(name) {
+                assetLinkChanges[key] = .some(nil)
+            }
+        }
         try db.run("DELETE FROM \"_records_assets\" WHERE name = ?", [.text(name)])
         fileChanges[fileChanges.count - 1].released.append(name)
     }

@@ -218,5 +218,6 @@ private struct FieldsOnly: RelationLoader {
     func hasRelated<R: Record>(_ type: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field) throws -> Bool { false }
     func loadInverse(targetID: SQLiteValue, inverse: AnyKeyPath) throws -> [SQLiteValue] { [] }
     func assetURL(named name: String) -> URL { store.assetURL(named: name) }
+    func assetLink(table: String, id: SQLiteValue, field: String, name: String) -> URL? { nil }
     func syncedDate(table: String, id: SQLiteValue) throws -> Date? { nil }
 }

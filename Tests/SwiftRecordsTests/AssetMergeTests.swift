@@ -57,6 +57,7 @@ struct Notebook {
         theirs.notes = Data("one\ntwo\ntablet".utf8)
         tablet.context.insert(theirs)
         try tablet.commit()
+        let path = try #require(try notebook(on: tablet).$notes)
 
         try await phone.context.save()
         // The tablet's send conflicts. It merges against the copy both started from, which it kept.
@@ -66,10 +67,11 @@ struct Notebook {
             let merged = try notebook(on: device)
             #expect(merged.notes == Data("one\ntwo\ntablet\nphone".utf8))
         }
-        // The merged file is the record's own and went up with it.
+        // The merge lands at the path the property already had, and went up with the record.
+        #expect(try notebook(on: tablet).$notes == path)
+        #expect(try Data(contentsOf: path) == Data("one\ntwo\ntablet\nphone".utf8))
         let id = try #require(server.assetID("Notebook", book.id, "notes"))
-        #expect(try notebook(on: tablet).$notes?.lastPathComponent == id)
-        #expect(try notebook(on: phone).$notes?.lastPathComponent == id)
+        #expect(try phone.container.initialStorage.store.assetData(named: id) == Data("one\ntwo\ntablet\nphone".utf8))
     }
 
     @Test func assetsAddedOnBothSidesMergeWithoutABase() async throws {

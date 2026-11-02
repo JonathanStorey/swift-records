@@ -20,8 +20,14 @@ struct Album {
 @Suite struct AssetTests {
     let container = try! RecordContainer(inMemory: true)
 
+    /// The asset files themselves, without the folders of stable paths records read them through.
     private func files() -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: container.assetsDirectory.path)) ?? []).sorted()
+        let directory = container.assetsDirectory
+        return ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).filter { name in
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path, isDirectory: &isDirectory)
+            return !isDirectory.boolValue
+        }.sorted()
     }
 
     @Test func storesDataAsAFile() throws {
@@ -31,8 +37,9 @@ struct Album {
 
         let fetched = try #require(try container.fetch(Photo.self, id: photo.id))
         let url = try #require(fetched.$image)
-        #expect(url.pathExtension == "asset")
-        #expect(url.deletingLastPathComponent().standardizedFileURL.path == container.assetsDirectory.standardizedFileURL.path)
+        // Each record property reads its asset through a path of its own.
+        let expected = container.assetsDirectory.appendingPathComponent("Photo/\(photo.id.uuidString)/image.asset")
+        #expect(url.standardizedFileURL.path == expected.standardizedFileURL.path)
         #expect(try Data(contentsOf: url) == Data("pixels".utf8))
         #expect(fetched.image == Data("pixels".utf8))
     }
@@ -89,12 +96,15 @@ struct Album {
 
         photo.image = Data("new".utf8)
         try container.save(photo)
-        #expect(!FileManager.default.fileExists(atPath: old.path))
-        #expect(files() == [try #require(try container.fetch(Photo.self, id: photo.id)?.$image?.lastPathComponent)])
+        // The property's path stays the same and holds the new bytes.
+        #expect(try container.fetch(Photo.self, id: photo.id)?.$image == old)
+        #expect(try Data(contentsOf: old) == Data("new".utf8))
+        #expect(files().count == 1)
 
         photo.image = nil
         try container.save(photo)
         #expect(files().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: old.path))
         #expect(try container.fetch(Photo.self, id: photo.id)?.image == nil)
     }
 
@@ -105,6 +115,7 @@ struct Album {
 
         try container.delete(album)
         #expect(files().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: container.assetsDirectory.appendingPathComponent("Photo/\(album.photos[0].id.uuidString)").path))
     }
 
     @Test func sharedAssetsGetTheirOwnCopy() throws {

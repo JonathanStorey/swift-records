@@ -97,8 +97,10 @@ import Testing
         try await tablet.mainContext.refresh()
         let received = try #require(try await recipes(tablet).first)
         #expect(received.photo == Data([1, 2, 3]))
-        let name = try #require(received.$photo?.lastPathComponent)
-        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Records/_default/_assets/\(name)").path))
+        let assets = folder.appendingPathComponent("Records/_default/_assets")
+        let files = try FileManager.default.contentsOfDirectory(atPath: assets.path)
+        #expect(files.count == 1)
+        #expect(try Data(contentsOf: assets.appendingPathComponent(try #require(files.first))) == Data([1, 2, 3]))
     }
 
     @Test func deletingTheFolderDeletesTheZone() async throws {

@@ -241,6 +241,8 @@ protocol RelationLoader {
     /// The IDs of the records whose many-to-many array at `inverse` links here.
     func loadInverse(targetID: SQLiteValue, inverse: AnyKeyPath) throws -> [SQLiteValue]
     func assetURL(named name: String) -> URL
+    /// The stable file a record's asset property is read through.
+    func assetLink(table: String, id: SQLiteValue, field: String, name: String) -> URL?
     func syncedDate(table: String, id: SQLiteValue) throws -> Date?
 }
 
@@ -335,7 +337,10 @@ struct RecordDecoder<R: Record>: Decoder {
                 return try ValueCoding.decode(T.self, from: value)
             }
             if T.self == Asset.self, case .text(let fileName) = value {
-                return Asset(storedName: fileName, url: decoder.loader.assetURL(named: fileName)) as! T
+                return Asset(
+                    storedName: fileName, url: decoder.loader.assetURL(named: fileName),
+                    link: decoder.loader.assetLink(table: R.table, id: id, field: name, name: fileName)
+                ) as! T
             }
             return try ValueCoding.decode(T.self, from: value)
         }

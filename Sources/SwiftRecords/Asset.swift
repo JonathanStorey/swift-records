@@ -39,12 +39,15 @@ public struct Asset: Hashable, Sendable, Codable {
     final class Storage: @unchecked Sendable {
         let name: String
         let source: Source
+        /// The record property's stable file, which always holds its current asset.
+        let link: URL?
         private let lock = NSLock()
         private var cached: Data?
 
-        init(name: String, source: Source) {
+        init(name: String, source: Source, link: URL? = nil) {
             self.name = name
             self.source = source
+            self.link = link
         }
 
         func data() -> Data? {
@@ -88,8 +91,8 @@ public struct Asset: Hashable, Sendable, Codable {
         storage = Storage(name: Self.makeName(fileExtension: url.pathExtension), source: .file(url))
     }
 
-    init(storedName name: String, url: URL) {
-        storage = Storage(name: name, source: .stored(url))
+    init(storedName name: String, url: URL, link: URL? = nil) {
+        storage = Storage(name: name, source: .stored(url), link: link)
     }
 
     /// The contents, read from disk the first time they're needed.
@@ -108,10 +111,32 @@ public struct Asset: Hashable, Sendable, Codable {
         set { self = newValue.map { Asset(contentsOf: $0) } ?? Asset() }
     }
 
-    /// The stored file, or `nil` when it isn't on disk.
+    /// The record property's file, or `nil` when it isn't on disk. Its path stays the same as the asset is
+    /// replaced, merged or synced.
     var url: URL? {
-        guard case .stored(let url)? = storage?.source, FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url
+        guard case .stored(let file)? = storage?.source else { return nil }
+        let manager = FileManager.default
+        guard let link = storage?.link else { return manager.fileExists(atPath: file.path) ? file : nil }
+        if manager.fileExists(atPath: link.path) { return link }
+        // A file that downloaded after its record was saved gets its stable path when first asked for.
+        guard manager.fileExists(atPath: file.path) else { return nil }
+        Self.place(file, at: link)
+        return manager.fileExists(atPath: link.path) ? link : file
+    }
+
+    /// Points `link` at `file`'s contents, replacing what was there in one step. A reader that opened the
+    /// old contents keeps reading them.
+    static func place(_ file: URL, at link: URL) {
+        let manager = FileManager.default
+        let directory = link.deletingLastPathComponent()
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let temporary = directory.appendingPathComponent(".\(UUID().uuidString)")
+        if (try? manager.linkItem(at: file, to: temporary)) == nil {
+            guard (try? manager.copyItem(at: file, to: temporary)) != nil else { return }
+        }
+        if rename(temporary.path, link.path) != 0 {
+            try? manager.removeItem(at: temporary)
+        }
     }
 
     /// The file's unique name in the assets folder, or `nil` for an empty asset.
