@@ -854,12 +854,17 @@ suits a detail view with no Save button.
 
 A sheet with Save and Cancel wants the opposite, and `@Recordable(.draft)` gives it. Edits stay in the
 wrapper, so lists keep showing the stored record and no other save commits them. `$todo.save()` commits the
-draft, and `$todo.rollback()` drops it with nothing left behind:
+draft, and `$todo.rollback()` drops it with nothing left behind. A record passed in takes `.draft` in the
+view's initializer, and a new one can write it in place: `@Recordable(.draft) var todo = ToDo()`.
 
 ```swift
 struct EditToDo: View {
-    @Recordable(.draft) var todo: ToDo            // EditToDo(todo: todo)
+    @Recordable var todo: ToDo
     @Environment(\.dismiss) private var dismiss
+
+    init(todo: ToDo) {                            // EditToDo(todo: todo)
+        _todo = Recordable(wrappedValue: todo, .draft)
+    }
 
     var body: some View {
         Form {

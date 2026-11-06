@@ -85,8 +85,9 @@ struct AlbumDetail: View {
     private var header: some View {
         Section {
             HStack(alignment: .top, spacing: 16) {
+                let cover = album.cover
                 PhotosPicker(selection: $photo, matching: .images) {
-                    CoverImage(data: album.cover, size: 140)
+                    CoverImage(data: cover, size: 140)
                 }
                 .buttonStyle(.plain)
                 .help("Choose a cover from Photos")

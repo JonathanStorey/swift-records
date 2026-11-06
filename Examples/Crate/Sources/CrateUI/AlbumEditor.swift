@@ -5,10 +5,14 @@ import SwiftUI
 /// A sheet with Save and Cancel. Its edits stay in a draft that no list sees until Save, and a change from
 /// another device still merges into the fields the draft left alone.
 struct AlbumEditor: View {
-    @Recordable(.draft) var album: Album
+    @Recordable var album: Album
     @Environment(\.dismiss) private var dismiss
     @Records(sort: \Artist.name) private var artists: [Artist]
     @State private var failure: String?
+
+    init(album: Album) {
+        _album = Recordable(wrappedValue: album, .draft)
+    }
 
     var body: some View {
         Form {
