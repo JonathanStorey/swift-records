@@ -110,6 +110,7 @@ package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     private let lock = NSLock()
     private var state = State()
+    private var storedBatchLimit: Int?
     private weak var delegate: (any SyncDelegate)?
     private var started = false
     private let gate = OperationGate()
@@ -125,6 +126,13 @@ package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
     deinit {
         scheduledSend?.cancel()
         listener?.cancel()
+    }
+
+    /// The most changes one request takes, like CloudKit's size limit, or `nil` for no limit. The engine
+    /// hands the rest of a batch back to the container.
+    package var batchLimit: Int? {
+        get { lock.withLock { storedBatchLimit } }
+        set { lock.withLock { storedBatchLimit = newValue } }
     }
 
     package var identifier: String { transport.identifier }
@@ -219,7 +227,16 @@ package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
             let context = SendContext(reason: reason, options: options)
             await delegate.handle(.willSendChanges(context))
             do {
-                while let batch = await delegate.nextBatch(context), !batch.isEmpty {
+                while var batch = await delegate.nextBatch(context), !batch.isEmpty {
+                    if let limit = batchLimit {
+                        // A full batch leaves the rest for the next one, as CloudKit's size limit does.
+                        let left = batch.saves.dropFirst(limit).map(\.id) + batch.deletes.dropFirst(max(0, limit - batch.saves.count)).map(\.id)
+                        batch.saves = Array(batch.saves.prefix(limit))
+                        batch.deletes = Array(batch.deletes.prefix(max(0, limit - batch.saves.count)))
+                        if !left.isEmpty {
+                            await delegate.unsent(left)
+                        }
+                    }
                     let result = try await transport.modifyRecords(batch)
                     let done = result.saved.map { PendingRecordChange.save($0.id, $0.zone) }
                         + result.deleted.map { PendingRecordChange.delete($0.id, $0.zone) }

@@ -76,6 +76,11 @@ package protocol SyncDelegate: AnyObject, Sendable {
 
     /// ≈ `nextFetchChangesOptions(_:syncEngine:)`. Lets the container put the zones on screen first.
     func nextFetchOptions(_ context: FetchContext) async -> FetchOptions
+
+    /// Hands back records from the last batch that the engine had no room for, so the next batch of the same
+    /// send offers them again. ≈ what `RecordZoneChangeBatch(pendingChanges:recordProvider:)` leaves out once
+    /// a batch reaches CloudKit's size limit.
+    func unsent(_ ids: [UUID]) async
 }
 
 /// Something that happened in the engine. ≈ `CKSyncEngine.Event`, one case each.
@@ -196,18 +201,15 @@ package struct FetchContext: Sendable, Hashable {
     }
 }
 
-/// Changes to send in one request. ≈ `CKSyncEngine.RecordZoneChangeBatch`.
+/// Changes to send in one request. ≈ `CKSyncEngine.RecordZoneChangeBatch`. Never atomic by zone, so one
+/// conflict fails only its own record.
 package struct RecordBatch: Sendable, Hashable {
     package var saves: [RecordChangeData]
     package var deletes: [RecordDeletion]
-    /// Whether all of a zone's changes in the batch succeed or fail together. The container sends `false`,
-    /// so one conflict fails only its own record.
-    package var atomicByZone: Bool
 
-    package init(saves: [RecordChangeData] = [], deletes: [RecordDeletion] = [], atomicByZone: Bool = false) {
+    package init(saves: [RecordChangeData] = [], deletes: [RecordDeletion] = []) {
         self.saves = saves
         self.deletes = deletes
-        self.atomicByZone = atomicByZone
     }
 
     package var isEmpty: Bool { saves.isEmpty && deletes.isEmpty }

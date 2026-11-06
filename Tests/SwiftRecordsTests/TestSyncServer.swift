@@ -406,6 +406,12 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
         set { transport.pageSize = newValue }
     }
 
+    /// The most changes one upload takes, like CloudKit's size limit.
+    var batchLimit: Int? {
+        get { engine.batchLimit }
+        set { engine.batchLimit = newValue }
+    }
+
     // MARK: SyncProvider
 
     var identifier: String { engine.identifier }

@@ -222,16 +222,32 @@ final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         guard let batch = await delegate.nextBatch(SendContext(reason: Self.reason(context.reason), options: options)) else {
             return nil
         }
-        var saves: [CKRecord] = []
+        var records: [CKRecord.ID: CKRecord] = [:]
+        var pending: [CKSyncEngine.PendingRecordZoneChange] = []
+        var ids: [CKRecord.ID: UUID] = [:]
         for change in batch.saves where change.zone.scope == scope {
-            if let record = try? container.ckRecord(for: change, in: Self.zoneID(change.zone)) {
-                saves.append(record)
-            }
+            guard let record = try? container.ckRecord(for: change, in: Self.zoneID(change.zone)) else { continue }
+            records[record.recordID] = record
+            pending.append(.saveRecord(record.recordID))
+            ids[record.recordID] = change.id
         }
-        let deletes = batch.deletes.filter { $0.zone.scope == scope }.map {
-            RecordContainer.recordID(for: $0.id, in: Self.zoneID($0.zone))
+        for deletion in batch.deletes where deletion.zone.scope == scope {
+            let recordID = RecordContainer.recordID(for: deletion.id, in: Self.zoneID(deletion.zone))
+            pending.append(.deleteRecord(recordID))
+            ids[recordID] = deletion.id
         }
-        return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: saves, recordIDsToDelete: deletes, atomicByZone: batch.atomicByZone)
+        // The engine takes changes in order until the batch reaches CloudKit's size limit, and the container
+        // offers the rest again in the next batch.
+        let built = BuiltRecords(records: records)
+        guard let result = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending, recordProvider: { built.records[$0] }) else {
+            return nil
+        }
+        let taken = Set(result.recordsToSave.map(\.recordID) + result.recordIDsToDelete)
+        let left = ids.filter { !taken.contains($0.key) }.map(\.value)
+        if !taken.isEmpty, !left.isEmpty {
+            await delegate.unsent(left)
+        }
+        return result
     }
 
     fileprivate func nextFetchChangesOptions(
@@ -523,4 +539,8 @@ private final class EngineDelegate: CKSyncEngineDelegate, @unchecked Sendable {
     }
 }
 
+/// Records built for one batch, handed to the engine as it fills the batch. Only read once built.
+struct BuiltRecords: @unchecked Sendable {
+    let records: [CKRecord.ID: CKRecord]
+}
 #endif
