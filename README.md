@@ -483,9 +483,8 @@ CloudKit lists, a child's `@Reference(from:)` pointer as a `CKRecord.Reference`,
 arrays aren't fields: a child sends its pointer, and each many-to-many link is a `RecordLink` record with
 `relation`, `from`, `to` and `created` fields. Nothing else is added.
 
-Every edit names the fields it changed. The upload sets only those keys on a `CKRecord` rebuilt from the
-server copy's system fields, so an unchanged asset or a large field never goes up again. The save still
-checks the change tag, so a conflict merges here as a whole record. Downloads are always whole records.
+Every edit names the fields it changed, and the upload sets only those keys, so an unchanged asset or a
+large field never goes up again. Downloads are always whole records.
 
 The container stays local first. It keeps its own creation and modification times, and stores each
 record's CloudKit system fields beside it, outside the struct, to build the next upload on.
@@ -618,14 +617,13 @@ let container = try RecordContainer(
 )
 ```
 
-The engines schedule sends after each save, fetch on pushes, retry, split batches and track the account. Each zone is a `CKRecordZone` of the same name, created before its first
-record, and SwiftRecords' own zones such as `.default` become `swiftrecords._default`, since CloudKit
-keeps names that start with an underscore for itself. A shared zone is the owner's zone in the shared
-database. An edit sets only its changed keys on a `CKRecord` rebuilt from the server copy's system fields,
-so an unchanged asset or long field never uploads again, and a stale copy still fails as a conflict and
-merges here. Asset files ride inside their records as `CKAsset`s, each with its ID in a field beside it,
-so a download names the file without hashing it again. Set `syncsSharedDatabase` to `false` to sync the
-private database alone.
+The engines schedule sends after each save, fetch on pushes, retry and track the account. Each batch holds
+as many records as fit within CloudKit's request size, and the rest go in the next batch of the same send.
+Each zone is a `CKRecordZone` of the same name, created before its first record, and SwiftRecords' own
+zones such as `.default` become `swiftrecords._default`, since CloudKit keeps names that start with an
+underscore for itself. A shared zone is the owner's zone in the shared database. An edit sets only its
+changed keys on a `CKRecord` rebuilt from the server copy's system fields, so a stale copy still fails as a
+conflict and merges here. Set `syncsSharedDatabase` to `false` to sync the private database alone.
 
 Sharing uses a zone-wide `CKShare`. Invite people with the system's interface, built from
 `container.ckShare(for: zone)` and `container.ckContainer`, such as `UICloudSharingController`. Accept the
@@ -642,8 +640,8 @@ from CloudKit's first answer instead.
 
 ### CloudKit records
 
-The container converts each change to a `CKRecord` and back, value for value, so records are stored
-exactly as CloudKit expects:
+Each record converts to a `CKRecord` and back, value for value, so records are stored exactly as CloudKit
+expects:
 
 | Record | CKRecord |
 | --- | --- |
@@ -657,16 +655,13 @@ exactly as CloudKit expects:
 | `@Encrypted` | the same field in `encryptedValues` |
 | children, many-to-many arrays, their other sides, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
 
-Each child is its own `CKRecord`, and locally it still appears in its parent's array. Coming
-back, the container archives the record's system fields as the change's `tag` and takes its
-`modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
-change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, or by the `<field>_assetID` field beside them, and
-they go in the change's `assetFiles`.
+A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and locally it
+still appears in the recipe's `steps`. Each many-to-many link is a `RecordLink` record.
 
-A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and each
-many-to-many link is a `RecordLink` record. It builds `CKRecord`s from the container's changes
-rather than from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
-a newer app version added.
+Coming back, the container keeps each record's system fields and takes its `modificationDate` as
+`@Timestamped(.synced)`, so the next save builds on exactly the server's copy and carries its change tag.
+Each asset has its ID in a `<field>_assetID` field beside it, so a download names the file without hashing
+it again. Fields a newer app version added are kept as they arrived and written back untouched.
 
 ## SwiftUI
 
@@ -880,8 +875,8 @@ view whose own edit was saved keeps its cached array instead of fetching again.
 ## Benchmarks
 
 The `Benchmarks` program times the heaviest operations on a store of recipes with five nested steps
-each, written to files on disk and synced through a server in memory, so sync timings measure the local
-database rather than a network:
+each, written to files on disk and synced through an in-memory engine that behaves like `CKSyncEngine`, so
+sync timings measure the local database rather than a network:
 
 ```
 swift run -c release Benchmarks                                       # 10,000 recipes, 60,000 records
@@ -911,5 +906,6 @@ Some timings from that run, for 60,000 records:
 
 ## Requirements
 
-iOS 18, macOS 15, Swift 6. The package also builds on Linux with `libsqlite3-dev`, which is how CI and
-the tests run outside Xcode.
+iOS 18, macOS 15, Swift 6. Sync needs CloudKit and a paid developer account. The package also builds on
+Linux with `libsqlite3-dev`, where containers are local only. CI runs the tests there too, syncing through
+an in-memory engine that behaves like `CKSyncEngine`.
