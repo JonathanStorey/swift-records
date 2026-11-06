@@ -99,9 +99,5 @@ private final class TagInjectingUnarchiver: NSKeyedUnarchiver {
     override func decodeObject(forKey key: String) -> Any? {
         injected(key) ?? super.decodeObject(forKey: key)
     }
-
-    override func decodeObject(of classes: [AnyClass]?, forKey key: String) -> Any? {
-        injected(key) ?? super.decodeObject(of: classes, forKey: key)
-    }
 }
 #endif
