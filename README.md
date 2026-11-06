@@ -210,8 +210,9 @@ try await container.stopSharing(zone)                      // a participant leav
 owner stops sharing, the zone and its records leave every participant's devices. A container that doesn't
 sync, or doesn't sync the shared database, throws `RecordsError.sharingUnavailable`.
 
-The system's sharing interface works without any CloudKit types. `ShareLink` invites people the first
-time and manages the share after. `RecordsAppDelegate` accepts the invitations people tap, and
+The system's sharing interface works without any CloudKit types. `ShareLink` with a `shareItem(for:)`
+invites people the first time and manages the share after, so make the item again once a zone is
+shared. `RecordsAppDelegate` accepts the invitations people tap, and
 `onShareAccepted(perform:)` hands the joined zone to a view:
 
 ```swift
@@ -228,14 +229,16 @@ struct RecipesApp: App {
 struct ContentView: View {
     @Environment(\.recordContainer) private var container
     @Environment(\.recordContext) private var context
+    @State private var shareItem: ZoneShareItem?
 
     var body: some View {
         RecipeList()
             .toolbar {
-                if let container {
-                    ShareLink(item: container.shareItem(for: "family"), preview: SharePreview("Family recipes"))
+                if let shareItem {
+                    ShareLink(item: shareItem, preview: SharePreview("Family recipes"))
                 }
             }
+            .task { shareItem = try? await container?.shareItem(for: "family") }
             .onShareAccepted { result in
                 if case .success(let zone) = result { context.zone = zone }
             }

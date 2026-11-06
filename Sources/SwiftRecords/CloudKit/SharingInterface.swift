@@ -14,16 +14,26 @@ import AppKit
 
 extension RecordContainer {
     /// A zone to share through SwiftUI's `ShareLink`, which shows the system's interface: inviting people
-    /// the first time, and managing who is in the share after.
+    /// the first time, and managing who is in the share after. It looks up the zone's share, so make it
+    /// in a task and make it again after the share changes.
     ///
     /// ```swift
-    /// ShareLink(item: container.shareItem(for: "family"), preview: SharePreview("Family recipes"))
+    /// @State private var item: ZoneShareItem?
+    ///
+    /// if let item { ShareLink(item: item, preview: SharePreview("Family recipes")) }
+    /// …
+    /// .task { item = try? await container.shareItem(for: "family") }
     /// ```
     ///
-    /// The zone's pending changes go to the server before the share does, so people who accept find its
-    /// records there. Only the person's own zones can be shared.
-    public func shareItem(for zone: Zone) -> ZoneShareItem {
-        ZoneShareItem(zone: zone, container: self)
+    /// The zone's pending changes go to the server before a new share does, so people who accept find its
+    /// records there. Only the person's own zones can be shared. Throws `RecordsError.sharingUnavailable`
+    /// for a zone that can't be shared.
+    public func shareItem(for zone: Zone) async throws -> ZoneShareItem {
+        guard zone.scope == .private, let provider = cloudKitProvider, provider.sharing != nil else {
+            throw RecordsError.sharingUnavailable(zone: zone.description)
+        }
+        let existing = try await provider.fetchShare(for: zone)
+        return ZoneShareItem(zone: zone, container: self, existing: existing.map(ZoneShareItem.Existing.init))
     }
 
     /// The zone's `CKShare`, saved first when it has none, after sending the zone's pending changes.
@@ -43,23 +53,31 @@ public struct ZoneShareItem: Transferable, Sendable {
     /// The zone being shared.
     public let zone: Zone
     let container: RecordContainer
+    /// The zone's share when it already had one, which the system's interface then manages.
+    let existing: Existing?
+
+    /// A saved share, only read after it's fetched.
+    struct Existing: @unchecked Sendable {
+        let share: CKShare
+    }
+
+    /// Whether the zone was already shared when the item was made.
+    public var isShared: Bool { existing != nil }
 
     public static var transferRepresentation: some TransferRepresentation {
         CKShareTransferRepresentation { item in
-            try await item.exportedShare()
+            item.exportedShare()
         }
     }
 
-    private func exportedShare() async throws -> CKShareTransferRepresentation<ZoneShareItem>.ExportedShare {
-        guard zone.scope == .private, let provider = container.cloudKitProvider, provider.sharing != nil else {
-            throw RecordsError.sharingUnavailable(zone: zone.description)
-        }
-        if let existing = try await provider.fetchShare(for: zone) {
-            return .existing(existing, container: provider.ckContainer)
+    private func exportedShare() -> CKShareTransferRepresentation<ZoneShareItem>.ExportedShare {
+        let ckContainer = container.cloudKitProvider?.ckContainer ?? .default()
+        if let existing {
+            return .existing(existing.share, container: ckContainer)
         }
         let container = container
         let zone = zone
-        return .prepareShare(container: provider.ckContainer) {
+        return .prepareShare(container: ckContainer) {
             try await container.ckShare(for: zone)
         }
     }
