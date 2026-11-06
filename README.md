@@ -438,7 +438,7 @@ Besides record and link tables, a file holds just four internal tables: that boo
 relationship rules and sync state.
 
 The main context refreshes its views after any change committed to its container, including ones
-written by a background context or a sync provider.
+written by a background context or sync.
 
 ## Sync
 
@@ -476,68 +476,29 @@ from the device, as the person asked. `.encryptedDataReset` keeps them and uploa
 
 ### Records
 
-The unit of sync is a record, `RecordChangeData`, shaped like a `CKRecord`: its values and its sync
-metadata, kept apart.
+Each record syncs as one `CKRecord`, named by the record's UUID, with its type's name as the record type.
+Each stored property is a field: strings, numbers, dates and `Data` as themselves, arrays of those as
+CloudKit lists, a child's `@Reference(from:)` pointer as a `CKRecord.Reference`, and an asset as a
+`CKAsset`. Any other `Codable` value travels as its JSON in a `Data` field. Children and many-to-many
+arrays aren't fields: a child sends its pointer, and each many-to-many link is a `RecordLink` record with
+`relation`, `from`, `to` and `created` fields. Nothing else is added.
 
-```swift
-public struct RecordChangeData {
-    var id: UUID, zone: Zone, type: String
-    var fields: [String: RecordValue]?     // nil for a deletion
-    var tag: Data?                         // the server's own data for this copy, read only by the provider
-    var synced: Date?                      // when the server saved it, if it says
-    var changedKeys: Set<String>?          // the fields set since the copy it builds on, nil for the whole record
-    var clearedKeys: Set<String>           // the fields set to nil since that copy
-    var baseTag: Data?                     // for a partial download, the tag of that copy
-    var assetFiles: [String: URL]          // the files behind its .asset values
-    var encryptedKeys: Set<String>         // the fields its @Encrypted properties store
-}
-```
+Every edit names the fields it changed. The upload sets only those keys on a `CKRecord` rebuilt from the
+server copy's system fields, so an unchanged asset or a large field never goes up again. The save still
+checks the change tag, so a conflict merges here as a whole record. Downloads are always whole records.
 
-Every edit names the fields it changed. An upload of a record the server already has sets `changedKeys`
-and `clearedKeys` against the copy at `tag`, and `fields` still holds the whole record, so a server that
-stores whole records ignores them. A CloudKit provider sets only those keys on the `CKRecord`, so an
-unchanged asset or a large field never goes up again. The save still checks the tag, so a conflict merges
-here as a whole record. A server can download only what changed, too: it sends the changed fields with
-`changedKeys`, `clearedKeys` and the `baseTag` they build on. The container applies the change only to that
-exact copy, merging any unsent local edit, and otherwise fetches the whole record with `fetchRecords(_:)`,
-trying again with each fetch until it arrives.
+The container stays local first. It keeps its own creation and modification times, and stores each
+record's CloudKit system fields beside it, outside the struct, to build the next upload on.
+`@Timestamped(.synced)` shows when CloudKit saved the copy.
 
-Each field is a typed `RecordValue`: `.string`, `.int`, `.double`, `.date`, `.bytes`, the lists
-`.strings`, `.ints`, `.doubles` and `.dates`, `.reference(id, action:)` for a child's parent, and
-`.asset(id)` for an asset's file ID. Children and many-to-many arrays aren't fields: a child sends its
-pointer, and each many-to-many link is a `RecordLink` record with `relation`, `from`, `to` and `created`
-fields. Any other `Codable` value travels as its JSON in `.bytes`. Nothing else is added.
+Files travel inside their records as `CKAsset`s. The container copies a download's files in while the
+event that carried them runs, so a file lands with its record and needs no separate pass or progress of
+its own. Each version of a file has its own ID and never changes once stored, so a new version uploads
+once and an old one never needs to.
 
-The container stays local first. It keeps its own creation and modification times, and it treats
-`tag` as opaque: it stores it with the record, outside the struct, and hands it back with the record's
-next upload. Only the provider reads it, so each server keeps whatever lets it version a record, the way
-an HTTP ETag works:
-
-| Provider | Its tag |
-| --- | --- |
-| CloudKit | the record's archived system fields, which carry its `recordChangeTag` |
-| MongoDB | a version number kept in the document |
-| Firestore | the document's `updateTime` |
-
-A server that versions records accepts a save only when its tag matches the server's copy, and
-otherwise fails it with `.serverRecordChanged` and that copy. A server without tags returns none and
-every save overwrites. `synced` is optional: when a server gives one, `@Timestamped(.synced)` shows it,
-and otherwise it shows when this device heard the save went through. A provider's tags never reach
-another provider, because changing a zone's provider `identifier` clears them and uploads everything again.
-
-Files travel inside their records, as CloudKit's `CKAsset`s do. An upload names the file behind every
-`.asset` value in `assetFiles`, and a download names the files that came with it. The container copies
-them in while the event that carried them runs, so a file lands with its record and needs no separate
-pass or progress of its own. A server should hold a record back until its files can go with it. With a
-field-level edit, an unchanged asset isn't among `changedKeys`, so it never goes up again. Each version of
-a file has its own ID and never changes once stored, so a new version uploads once and an old one never
-needs to.
-
-A record's `@Encrypted` properties are named in `encryptedKeys`. CloudKit stores them in the record's
-`encryptedValues`, so they're encrypted with the person's keys and Apple can't read them. A server
-without encryption of its own can ignore the set or encrypt those fields itself. Assets and
-`@Reference(from:)` pointers can't be encrypted, since CloudKit can't encrypt a `CKAsset` or a
-`CKRecord.Reference`.
+A record's `@Encrypted` properties go in the record's `encryptedValues`, so they're encrypted with the
+person's keys and Apple can't read them. Assets and `@Reference(from:)` pointers can't be encrypted,
+since CloudKit can't encrypt a `CKAsset` or a `CKRecord.Reference`.
 
 ```swift
 @Record
@@ -681,7 +642,7 @@ from CloudKit's first answer instead.
 
 ### CloudKit records
 
-The provider converts each change to a `CKRecord` and back, value for value, so records are stored
+The container converts each change to a `CKRecord` and back, value for value, so records are stored
 exactly as CloudKit expects:
 
 | Record | CKRecord |
@@ -697,13 +658,13 @@ exactly as CloudKit expects:
 | children, many-to-many arrays, their other sides, `@Timestamped(.synced)` | nothing: they're rebuilt locally |
 
 Each child is its own `CKRecord`, and locally it still appears in its parent's array. Coming
-back, the provider archives the record's system fields as the change's `tag` and takes its
+back, the container archives the record's system fields as the change's `tag` and takes its
 `modificationDate` as `synced`, so the next save builds on exactly the server's copy and carries its
 change tag. A change with no tag is a new record. Downloaded asset files are named by their contents, or by the `<field>_assetID` field beside them, and
 they go in the change's `assetFiles`.
 
 A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe` reference, and each
-many-to-many link is a `RecordLink` record. The provider builds `CKRecord`s from the container's changes
+many-to-many link is a `RecordLink` record. It builds `CKRecord`s from the container's changes
 rather than from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
 a newer app version added.
 

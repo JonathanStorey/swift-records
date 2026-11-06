@@ -32,11 +32,6 @@ package protocol SyncTransport: Sendable {
     /// ≈ `CKFetchRecordZoneChangesOperation`.
     func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
 
-    /// The server's whole copy of each record, and a deletion for one it no longer has.
-    /// ≈ `CKFetchRecordsOperation`. A transport whose zone changes are ever partial must implement it: the
-    /// container asks when it lacks the copy a partial change builds on. The default throws.
-    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
-
     /// Zones the server says have changed, such as from a push. Each call returns a new stream. `nil`, the
     /// default, means the transport can't tell.
     func changeNotifications() -> AsyncStream<[Zone]>?
@@ -50,10 +45,6 @@ extension SyncTransport {
     }
 
     package func changeNotifications() -> AsyncStream<[Zone]>? { nil }
-
-    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
-        throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
-    }
 }
 
 /// The zones a database fetch found. ≈ `CKSyncEngine.Event.FetchedDatabaseChanges`.
@@ -212,10 +203,6 @@ package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     package func fetchChanges(_ options: FetchOptions) async throws {
         try await fetch(options, reason: .manual)
-    }
-
-    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
-        try await transport.fetchRecords(records)
     }
 
     package func cancelOperations() async {

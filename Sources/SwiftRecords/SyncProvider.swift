@@ -40,11 +40,6 @@ package protocol SyncProvider: AnyObject, Sendable {
     /// ≈ `cancelOperations()`.
     func cancelOperations() async
 
-    /// ≈ `CKFetchRecordsOperation`. The server's whole copy of each record, and a deletion for one it no
-    /// longer has. The container asks only after a partial download it can't apply, so an engine that
-    /// always delivers whole records, as `CKSyncEngine` does, never needs it.
-    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
-
     /// Shares the person's zones with other people and joins zones others share. `nil`, the default, means
     /// the provider can't share.
     var sharing: (any ZoneSharing)? { get }
@@ -68,10 +63,6 @@ extension SyncProvider {
     package func removePending(_ changes: [PendingZoneChange]) {}
 
     package func cancelOperations() async {}
-
-    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
-        throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
-    }
 }
 
 /// The engine's delegate. The container implements it, and apps never do. ≈ `CKSyncEngineDelegate`.
@@ -362,20 +353,16 @@ package enum SyncFailure: Error, Sendable, Hashable {
 ///
 /// ## Field-level changes
 ///
-/// A change can say which fields it touches. On an upload, `changedKeys` and `clearedKeys` name the fields
-/// that differ from the copy at `tag`, and `fields` still holds the whole record, so a server that stores
-/// whole records ignores them. A CloudKit provider sets only those keys, so an unchanged asset or large field
-/// never goes up again. The save still checks `tag`, so conflicts stay whole-record and merge here.
-///
-/// On a download, a server may send only what changed since the copy at `baseTag`: `changedKeys` names the
-/// fields `fields` carries, and `clearedKeys` the ones that became `nil`. The container applies it only to
-/// that exact copy, and otherwise asks the provider for the whole record with `fetchRecords(_:)`.
+/// An upload says which fields it touches: `changedKeys` and `clearedKeys` name the fields that differ from
+/// the copy at `tag`, and `fields` still holds the whole record. CloudKit sets only those keys, so an
+/// unchanged asset or large field never goes up again. The save still checks `tag`, so conflicts stay
+/// whole-record and merge here. A download is always the whole record, as `CKSyncEngine` delivers it.
 package struct RecordChangeData: Sendable, Hashable {
     package var id: UUID
     package var zone: Zone
     /// The stored type name, such as `"Recipe"`.
     package var type: String
-    /// The record's values, or `nil` for a deletion. For a partial download, only the changed fields.
+    /// The record's values, or `nil` for a deletion.
     package var fields: [String: RecordValue]?
     /// The server's data for the copy this change is based on, which only the provider reads: a CloudKit
     /// record's archived system fields, a version number, a hash. `nil` for a copy the server never had,
@@ -388,8 +375,6 @@ package struct RecordChangeData: Sendable, Hashable {
     package var changedKeys: Set<String>?
     /// The fields set to `nil` since the copy the change builds on.
     package var clearedKeys: Set<String>
-    /// For a partial download: the tag of the copy it builds on.
-    package var baseTag: Data?
     /// The files behind this change's `.asset` values, by asset ID. A record and its files travel together,
     /// as CloudKit's `CKAsset`s do: an upload names every file this device has, and a download names the
     /// files that came with it, which the container copies in before the event that carried them ends.
@@ -402,7 +387,7 @@ package struct RecordChangeData: Sendable, Hashable {
 
     package init(
         id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil,
-        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil, assetFiles: [String: URL] = [:],
+        changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], assetFiles: [String: URL] = [:],
         encryptedKeys: Set<String> = []
     ) {
         self.id = id
@@ -413,15 +398,12 @@ package struct RecordChangeData: Sendable, Hashable {
         self.synced = synced
         self.changedKeys = changedKeys
         self.clearedKeys = clearedKeys
-        self.baseTag = baseTag
         self.assetFiles = assetFiles
         self.encryptedKeys = encryptedKeys
     }
 
     package var isDeletion: Bool { fields == nil }
 
-    /// Whether this is a download of only the fields that changed since `baseTag`, which needs that copy.
-    package var isPartial: Bool { !isDeletion && changedKeys != nil && baseTag != nil }
 
     /// The fields an upload sends: only the changed ones, or every one for a whole-record change.
     package var sentFields: [String: RecordValue]? {
@@ -432,7 +414,7 @@ package struct RecordChangeData: Sendable, Hashable {
 
 extension RecordChangeData: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, zone, type, fields, tag, synced, changedKeys, clearedKeys, baseTag
+        case id, zone, type, fields, tag, synced, changedKeys, clearedKeys
     }
 
     package init(from decoder: any Decoder) throws {
@@ -445,8 +427,7 @@ extension RecordChangeData: Codable {
             tag: try container.decodeIfPresent(Data.self, forKey: .tag),
             synced: try container.decodeIfPresent(Date.self, forKey: .synced),
             changedKeys: try container.decodeIfPresent(Set<String>.self, forKey: .changedKeys),
-            clearedKeys: try container.decodeIfPresent(Set<String>.self, forKey: .clearedKeys) ?? [],
-            baseTag: try container.decodeIfPresent(Data.self, forKey: .baseTag)
+            clearedKeys: try container.decodeIfPresent(Set<String>.self, forKey: .clearedKeys) ?? []
         )
     }
 
@@ -462,22 +443,9 @@ extension RecordChangeData: Codable {
         if !clearedKeys.isEmpty {
             try container.encode(clearedKeys.sorted(), forKey: .clearedKeys)
         }
-        try container.encodeIfPresent(baseTag, forKey: .baseTag)
     }
 }
 
-/// A record on the server, by its ID, zone and type. ≈ `CKRecord.ID`, with the type for servers that file by it.
-package struct RecordID: Sendable, Hashable, Codable {
-    package let id: UUID
-    package let zone: Zone
-    package let type: String
-
-    package init(id: UUID, zone: Zone, type: String) {
-        self.id = id
-        self.zone = zone
-        self.type = type
-    }
-}
 
 /// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
 package enum RecordValue: Sendable, Hashable {

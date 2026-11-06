@@ -572,18 +572,10 @@ extension RecordStore {
         changedData = true
     }
 
-    /// What applying the server's changes left undone.
-    struct Received {
-        /// Changes this version of the app can't store, kept to try again after an update.
+    /// Applies changes from the server, merging any that have unsent local edits. Returns the changes this
+    /// version of the app can't store, kept to try again after an update.
+    func applyReceived(_ changes: [RecordChangeData]) throws -> [RecordChangeData] {
         var incompatible: [RecordChangeData] = []
-        /// Records whose partial change builds on a copy this device doesn't hold, to fetch whole.
-        var refetch: [RecordID] = []
-    }
-
-    /// Applies changes from the server, merging any that have unsent local edits. A partial change applies
-    /// only to the exact copy it builds on.
-    func applyReceived(_ changes: [RecordChangeData]) throws -> Received {
-        var received = Received()
         // A merge reads the bytes of assets that haven't been placed yet.
         incomingAssetFiles = changes.reduce(into: [:]) { $0.merge($1.assetFiles) { $1 } }
         defer { incomingAssetFiles = [:] }
@@ -599,60 +591,15 @@ extension RecordStore {
             let sync = try cached.map { $0[key] } ?? syncRow(change.type, id: id)
             if Self.isStored(change, sync: sync) { continue }
             if change.isDeletion { rows = nil }
-            var whole = change
-            if change.isPartial {
-                guard let expanded = try wholeChange(change, sync: sync) else {
-                    received.refetch.append(RecordID(id: change.id, zone: change.zone, type: change.type))
-                    continue
-                }
-                whole = expanded
-            }
             do {
-                let record = try syncRecord(from: whole)
+                let record = try syncRecord(from: change)
                 try transaction { try applyReceived(record, sync: sync) }
             } catch RecordsError.incompatibleRecord {
-                received.incompatible.append(whole)
-                try park(whole)
+                incompatible.append(change)
+                try park(change)
             }
         }
-        return received
-    }
-
-    /// A partial change made whole on the server copy it builds on, or `nil` when this device doesn't hold
-    /// that copy. With unsent local edits the copy is the snapshot, and otherwise the record as stored.
-    private func wholeChange(_ change: RecordChangeData, sync: [String: SQLiteValue]?) throws -> RecordChangeData? {
-        guard let sync, sync["known"] == .integer(1), let baseTag = change.baseTag, sync["tag"] == .blob(baseTag),
-              let type = registered[change.type] else { return nil }
-        let id = try ValueCoding.encode(change.id)
-        var whole = change
-        whole.changedKeys = nil
-        whole.clearedKeys = []
-        whole.baseTag = nil
-        if Self.logEntry(sync)?.kind == .delete, Self.isPending(sync) {
-            // A local delete beats the edit, which only brings the server's tag.
-            return whole
-        }
-        let base = Self.isPending(sync) ? SyncFields.decoded(sync["snapshot"]) : try syncFields(table: change.type, id: id)
-        guard let base else { return nil }
-        whole.fields = Self.applying(change, to: try Self.recordValues(type, fields: base), type)
-        return whole
-    }
-
-    /// A record's values with a partial change's fields set and cleared. A field sent under a name it had
-    /// before a `@Renamed` replaces the value under its current name.
-    private static func applying<R: Record>(_ change: RecordChangeData, to base: [String: RecordValue], _ type: R.Type) -> [String: RecordValue] {
-        var current: [String: String] = [:]
-        for field in R.cachedSchema.fields {
-            for name in field.previousNames { current[name] = field.name }
-        }
-        var values = base
-        for key in change.clearedKeys {
-            values[current[key] ?? key] = nil
-        }
-        for key in change.changedKeys ?? [] {
-            values[current[key] ?? key] = change.fields?[key]
-        }
-        return values
+        return incompatible
     }
 
     /// The bookkeeping rows of the changes' records that have one.
@@ -760,7 +707,7 @@ extension RecordStore {
             }
             try db.run("UPDATE \"_records_meta\" SET parked = NULL WHERE parked IS NOT NULL")
             guard !changes.isEmpty else { return [] }
-            return try applyReceived(changes).incompatible
+            return try applyReceived(changes)
         }
     }
 

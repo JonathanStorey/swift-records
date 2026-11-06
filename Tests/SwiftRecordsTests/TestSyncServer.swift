@@ -22,15 +22,6 @@ final class TestServer: @unchecked Sendable {
     var isOnline = true
     var isFull = false
     var rejectedTypes: Set<String> = []
-    /// Whether the server versions records with tags. Without them, every save simply overwrites.
-    var tagsRecords = true
-    /// Whether the server says when it saved each copy.
-    var datesRecords = true
-    /// Whether downloads carry only the fields that changed since a record's previous copy, as a document
-    /// database might. Uploads always apply only their changed fields, so a wrong key list shows up as lost data.
-    var sendsPartialChanges = false
-    /// How many records devices fetched whole.
-    private(set) var fetchedRecords = 0
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -100,7 +91,7 @@ final class TestServer: @unchecked Sendable {
             }
             let storageKey = key(change.zone, change.type, change.id, account: user)
             let current = latest[storageKey]?.change
-            if tagsRecords, !change.isDeletion, let current, current.tag != change.tag {
+            if !change.isDeletion, let current, current.tag != change.tag {
                 // The server copy comes with its files, as a `CKRecord` does.
                 return .failure(.serverRecordChanged(withFiles(Self.seen(current, in: change.zone))))
             }
@@ -116,8 +107,8 @@ final class TestServer: @unchecked Sendable {
             stored.changedKeys = nil
             stored.clearedKeys = []
             stored.assetFiles = [:]
-            stored.tag = tagsRecords ? Data("tag \(sequence)".utf8) : nil
-            stored.synced = datesRecords ? Self.date(sequence) : nil
+            stored.tag = Data("tag \(sequence)".utf8)
+            stored.synced = Self.date(sequence)
             // The owner's own zone holds it.
             stored.zone = (try? Zone(change.zone.name)) ?? change.zone
             latest[storageKey] = (stored, sequence, current)
@@ -130,8 +121,8 @@ final class TestServer: @unchecked Sendable {
         withLock {
             sequence += 1
             let change = RecordChangeData(
-                id: id, zone: zone, type: type, fields: fields, tag: tagsRecords ? Data("tag \(sequence)".utf8) : nil,
-                synced: datesRecords ? Self.date(sequence) : nil
+                id: id, zone: zone, type: type, fields: fields, tag: Data("tag \(sequence)".utf8),
+                synced: Self.date(sequence)
             )
             let storageKey = key(zone, type, id, account: account)
             latest[storageKey] = (change, sequence, latest[storageKey]?.change)
@@ -167,7 +158,7 @@ final class TestServer: @unchecked Sendable {
             let prefix = space(zone, account: user)
             let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
             let page = found.prefix(limit)
-            let changes = page.map { withFiles(Self.seen(sendsPartialChanges ? Self.partial($0.change, since: $0.previous) : $0.change, in: zone)) }
+            let changes = page.map { withFiles(Self.seen($0.change, in: zone)) }
             return (changes, page.last?.sequence ?? cursor, found.count > limit)
         }
     }
@@ -182,29 +173,6 @@ final class TestServer: @unchecked Sendable {
             change.assetFiles[id] = file
         }
         return change
-    }
-
-    /// Only what changed since the previous copy, when there was one.
-    private static func partial(_ change: RecordChangeData, since previous: RecordChangeData?) -> RecordChangeData {
-        guard let fields = change.fields, let previous, let old = previous.fields, let baseTag = previous.tag else { return change }
-        var partial = change
-        let changed = Set(fields.compactMap { old[$0.key] == $0.value ? nil : $0.key })
-        partial.fields = fields.filter { changed.contains($0.key) }
-        partial.changedKeys = changed
-        partial.clearedKeys = Set(old.keys.filter { fields[$0] == nil })
-        partial.baseTag = baseTag
-        return partial
-    }
-
-    /// The whole stored copies of records for `user`, and a deletion for each one it doesn't have.
-    func wholeRecords(_ ids: [RecordID], for user: String?) -> [RecordChangeData] {
-        withLock {
-            fetchedRecords += ids.count
-            return ids.map {
-                latest[key($0.zone, $0.type, $0.id, account: user)].map { [zone = $0.zone] in Self.seen($0.change, in: zone) }
-                    ?? RecordChangeData(id: $0.id, zone: $0.zone, type: $0.type, fields: nil)
-            }
-        }
     }
 
     /// The stored copy of a record the current account can see.
@@ -267,8 +235,6 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
     var account: String??
     /// Changes per download page.
     var pageSize = 100
-    /// Fails every fetch of whole records, as if the connection dropped.
-    var failsRecordFetches = false
 
     var identifier: String { server.name }
 
@@ -356,12 +322,6 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
         )
     }
 
-    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
-        try check()
-        if failsRecordFetches { throw SyncFailure.networkUnavailable }
-        return server.wholeRecords(records, for: user)
-    }
-
     func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
         try check()
         let start = token.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
@@ -446,11 +406,6 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
         set { transport.pageSize = newValue }
     }
 
-    var failsRecordFetches: Bool {
-        get { transport.failsRecordFetches }
-        set { transport.failsRecordFetches = newValue }
-    }
-
     // MARK: SyncProvider
 
     var identifier: String { engine.identifier }
@@ -468,5 +423,4 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
     func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }
     func fetchChanges(_ options: FetchOptions) async throws { try await engine.fetchChanges(options) }
     func cancelOperations() async { await engine.cancelOperations() }
-    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] { try await engine.fetchRecords(records) }
 }
