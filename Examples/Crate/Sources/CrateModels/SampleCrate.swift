@@ -128,7 +128,7 @@ public enum SampleCrate {
     static let friends: [(String, String)] = [("Sam Okafor", "555-0142"), ("Priya Natarajan", "555-0178"), ("Leo Hartmann", "555-0115")]
 
     /// The artists, each with their albums, tracks and genres, ready to insert, and friends to lend to.
-    public static func records() -> (artists: [Artist], albums: [Album], friends: [Friend]) {
+    public static func records() -> (artists: [Artist], albums: [Album], friends: [Friend], playlist: Playlist) {
         var genres: [String: Genre] = [:]
         var artists: [Artist] = []
         var albums: [Album] = []
@@ -153,14 +153,16 @@ public enum SampleCrate {
             }
         }
         let friends = Self.friends.map { Friend(name: $0.0, phone: $0.1) }
-        return (artists, albums, friends)
+        let favorites = albums.sorted { $0.year < $1.year }.compactMap { $0.tracks.dropFirst().first }
+        let playlist = Playlist(title: "Sunday Morning", pinned: true, notes: "Coffee first.", tracks: favorites)
+        return (artists, albums, friends, playlist)
     }
 
     /// Fills an empty crate. Covers come from `art`, given each album and its artist's name, which the app
     /// draws, and the tests leave out.
     @MainActor
     public static func insert(into context: RecordContext, art: (Album, String) -> Data? = { _, _ in nil }) throws {
-        let (artists, albums, friends) = records()
+        let (artists, albums, friends, playlist) = records()
         let names = Dictionary(uniqueKeysWithValues: artists.map { ($0.id, $0.name) })
         try context.transaction {
             for artist in artists {
@@ -173,14 +175,10 @@ public enum SampleCrate {
             for friend in friends {
                 context.insert(friend)
             }
+            context.insert(playlist)
             if let album = albums.last, let friend = friends.first {
                 context.insert(Loan(album: album.id, friend: friend.id, due: Date().addingTimeInterval(14 * 86_400)))
             }
         }
-        // A playlist takes its tracks as stored, each pointing at its album. A copy made before the album
-        // saved has no album yet, and inserting it would save the track that way.
-        let favorites = try context.fetch(RecordDescriptor<Album>(sortBy: [SortDescriptor(\.year)])).compactMap { $0.tracks.dropFirst().first }
-        context.insert(Playlist(title: "Sunday Morning", pinned: true, notes: "Coffee first.", tracks: favorites))
-        try context.save()
     }
 }

@@ -6,13 +6,12 @@ extension RecordContext {
     /// Counts a play of the track and of its album.
     public func play(_ track: Track) throws {
         var track = try record(Track.self, for: track.id) ?? track
-        // The album first: inserting it saves the copies of its tracks it holds, so the track's own edit goes last.
+        track.plays += 1
+        insert(track)
         if let albumID = track.album, var album = try record(Album.self, for: albumID) {
             album.plays += 1
             insert(album)
         }
-        track.plays += 1
-        insert(track)
     }
 
     /// Lends the album to a friend for `days` days.
