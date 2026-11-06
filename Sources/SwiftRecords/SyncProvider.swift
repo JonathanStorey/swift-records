@@ -5,8 +5,7 @@ import Foundation
 /// The provider owns scheduling, retries, pushes, change tokens and the account. The container owns the
 /// records: it tells the engine what is pending, builds each batch the engine asks for, and applies what
 /// the engine reports in `SyncEvent`s. Each requirement names the `CKSyncEngine` API it mirrors, so a
-/// CloudKit provider is a thin wrapper. A server without an engine of its own uses `PollingSyncEngine`
-/// with a `SyncTransport`.
+/// CloudKit provider is a thin wrapper.
 public protocol SyncProvider: AnyObject, Sendable {
     /// Names the server, such as `"cloudkit:iCloud.com.example.app"`. When it differs from the one a zone
     /// last synced with, the container treats the new server as empty and uploads every local record.

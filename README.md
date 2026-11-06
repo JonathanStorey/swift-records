@@ -191,7 +191,7 @@ include `.shared`, and otherwise stays on the device.
 
 ### Sharing a zone
 
-With a provider that shares, such as `CloudKitSyncProvider` or `FileSyncTransport`, the owner shares one
+With `CloudKitSyncProvider`, the owner shares one
 of their zones and sends the invitation. Whoever accepts it gets the zone in their shared database, and
 everyone syncs it as their own:
 
@@ -518,31 +518,6 @@ each have their own handling.
 A zone deleted on the server arrives with its reason. `.deleted` and `.purged` remove the zone's records
 from the device, as the person asked. `.encryptedDataReset` keeps them and uploads everything again.
 
-### Servers that aren't CloudKit
-
-Most servers have no engine of their own. `PollingSyncEngine` is one, written once, that drives a
-`SyncTransport`: a handful of calls shaped like CloudKit's operations.
-
-```swift
-public protocol SyncTransport: AnyObject, Sendable {
-    var identifier: String { get }
-    func currentUser() async throws -> String?
-    func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges   // optional
-    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges
-    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges
-    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
-    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]         // for partial changes
-    func changeNotifications() -> AsyncStream<[Zone]>?                                  // optional
-}
-
-let provider = PollingSyncEngine(transport: MyServer())
-```
-
-The engine keeps its tokens and pending changes in the state the container stores, checks the account
-before each operation, fetches the zones a view shows first, and leaves the rest for later. With
-`automaticallySync` on, the default, it sends shortly after each commit and fetches whatever
-`changeNotifications()` names.
-
 ### Records
 
 The unit of sync is a record, `RecordChangeData`, shaped like a `CKRecord`: its values and its sync
@@ -587,7 +562,6 @@ an HTTP ETag works:
 | CloudKit | the record's archived system fields, which carry its `recordChangeTag` |
 | MongoDB | a version number kept in the document |
 | Firestore | the document's `updateTime` |
-| `FileSyncTransport` | the time of the save in milliseconds |
 
 A server that versions records accepts a save only when its tag matches the server's copy, and
 otherwise fails it with `.serverRecordChanged` and that copy. A server without tags returns none and
@@ -778,47 +752,6 @@ A recipe has no `steps` field: each step is its own `CKRecord` with its `recipe`
 many-to-many link is a `RecordLink` record. The provider builds `CKRecord`s from the container's changes
 rather than from structs, since only the container knows a record's change tag, timestamps, pointers and the fields
 a newer app version added.
-
-### Syncing through iCloud files
-
-`FileSyncTransport` syncs through a folder, and the system copies the folder between devices. No server
-is needed. It lives in its own library, `SwiftRecordsFileSync`, so apps that sync another way don't build
-it. Add that product to your target and import it beside `SwiftRecords`. It uses only the
-`SyncTransport` API that any provider imports, so it doubles as a worked example of a transport.
-
-```swift
-import SwiftRecordsFileSync
-
-let container = try RecordContainer(for: [Recipe.self], syncProvider: PollingSyncEngine(transport: FileSyncTransport()))
-```
-
-| Location | Folder |
-| --- | --- |
-| `.iCloud` (default) | The app's iCloud container, hidden from the Files app |
-| `.iCloudDrive` | The container's `Documents` folder, visible in Files and iCloud Drive |
-| `.appGroup("group.com.example")` | An App Group's folder, shared with extensions on one device |
-| `.applicationSupport` | Application Support on this device, for tests and the simulator |
-| `.other(directory: url)` | Any folder |
-
-Each record is one readable JSON file at `Records/<zone>/<type>/<id>.json`, with each value under its
-kind, such as `"title":{"string":"Soup"}`, beside its save time, and assets are plain files
-in `Records/<zone>/_assets/`. Deletions stay behind as small files so devices that sync later hear of
-them. Downloads remember every file they've seen rather than a time, so devices whose clocks disagree
-can't miss changes. Deleting a zone's folder deletes the zone, and its records leave every device. iCloud needs the iCloud
-capability with iCloud Documents on, and while the person is signed out, `status` is `.signedOut`.
-For `.iCloudDrive`, add `NSUbiquitousContainers` to Info.plist so the folder shows in Files.
-
-Other devices' changes arrive on their own through `changeNotifications()`. In iCloud an `NSMetadataQuery`
-watches the folder, including when another device's file finishes downloading. App Group and other
-folders are watched directly, so an extension's saves reach the app at once. A network drive may not
-report its changes, so they arrive with the sync the context runs as the app returns from a break, or a
-pull to refresh. Application Support isn't watched, since nothing else writes it.
-When two devices write a record file at once, iCloud keeps both versions, and `NSFileVersion` settles
-them by keeping the copy with the later save time as a whole record.
-
-Sharing a zone hands out its folder's file URL, and a `_share.json` in the folder lists who joined.
-Accepting it from another `FileSyncTransport` that can reach the same folder, such as on a network drive,
-syncs the zone in place. Shared folders aren't watched, so their changes arrive with the next sync.
 
 ## SwiftUI
 

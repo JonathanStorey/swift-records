@@ -1,4 +1,5 @@
 import Foundation
+@_spi(SyncProvider) import SwiftRecords
 
 /// What a server without a sync engine of its own provides: the requests `CKSyncEngine` makes of CloudKit,
 /// one method each. `PollingSyncEngine` drives a transport and does the rest.
@@ -92,7 +93,7 @@ public protocol SyncTransport: Sendable {
 /// and reports what happens as `SyncEvent`s.
 ///
 /// ```swift
-/// let engine = PollingSyncEngine(transport: FileSyncTransport())
+/// let engine = PollingSyncEngine(transport: server)
 /// let container = try RecordContainer(for: [Recipe.self], syncProvider: engine)
 /// ```
 ///
