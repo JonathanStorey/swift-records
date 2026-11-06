@@ -144,7 +144,7 @@ Registering also checks the types before anything is written, and throws
   underscores, starting with a letter
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self])
+let container = try RecordContainer(for: ToDo.self, Label.self)   // or a list: for: [ToDo.self, Label.self]
 ```
 
 ## Zones
@@ -209,6 +209,42 @@ try await container.stopSharing(zone)                      // a participant leav
 `share(_:)` sends the zone's pending changes first, so people who accept find its records. When the
 owner stops sharing, the zone and its records leave every participant's devices. A container that doesn't
 sync, or doesn't sync the shared database, throws `RecordsError.sharingUnavailable`.
+
+The system's sharing interface works without any CloudKit types. `ShareLink` invites people the first
+time and manages the share after. `RecordsAppDelegate` accepts the invitations people tap, and
+`onShareAccepted(perform:)` hands the joined zone to a view:
+
+```swift
+@main
+struct RecipesApp: App {
+    @UIApplicationDelegateAdaptor(RecordsAppDelegate.self) private var appDelegate   // NSApplicationDelegateAdaptor on macOS
+    let container = try! RecordContainer(for: Recipe.self, sync: .cloudKit)
+
+    var body: some Scene {
+        WindowGroup { ContentView().recordContainer(container) }
+    }
+}
+
+struct ContentView: View {
+    @Environment(\.recordContainer) private var container
+    @Environment(\.recordContext) private var context
+
+    var body: some View {
+        RecipeList()
+            .toolbar {
+                if let container {
+                    ShareLink(item: container.shareItem(for: "family"), preview: SharePreview("Family recipes"))
+                }
+            }
+            .onShareAccepted { result in
+                if case .success(let zone) = result { context.zone = zone }
+            }
+    }
+}
+```
+
+Who may join by opening the link alone is set when the container opens, with `sharing:`
+`.invitedOnly` (the default), `.anyoneWithLinkCanView` or `.anyoneWithLinkCanEdit`.
 
 Zone files are local to the device unless the container syncs. They are included in the device's own
 backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
@@ -449,7 +485,7 @@ doesn't replace it. Sync needs CloudKit, so it's available on Apple platforms. O
 local only.
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self], cloudKit: .container("iCloud.com.example.app"))
+let container = try RecordContainer(for: ToDo.self, sync: .cloudKit)   // the app's default CloudKit container
 context.zone = try .local("drafts")   // drafts stay on the device
 
 try await context.save()       // commits, then sends what the server doesn't have
@@ -611,10 +647,7 @@ and so does one deleted through `$contact.delete()`.
 The container runs one `CKSyncEngine` for the private database and another for the shared one:
 
 ```swift
-let container = try RecordContainer(
-    for: [Recipe.self],
-    cloudKit: CloudKitOptions(containerIdentifier: "iCloud.com.example.app", linkPermission: .none)
-)
+let container = try RecordContainer(for: Recipe.self, sync: .cloudKit("iCloud.com.example.app", sharing: .invitedOnly))
 ```
 
 The engines schedule sends after each save, fetch on pushes, retry and track the account. Each batch holds
@@ -625,10 +658,9 @@ underscore for itself. A shared zone is the owner's zone in the shared database.
 changed keys on a `CKRecord` rebuilt from the server copy's system fields, so a stale copy still fails as a
 conflict and merges here. Set `syncsSharedDatabase` to `false` to sync the private database alone.
 
-Sharing uses a zone-wide `CKShare`. Invite people with the system's interface, built from
-`container.ckShare(for: zone)` and `container.ckContainer`, such as `UICloudSharingController`. Accept the
-share the system hands the scene delegate with `try await container.acceptShare(metadata)`. Set
-`linkPermission` to `.readWrite` to let the link alone admit people, rather than only those invited.
+Sharing uses a zone-wide `CKShare`, which `shareItem(for:)` hands to `ShareLink` and `RecordsAppDelegate`
+accepts, as [Sharing a zone](#sharing-a-zone) shows. `CloudKitOptions` holds the other settings, such as
+`automaticallySync`.
 
 The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
 notifications so pushes start fetches. The container checks as it opens. A missing capability, a container

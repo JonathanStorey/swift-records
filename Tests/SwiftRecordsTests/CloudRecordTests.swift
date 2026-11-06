@@ -296,18 +296,26 @@ import CloudKit
 /// The public way to turn on CloudKit sync, and its defaults.
 @Suite struct CloudKitOptionsTests {
     @Test func defaultsSyncBothDatabasesOnTheirOwn() {
-        let options = CloudKitOptions.container("iCloud.com.example.app")
+        let options = CloudKitOptions.cloudKit("iCloud.com.example.app")
         #expect(options.containerIdentifier == "iCloud.com.example.app")
         #expect(options.syncsSharedDatabase)
         #expect(options.automaticallySync)
-        #expect(options.linkPermission == .none)
-        #expect(CloudKitOptions.default.containerIdentifier == nil)
+        #expect(options.sharing == .invitedOnly)
+        #expect(CloudKitOptions.cloudKit.containerIdentifier == nil)
+    }
+
+    @Test func shareAccessMapsToCloudKitPermissions() {
+        #expect(ShareAccess.invitedOnly.permission == .none)
+        #expect(ShareAccess.anyoneWithLinkCanView.permission == .readOnly)
+        #expect(ShareAccess.anyoneWithLinkCanEdit.permission == .readWrite)
     }
 
     @Test func aContainerWithoutCloudKitStaysLocal() throws {
-        let container = try RecordContainer(location: .inMemory, cloudKit: nil)
-        #expect(container.ckContainer == nil)
+        let container = try RecordContainer(location: .inMemory, sync: nil)
+        #expect(container.cloudKitProvider == nil)
         #expect(container.syncHub == nil)
+        let variadic = try RecordContainer(for: SyncRecipe.self, SyncStep.self, location: .inMemory, sync: nil)
+        #expect(variadic.syncHub == nil)
     }
 }
 #endif

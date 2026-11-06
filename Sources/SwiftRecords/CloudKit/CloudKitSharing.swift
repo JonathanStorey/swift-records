@@ -5,10 +5,8 @@ import Foundation
 /// Sharing with zone-wide `CKShare`s: one share per zone, saved in the owner's private database. People who
 /// accept it see the zone in their shared database, which the provider's second engine syncs.
 ///
-/// Invite people with the system's sharing interface, built from `ckShare(for:)` and `ckContainer`, such
-/// as `UICloudSharingController(share:container:)`. The app accepts in its scene delegate's
-/// `windowScene(_:userDidAcceptCloudKitShareWith:)` by passing the metadata to
-/// `RecordContainer.acceptShare(_:)`.
+/// Apps invite people with `ShareLink` and `RecordContainer.shareItem(for:)`, and accept through
+/// `RecordsAppDelegate`, so no CloudKit type reaches them.
 extension CloudKitSyncProvider: ZoneSharing {
     func share(_ zone: Zone) async throws -> ZoneShare {
         try await ZoneShare(ckShare(for: zone), zone: zone)
@@ -84,7 +82,7 @@ extension CloudKitSyncProvider: ZoneSharing {
         }
     }
 
-    private func fetchShare(for zone: Zone) async throws -> CKShare? {
+    func fetchShare(for zone: Zone) async throws -> CKShare? {
         let database = zone.scope == .shared ? ckContainer.sharedCloudDatabase : ckContainer.privateCloudDatabase
         do {
             return try await database.record(for: Self.shareID(for: zone)) as? CKShare
@@ -125,10 +123,9 @@ extension ShareParticipant {
 }
 
 extension RecordContainer {
-    /// Accepts a share the system handed the app, from `windowScene(_:userDidAcceptCloudKitShareWith:)`
-    /// or `application(_:userDidAcceptCloudKitShareWith:)`, and fetches its records. Returns the zone for a
-    /// context to show.
-    public func acceptShare(_ metadata: CKShare.Metadata) async throws -> Zone {
+    /// Accepts a share the system handed the app, and fetches its records. Returns the zone for a context
+    /// to show. `RecordsAppDelegate` calls it.
+    func acceptShare(_ metadata: CKShare.Metadata) async throws -> Zone {
         guard let provider = syncProvider as? CloudKitSyncProvider else {
             throw RecordsError.sharingUnavailable(zone: metadata.share.recordID.zoneID.zoneName)
         }

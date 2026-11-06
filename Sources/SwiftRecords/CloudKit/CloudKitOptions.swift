@@ -5,7 +5,8 @@ import Foundation
 /// How a container syncs with CloudKit.
 ///
 /// ```swift
-/// let records = try RecordContainer(for: [Recipe.self], cloudKit: .container("iCloud.com.example.app"))
+/// let container = try RecordContainer(for: Recipe.self, Step.self, sync: .cloudKit)
+/// let container = try RecordContainer(for: Recipe.self, sync: .cloudKit("iCloud.com.example.app"))
 /// ```
 ///
 /// The app needs the iCloud capability with CloudKit on, and Background Modes with remote notifications,
@@ -15,35 +16,52 @@ import Foundation
 public struct CloudKitOptions: Sendable, Hashable {
     /// The CloudKit container, such as `"iCloud.com.example.app"`. `nil` uses the app's default container.
     public var containerIdentifier: String?
-    /// Whether zones others shared with the person sync too, through the shared database. Sharing needs it.
+    /// Who may join a zone you share by opening its link.
+    public var sharing: ShareAccess
+    /// Whether zones others shared with the person sync too. Sharing needs it.
     public var syncsSharedDatabase: Bool
-    /// What someone who opens a share's link may do without being invited. `.none` admits only the people
-    /// invited through the system's sharing interface.
-    public var linkPermission: CKShare.ParticipantPermission
     /// Whether CloudKit sends and fetches on its own. Turn it off to sync only when a context asks.
     public var automaticallySync: Bool
 
     public init(
-        containerIdentifier: String? = nil, syncsSharedDatabase: Bool = true,
-        linkPermission: CKShare.ParticipantPermission = .none, automaticallySync: Bool = true
+        containerIdentifier: String? = nil, sharing: ShareAccess = .invitedOnly, syncsSharedDatabase: Bool = true,
+        automaticallySync: Bool = true
     ) {
         self.containerIdentifier = containerIdentifier
+        self.sharing = sharing
         self.syncsSharedDatabase = syncsSharedDatabase
-        self.linkPermission = linkPermission
         self.automaticallySync = automaticallySync
     }
 
-    /// The app's default CloudKit container.
-    public static var `default`: CloudKitOptions { CloudKitOptions() }
+    /// Syncs with the app's default CloudKit container.
+    public static var cloudKit: CloudKitOptions { CloudKitOptions() }
 
-    /// A CloudKit container by its identifier.
-    public static func container(_ identifier: String) -> CloudKitOptions {
-        CloudKitOptions(containerIdentifier: identifier)
+    /// Syncs with a CloudKit container by its identifier, or the app's default one for `nil`.
+    public static func cloudKit(_ containerIdentifier: String? = nil, sharing: ShareAccess = .invitedOnly) -> CloudKitOptions {
+        CloudKitOptions(containerIdentifier: containerIdentifier, sharing: sharing)
+    }
+}
+
+/// Who may join a shared zone by opening its link.
+public enum ShareAccess: Sendable, Hashable {
+    /// Only the people invited through the system's sharing interface. The default.
+    case invitedOnly
+    /// Anyone with the link joins and can read the zone.
+    case anyoneWithLinkCanView
+    /// Anyone with the link joins and can edit the zone.
+    case anyoneWithLinkCanEdit
+
+    var permission: CKShare.ParticipantPermission {
+        switch self {
+        case .invitedOnly: .none
+        case .anyoneWithLinkCanView: .readOnly
+        case .anyoneWithLinkCanEdit: .readWrite
+        }
     }
 }
 
 extension RecordContainer {
-    /// Opens a container whose zones sync with CloudKit, or stay on the device when `cloudKit` is `nil`.
+    /// Opens a container whose zones sync with CloudKit, or stay on the device when `sync` is `nil`.
     ///
     /// Every zone syncs except `.inMemory`, `.localOnly` and any `Zone.local(_:)`. The CloudKit container
     /// stays fixed for the container's life.
@@ -51,30 +69,58 @@ extension RecordContainer {
         for types: [any Record.Type] = [],
         location: Location = .applicationSupport,
         initialZone: Zone = .default,
-        cloudKit: CloudKitOptions?
+        sync: CloudKitOptions?
     ) throws {
         try self.init(
             for: types, location: location, initialZone: initialZone,
-            syncProvider: cloudKit.map(CloudKitSyncProvider.init(options:))
+            syncProvider: sync.map(CloudKitSyncProvider.init(options:))
         )
+        if sync != nil {
+            Self.syncing.add(self)
+        }
     }
 
-    /// The CloudKit container the records sync with, or `nil` for a container that doesn't, as for
-    /// `UICloudSharingController(share:container:)`.
-    public var ckContainer: CKContainer? {
-        (syncProvider as? CloudKitSyncProvider)?.ckContainer
+    /// Opens a container for these record types whose zones sync with CloudKit, or stay on the device when
+    /// `sync` is `nil`, as SwiftData's `ModelContainer(for:)` takes its models.
+    public convenience init(
+        for type: any Record.Type,
+        _ more: any Record.Type...,
+        location: Location = .applicationSupport,
+        initialZone: Zone = .default,
+        sync: CloudKitOptions?
+    ) throws {
+        try self.init(for: [type] + more, location: location, initialZone: initialZone, sync: sync)
     }
 
-    /// The zone's `CKShare`, saved first when it has none, for the system's sharing interface. The zone's
-    /// pending changes go to the server first, so people who accept find its records there.
-    public func ckShare(for zone: Zone) async throws -> CKShare {
-        guard zone.scope == .private, let provider = syncProvider as? CloudKitSyncProvider, provider.sharing != nil else {
-            throw RecordsError.sharingUnavailable(zone: zone.description)
+    /// The CloudKit provider, or `nil` for a container that doesn't sync.
+    var cloudKitProvider: CloudKitSyncProvider? {
+        syncProvider as? CloudKitSyncProvider
+    }
+
+    /// The open containers that sync with CloudKit, held weakly, for the app delegate to accept shares into.
+    static let syncing = WeakContainers()
+
+    final class WeakContainers: @unchecked Sendable {
+        private struct Entry {
+            weak var container: RecordContainer?
         }
-        if let sync = try storage(for: zone).sync {
-            await sync.send()
+
+        private let lock = NSLock()
+        private var entries: [Entry] = []
+
+        func add(_ container: RecordContainer) {
+            lock.withLock {
+                entries.removeAll { $0.container == nil }
+                entries.append(Entry(container: container))
+            }
         }
-        return try await provider.ckShare(for: zone)
+
+        /// The open container syncing with this CloudKit container, the first opened when several do.
+        func container(for identifier: String) -> RecordContainer? {
+            lock.withLock {
+                entries.lazy.compactMap(\.container).first { $0.cloudKitProvider?.ckContainer.containerIdentifier == identifier }
+            }
+        }
     }
 }
 
@@ -82,7 +128,7 @@ extension CloudKitSyncProvider {
     convenience init(options: CloudKitOptions) {
         self.init(
             container: options.containerIdentifier.map(CKContainer.init(identifier:)) ?? .default(),
-            sharedDatabase: options.syncsSharedDatabase, linkPermission: options.linkPermission,
+            sharedDatabase: options.syncsSharedDatabase, linkPermission: options.sharing.permission,
             automaticallySync: options.automaticallySync
         )
     }

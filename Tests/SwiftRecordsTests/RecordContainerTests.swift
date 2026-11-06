@@ -48,6 +48,15 @@ struct Folder {
 @Suite struct RecordContainerTests {
     let store = try! RecordContainer(inMemory: true)
 
+    @Test func takesItsTypesAsAListOrOneByOne() throws {
+        let listed = try RecordContainer(for: [ToDo.self, Folder.self], location: .inMemory)
+        let variadic = try RecordContainer(for: ToDo.self, Folder.self, location: .inMemory)
+        let todo = ToDo(title: "Paint fence")
+        try variadic.save(todo)
+        #expect(try variadic.fetch(ToDo.self, id: todo.id)?.title == "Paint fence")
+        #expect(try listed.fetch(ToDo.self, id: todo.id) == nil)
+    }
+
     @Test func roundTripsScalarsAndJSON() throws {
         let due = Date(timeIntervalSince1970: 1_000_000)
         let todo = ToDo(title: "Paint fence", priority: 2, due: due, tags: ["home", "weekend"])
