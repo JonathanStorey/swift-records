@@ -158,6 +158,21 @@ import Testing
         #expect(canadian.map(\.name) == ["Kestrel & Vine"])
     }
 
+    @Test func albumsSortEveryWay() async throws {
+        try seeded()
+        var skies = try album("Copper Skies")
+        skies.rating = 5
+        skies.plays = 9
+        context.insert(skies)
+        try await context.save()
+        let sorted = try AlbumOrder.allCases.map { try context.fetch(RecordDescriptor<Album>(sortBy: $0.sort)).map(\.title) }
+        #expect(sorted[0].first == "Analog Bloom")
+        #expect(sorted[1].first == "Blue Hour at the Lark")
+        #expect(sorted[2].count == 8)
+        #expect(sorted[3].first == "Copper Skies")
+        #expect(sorted[4].first == "Copper Skies")
+    }
+
     // MARK: Merging
 
     /// An album saved, then edited on screen without saving.
@@ -171,7 +186,7 @@ import Testing
 
     @Test func playsFromBothSidesAdd() async throws {
         let album = try openEdit { $0.plays += 2 }
-        try await context.editElsewhere(album.id) { $0.plays += 3 }
+        try await context.editElsewhere(Album.self, album.id) { $0.plays += 3 }
         await settle()
         #expect(try context.record(Album.self, for: album.id)?.plays == 5)
         try await context.save()
@@ -180,7 +195,7 @@ import Testing
 
     @Test func theHigherRatingWins() async throws {
         let album = try openEdit { $0.rating = 3 }
-        try await context.editElsewhere(album.id) { $0.rating = 5 }
+        try await context.editElsewhere(Album.self, album.id) { $0.rating = 5 }
         await settle()
         try await context.save()
         #expect(try self.album("Voltage Rain").rating == 5)
@@ -193,7 +208,7 @@ import Testing
             $0.tags.remove("double LP")
             $0.credits.label = "Kreis Records"
         }
-        try await context.editElsewhere(album.id) {
+        try await context.editElsewhere(Album.self, album.id) {
             $0.tags.insert("loaned once")
             $0.credits.catalogNumber = "KR 031-2"
         }
@@ -209,7 +224,7 @@ import Testing
             $0.title = "Voltage Rain (Deluxe)"
             $0.condition = .nearMint
         }
-        try await context.editElsewhere(album.id) {
+        try await context.editElsewhere(Album.self, album.id) {
             $0.title = "Voltage Rain (Remastered)"
             $0.year = 2020
         }
@@ -235,7 +250,7 @@ import Testing
         playlist.notes = "Coffee first.\nThen records."
         playlist.pinned = false
         context.insert(playlist)
-        try await context.editElsewhere(playlist.id) {
+        try await context.editElsewhere(Playlist.self, playlist.id) {
             $0.notes = "Coffee first. Loud."
             $0.title = "Sunday Mornings"
             $0.pinned = true

@@ -907,6 +907,12 @@ Typing into a bound field stays cheap: the context keeps only the latest pending
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.
 
+## Example app
+
+[`Examples/Crate`](Examples/Crate) is a record collection app for a Mac and an iPhone that uses every
+relationship, every property wrapper, merging and CloudKit sync. Its README lists what each screen covers,
+how to sign it and run it on two devices, and conflicts to try.
+
 ## Benchmarks
 
 The `Benchmarks` program times the heaviest operations on a store of recipes with five nested steps

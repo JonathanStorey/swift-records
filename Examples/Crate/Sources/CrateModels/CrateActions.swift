@@ -42,22 +42,15 @@ extension RecordContext {
         return track
     }
 
-    /// Saves a change to the album as another device's sync would, in a background context, so an open
+    /// Saves a change to the record as another device's sync would, in a background context, so an open
     /// editor takes it in, or shows a conflict where both changed the same field.
-    public func editElsewhere(_ id: Album.ID, _ change: @escaping @Sendable (inout Album) -> Void) async throws {
+    public func editElsewhere<R: Record>(
+        _ type: R.Type, _ id: R.ID, _ change: @escaping @Sendable (inout R) -> Void
+    ) async throws {
         try await performInBackground { background in
-            guard var album = try background.record(Album.self, for: id) else { return }
-            change(&album)
-            try background.insert(album)
-        }
-    }
-
-    /// The same, for a playlist, to watch it merge itself.
-    public func editElsewhere(_ id: Playlist.ID, _ change: @escaping @Sendable (inout Playlist) -> Void) async throws {
-        try await performInBackground { background in
-            guard var playlist = try background.record(Playlist.self, for: id) else { return }
-            change(&playlist)
-            try background.insert(playlist)
+            guard var record = try background.record(R.self, for: id) else { return }
+            change(&record)
+            try background.insert(record)
         }
     }
 }

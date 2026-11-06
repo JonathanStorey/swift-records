@@ -156,16 +156,18 @@ public enum SampleCrate {
         return (artists, albums, friends)
     }
 
-    /// Fills an empty crate. Covers come from `art`, which the app draws, and the tests leave out.
+    /// Fills an empty crate. Covers come from `art`, given each album and its artist's name, which the app
+    /// draws, and the tests leave out.
     @MainActor
-    public static func insert(into context: RecordContext, art: (Album) -> Data? = { _ in nil }) throws {
+    public static func insert(into context: RecordContext, art: (Album, String) -> Data? = { _, _ in nil }) throws {
         let (artists, albums, friends) = records()
+        let names = Dictionary(uniqueKeysWithValues: artists.map { ($0.id, $0.name) })
         try context.transaction {
             for artist in artists {
                 context.insert(artist)
             }
             for var album in albums {
-                album.cover = art(album)
+                album.cover = art(album, album.artist.flatMap { names[$0] } ?? "")
                 context.insert(album)
             }
             for friend in friends {

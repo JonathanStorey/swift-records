@@ -255,6 +255,17 @@ public enum AlbumOrder: String, Codable, Sendable, CaseIterable, Identifiable {
     public var id: Self { self }
 
     public var label: String { rawValue.capitalized }
+
+    /// The album list's sort, newest or highest first where that reads naturally.
+    public var sort: [SortDescriptor<Album>] {
+        switch self {
+        case .title: [SortDescriptor(\.title)]
+        case .year: [SortDescriptor(\.year), SortDescriptor(\.title)]
+        case .added: [SortDescriptor(\.added, order: .reverse)]
+        case .rating: [SortDescriptor(\.rating, order: .reverse), SortDescriptor(\.title)]
+        case .plays: [SortDescriptor(\.plays, order: .reverse), SortDescriptor(\.title)]
+        }
+    }
 }
 
 /// The app's settings, kept by `@RecordStorage` in a zone of their own and synced like any record.
