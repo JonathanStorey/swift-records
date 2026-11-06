@@ -56,7 +56,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// rather than the first time code uses each type. Types reached through relationships are registered
     /// too. Sync needs it, because a server's records can arrive before any code has touched their type.
     ///
-    /// The container stays on the device. To sync with CloudKit, pass `cloudKit:` instead.
+    /// The container stays on the device. To sync with CloudKit, pass `sync: .cloudKit` as well.
     ///
     /// `initialZone` is where the main context starts. It opens with the container, so an error opening it
     /// throws here. Switch zones later with `RecordContext.zone`.
@@ -69,6 +69,20 @@ public final class RecordContainer: @unchecked Sendable {
             for: types, directory: try Self.directory(for: location), inMemory: location == .inMemory,
             initialZone: initialZone, syncProvider: nil
         )
+    }
+
+    /// Opens a container for these record types, as SwiftData's `ModelContainer(for:)` takes its models.
+    ///
+    /// ```swift
+    /// let container = try RecordContainer(for: Recipe.self, Step.self)
+    /// ```
+    public convenience init(
+        for type: any Record.Type,
+        _ more: any Record.Type...,
+        location: Location = .applicationSupport,
+        initialZone: Zone = .default
+    ) throws {
+        try self.init(for: [type] + more, location: location, initialZone: initialZone)
     }
 
     /// Opens a container whose zones sync through `syncProvider`, for the package's own tests and engines.
