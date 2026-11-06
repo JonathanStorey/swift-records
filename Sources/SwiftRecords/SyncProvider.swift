@@ -348,6 +348,9 @@ package enum SyncFailure: Error, Sendable, Hashable {
     case limitExceeded
     /// The server refuses the change for good, such as a record someone else owns.
     case permissionFailure
+    /// A `.deleteSelf` reference names a record the server doesn't have yet, such as a parent still waiting
+    /// to go. The record goes again once its parent has.
+    case referenceViolation
     case other(String)
 }
 

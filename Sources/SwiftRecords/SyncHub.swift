@@ -38,6 +38,9 @@ actor SyncHub: SyncDelegate {
     /// The log position each zone's send has read up to, so each batch reads on from there rather than
     /// past every change already tried. A change that goes back to be tried again resets its zone's.
     private var sendCursors: [Zone: Int] = [:]
+    /// Records the server refused because their parent wasn't there yet. They go again once the send has
+    /// offered the rest of their zone's changes, which include the parent.
+    private var waitingForParent: [Zone: Set<UUID>] = [:]
     private var conflictRounds: [UUID: Int] = [:]
 
     init(
@@ -233,7 +236,15 @@ actor SyncHub: SyncDelegate {
             // Reads on past changes already tried until the batch is full or the zone has no more.
             while count < Self.batchSize {
                 let cursor = sendCursors[sync.zone] ?? 0
-                guard let pending = try? store.pendingChanges(limit: Self.batchSize, after: cursor), !pending.isEmpty else { break }
+                guard let pending = try? store.pendingChanges(limit: Self.batchSize, after: cursor), !pending.isEmpty else {
+                    // The zone's changes have all been offered, so records waiting for a parent go again.
+                    guard let waiting = waitingForParent.removeValue(forKey: sync.zone), !waiting.isEmpty else { break }
+                    for id in waiting {
+                        attempted.removeValue(forKey: id)
+                    }
+                    sendCursors[sync.zone] = nil
+                    continue
+                }
                 for change in pending {
                     guard count < Self.batchSize else { break }
                     sendCursors[sync.zone] = change.seq
@@ -273,6 +284,7 @@ actor SyncHub: SyncDelegate {
     private func forget(_ scope: ChangeScope) {
         inFlight = inFlight.filter { !scope.contains($0.value.sync.zone) }
         sendCursors = sendCursors.filter { !scope.contains($0.key) }
+        waitingForParent = waitingForParent.filter { !scope.contains($0.key) }
         for (id, zone) in attempted where scope.contains(zone) {
             attempted.removeValue(forKey: id)
             conflictRounds.removeValue(forKey: id)
@@ -359,6 +371,14 @@ actor SyncHub: SyncDelegate {
                 retry(id)
             case .quotaExceeded:
                 entry.sync.fail(.storageFull)
+            case .referenceViolation:
+                // Its parent hasn't gone yet. It goes again later in this send, after the parent, and if the
+                // parent still isn't there, with the next send.
+                let rounds = conflictRounds[id, default: 0] + 1
+                conflictRounds[id] = rounds
+                if rounds < Self.maxConflictRounds {
+                    waitingForParent[entry.sync.zone, default: []].insert(id)
+                }
             case .networkUnavailable, .other:
                 entry.sync.markOffline()
             case .limitExceeded, .permissionFailure:

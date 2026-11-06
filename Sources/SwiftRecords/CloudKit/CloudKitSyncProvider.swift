@@ -530,6 +530,7 @@ final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
             return .networkUnavailable
         case .limitExceeded, .assetFileNotFound: return .limitExceeded
         case .permissionFailure: return .permissionFailure
+        case .referenceViolation: return .referenceViolation
         default: return .other(error.localizedDescription)
         }
     }

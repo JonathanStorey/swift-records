@@ -123,6 +123,39 @@ struct PendingChange: Hashable, Sendable {
 // MARK: - Registered types
 
 extension RecordStore {
+    /// Record tables ordered so a type comes after every type its pointers name, and link tables, whose
+    /// pointers can name any type, come last. Ties and cycles go by name.
+    static func parentsFirst(_ types: [String: any Record.Type]) -> [String] {
+        func parents<R: Record>(_ type: R.Type) -> (tables: [String], anyType: Bool) {
+            let pointers = R.cachedSchema.fields.filter(\.isPointer)
+            return (pointers.compactMap { $0.pointerTarget?.table }, pointers.contains { $0.pointerTarget == nil })
+        }
+        var ordered: [String] = []
+        var placed: Set<String> = []
+        var visiting: Set<String> = []
+        var links: [String] = []
+        func place(_ table: String) {
+            guard !placed.contains(table), visiting.insert(table).inserted, let type = types[table] else { return }
+            let (tables, anyType) = parents(type)
+            if anyType {
+                links.append(table)
+            } else {
+                for parent in tables.sorted() where parent != table {
+                    place(parent)
+                }
+                ordered.append(table)
+            }
+            placed.insert(table)
+        }
+        for table in types.keys.sorted() {
+            place(table)
+        }
+        return ordered + links.sorted()
+    }
+}
+
+
+extension RecordStore {
     /// Registers record types and every type their relationships reach, with the link type every container
     /// has, creating their tables and applying renames and indexes now rather than on first use.
     ///
@@ -722,7 +755,8 @@ extension RecordStore {
             try db.run("UPDATE \"_records_assets\" SET uploaded = 0")
             try db.run("DELETE FROM \"_records_meta\" WHERE kind = 'delete' OR (kind IS NULL AND extra IS NULL AND parked IS NULL)")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)
-            for table in registered.keys.sorted() where tableExists(table) {
+            // Parents go first, so each record's parent reaches the server before it, as CloudKit requires.
+            for table in Self.parentsFirst(registered) where tableExists(table) {
                 // Rows kept for their extra fields get a log entry, and every other record gets a row.
                 try db.run(
                     """
