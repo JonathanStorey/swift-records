@@ -116,6 +116,8 @@ struct PendingChange: Hashable, Sendable {
     let id: UUID
     let kind: RecordChange.Kind
     let version: Int
+    /// Where the change sits in the log, so a send can read on from the last one it took.
+    var seq: Int = 0
 }
 
 // MARK: - Registered types
@@ -498,18 +500,19 @@ extension RecordStore {
         }
     }
 
-    /// The changes the server doesn't have, oldest first, at most `limit` of them.
-    func pendingChanges(limit: Int = .max) throws -> [PendingChange] {
+    /// The changes the server doesn't have, oldest first, at most `limit` of them, after the log position
+    /// `after`.
+    func pendingChanges(limit: Int = .max, after: Int = 0) throws -> [PendingChange] {
         try locked {
             try db.run("""
-                SELECT record_table, record_id, kind, version FROM "_records_meta"
-                WHERE kind IS NOT NULL AND version > acked ORDER BY seq LIMIT ?
-                """, [.integer(Int64(min(limit, Int(Int64.max))))]).compactMap { row in
+                SELECT seq, record_table, record_id, kind, version FROM "_records_meta"
+                WHERE kind IS NOT NULL AND version > acked AND seq > ? ORDER BY seq LIMIT ?
+                """, [.integer(Int64(after)), .integer(Int64(min(limit, Int(Int64.max))))]).compactMap { row in
                 guard case .text(let table) = row["record_table"], case .text(let kind) = row["kind"],
                       let kind = RecordChange.Kind(rawValue: kind) else { return nil }
                 return PendingChange(
                     table: table, id: try ValueCoding.decode(UUID.self, from: row["record_id"] ?? .null), kind: kind,
-                    version: Int(row["version"]?.integerValue ?? 0)
+                    version: Int(row["version"]?.integerValue ?? 0), seq: Int(row["seq"]?.integerValue ?? 0)
                 )
             }
         }

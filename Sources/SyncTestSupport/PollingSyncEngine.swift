@@ -180,6 +180,10 @@ package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
         lock.withLock { state.pendingRecords.subtract(changes) }
     }
 
+    package var pendingRecordChanges: [PendingRecordChange] {
+        lock.withLock { Array(state.pendingRecords) }
+    }
+
     package func addPending(_ changes: [PendingZoneChange]) {
         guard !changes.isEmpty else { return }
         lock.withLock { state.pendingZones.formUnion(changes) }

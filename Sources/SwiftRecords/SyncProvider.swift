@@ -25,6 +25,9 @@ package protocol SyncProvider: AnyObject, Sendable {
     /// ≈ `state.remove(pendingRecordZoneChanges:)`.
     func removePending(_ changes: [PendingRecordChange])
 
+    /// ≈ `state.pendingRecordZoneChanges`. The record changes the engine holds as pending.
+    var pendingRecordChanges: [PendingRecordChange] { get }
+
     /// ≈ `state.add(pendingDatabaseChanges:)`. Zones to create or delete on the server.
     func addPending(_ changes: [PendingZoneChange])
 
@@ -58,6 +61,8 @@ extension SyncProvider {
     package func attach(_ container: RecordContainer) {}
 
     package func removePending(_ changes: [PendingRecordChange]) {}
+
+    package var pendingRecordChanges: [PendingRecordChange] { [] }
 
     package func addPending(_ changes: [PendingZoneChange]) {}
 
