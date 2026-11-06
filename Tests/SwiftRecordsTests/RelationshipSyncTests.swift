@@ -211,7 +211,8 @@ import Testing
     @Test func aStepArrivingAfterTheRecipeWasFetchedShowsOnRefresh() async throws {
         let recipe = SyncRecipe(title: "Bread", steps: [SyncStep(text: "Mix")])
         let (phone, tablet, _) = try await devices(recipe)
-        server.put("SyncStep", fields: ["text": .string("Knead"), "recipe": .reference(recipe.id, action: .deleteSelf)])
+        // Steps keep the order of their timestamp IDs, so the new one needs a later timestamp, not a random ID.
+        server.put("SyncStep", id: .timestamp, fields: ["text": .string("Knead"), "recipe": .reference(recipe.id, action: .deleteSelf)])
         await tablet.download()
         #expect(try await tablet.recipes().first?.steps.map(\.text) == ["Mix", "Knead"])
         try await refresh(phone)
