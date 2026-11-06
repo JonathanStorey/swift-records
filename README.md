@@ -857,12 +857,17 @@ suits a detail view with no Save button.
 
 A sheet with Save and Cancel wants the opposite, and `@Recordable(.draft)` gives it. Edits stay in the
 wrapper, so lists keep showing the stored record and no other save commits them. `$todo.save()` commits the
-draft, and `$todo.rollback()` drops it with nothing left behind:
+draft, and `$todo.rollback()` drops it with nothing left behind. A record passed in takes `.draft` in the
+view's initializer, and a new one can write it in place: `@Recordable(.draft) var todo = ToDo()`.
 
 ```swift
 struct EditToDo: View {
-    @Recordable(.draft) var todo: ToDo            // EditToDo(todo: todo)
+    @Recordable var todo: ToDo
     @Environment(\.dismiss) private var dismiss
+
+    init(todo: ToDo) {                            // EditToDo(todo: todo)
+        _todo = Recordable(wrappedValue: todo, .draft)
+    }
 
     var body: some View {
         Form {
@@ -909,6 +914,12 @@ rather than hundreds.
 Typing into a bound field stays cheap: the context keeps only the latest pending change to each
 record, the container writes only rows and links that actually changed, and a `@Records`
 view whose own edit was saved keeps its cached array instead of fetching again.
+
+## Example app
+
+[`Examples/Crate`](Examples/Crate) is a record collection app for a Mac and an iPhone that uses every
+relationship, every property wrapper, merging and CloudKit sync. Its README lists what each screen covers,
+how to sign it and run it on two devices, and conflicts to try.
 
 ## Benchmarks
 

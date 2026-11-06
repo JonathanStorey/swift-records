@@ -23,7 +23,7 @@ import SwiftUI
 /// A record the store hasn't seen, such as `@Recordable var todo = ToDo()` in a form for a new one, is new
 /// until its first edit inserts it, and `$todo.startNew()` starts another.
 ///
-/// `@Recordable(.draft) var todo: ToDo` holds edits in the wrapper instead, for a form with Save and Cancel:
+/// `_todo = Recordable(wrappedValue: todo, .draft)` holds edits in the wrapper instead, for a form with Save and Cancel:
 /// `$todo.save()` commits them and `$todo.rollback()` drops them. Changes from elsewhere still merge into
 /// the fields the draft left alone.
 ///

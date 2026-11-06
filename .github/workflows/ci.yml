@@ -20,6 +20,21 @@ jobs:
           SCHEME=$(echo "$SCHEMES" | grep -x -m1 -e SwiftRecords -e swift-records-Package -e swift-records || echo "$SCHEMES" | head -1)
           xcodebuild build -scheme "$SCHEME" -destination 'generic/platform=iOS Simulator' -skipMacroValidation -quiet
 
+  crate:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test the example app's models
+        working-directory: Examples/Crate
+        run: swift test
+      - name: Build the example app for iOS and macOS
+        working-directory: Examples/Crate/App
+        run: |
+          for destination in 'generic/platform=iOS Simulator' 'generic/platform=macOS'; do
+            xcodebuild build -project Crate.xcodeproj -scheme Crate -destination "$destination" \
+              -skipMacroValidation -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO -quiet
+          done
+
   linux:
     runs-on: ubuntu-latest
     container: swift:6.1-noble
@@ -28,4 +43,7 @@ jobs:
       - name: Install SQLite
         run: apt-get update && apt-get install -y libsqlite3-dev
       - name: Build and test
+        run: swift test
+      - name: Test the example app's models
+        working-directory: Examples/Crate
         run: swift test
