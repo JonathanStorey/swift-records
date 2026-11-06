@@ -332,8 +332,14 @@ final class RecordStore: @unchecked Sendable {
 
     /// Saves one record and the records its `@Reference(to:)` properties hold. `parent` sets a child's
     /// pointer, for a child saved through its parent's array.
+    ///
+    /// A record saved through another's relationship is a copy, which may be older than the record
+    /// itself. `fetched` is that copy as the relationship was fetched: when the copy still matches it, the
+    /// save didn't change the record, so its row is left alone and a newer change to it stands. A copy
+    /// saved through a parent or a link may not know its other parents, so it never clears their pointers.
     private func saveRecord<R: Record>(
-        _ record: R, visited: inout Set<RowKey>, parent: (column: String, id: SQLiteValue)? = nil
+        _ record: R, visited: inout Set<RowKey>, parent: (column: String, id: SQLiteValue)? = nil,
+        held: Bool = false, fetched: (any Record)? = nil
     ) throws {
         let id = try record.sqlID
         guard visited.insert(RowKey(table: R.table, id: id)).inserted else {
@@ -344,14 +350,21 @@ final class RecordStore: @unchecked Sendable {
             return
         }
         var encoded = try RecordEncoder.encode(record)
+        if let fetched = fetched as? R, try Self.sameRow(encoded, try RecordEncoder.encode(fetched)) {
+            // An unchanged copy: only what it holds may have changed.
+            try saveRelations(of: R.self, encoded, id: id, visited: &visited)
+            return
+        }
         encoded.columns += try storeAssets(of: R.self, id: id, assets: encoded.assets)
         // Timestamps are the container's to set, so a save keeps the stored ones.
         var preserving = Set(R.cachedSchema.fields.filter { $0.timestamp != nil }.map { $0.name })
         if let parent {
             encoded.columns.removeAll { $0.name == parent.column }
             encoded.columns.append((parent.column, parent.id))
-            // A copy saved through one parent may not know its other parents, so it never clears them.
-            for field in R.cachedSchema.fields where field.isPointer && field.name != parent.column {
+        }
+        if parent != nil || held {
+            // A copy saved through a parent or a link may not know its other parents, so it never clears them.
+            for field in R.cachedSchema.fields where field.isPointer && field.name != parent?.column {
                 if !encoded.columns.contains(where: { $0.name == field.name && $0.value != .null }) {
                     encoded.columns.removeAll { $0.name == field.name }
                     preserving.insert(field.name)
@@ -360,17 +373,35 @@ final class RecordStore: @unchecked Sendable {
         }
 
         try writeRow(R.self, id: id, columns: encoded.columns, preserving: preserving)
+        try saveRelations(of: R.self, encoded, id: id, visited: &visited)
+    }
 
+    /// Whether two encodings write the same row: the same columns and the same asset files.
+    private static func sameRow(_ a: EncodedRecord, _ b: EncodedRecord) throws -> Bool {
+        guard a.columns.count == b.columns.count else { return false }
+        let columns = Dictionary(a.columns.map { ($0.name, $0.value) }, uniquingKeysWith: { first, _ in first })
+        guard b.columns.allSatisfy({ columns[$0.name] == $0.value }) else { return false }
+        guard a.assets.keys.sorted() == b.assets.keys.sorted() else { return false }
+        return a.assets.allSatisfy { $0.value.storage?.name == b.assets[$0.key]?.storage?.name }
+    }
+
+    /// Saves the records a record's `@Reference(to:)` properties hold.
+    private func saveRelations<R: Record>(
+        of type: R.Type, _ encoded: EncodedRecord, id: SQLiteValue, visited: inout Set<RowKey>
+    ) throws {
         let held = Dictionary(encoded.relations.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         for field in R.cachedSchema.fields {
             // An optional that is nil isn't encoded, so it holds nothing.
             let targets = held[field.name]?.targets ?? []
             let loaded = held[field.name]?.loaded
+            let fetched = held[field.name]?.fetched
             switch field.relationship {
             case .children(let type, let pointer)?:
-                try saveChildren(targets, loaded: loaded, ownerID: id, type: type, pointer: pointer, visited: &visited)
+                try saveChildren(
+                    targets, loaded: loaded, fetched: fetched, ownerID: id, type: type, pointer: pointer, visited: &visited
+                )
             case .links?:
-                try saveLinks(targets, loaded: loaded, owner: R.self, ownerID: id, field: field, visited: &visited)
+                try saveLinks(targets, loaded: loaded, fetched: fetched, owner: R.self, ownerID: id, field: field, visited: &visited)
             case nil:
                 break
             }
@@ -541,15 +572,15 @@ final class RecordStore: @unchecked Sendable {
     /// array held when fetched, only those taken out since then are removed, so a child that arrived
     /// from another device after the fetch stays.
     private func saveChildren(
-        _ children: [any Record], loaded: Set<UUID>?, ownerID: SQLiteValue, type: any Record.Type, pointer: AnyKeyPath,
-        visited: inout Set<RowKey>
+        _ children: [any Record], loaded: Set<UUID>?, fetched: [UUID: any Record]?, ownerID: SQLiteValue,
+        type: any Record.Type, pointer: AnyKeyPath, visited: inout Set<RowKey>
     ) throws {
         func save<C: Record>(_ type: C.Type) throws {
             guard let field = C.cachedSchema.field(for: pointer), field.isPointer else { return }
             var kept: Set<SQLiteValue> = []
             for case let child as C in children {
                 kept.insert(try child.sqlID)
-                try saveRecord(child, visited: &visited, parent: (field.name, ownerID))
+                try saveRecord(child, visited: &visited, parent: (field.name, ownerID), fetched: fetched?[child.id])
             }
             guard tableExists(C.table) else { return }
             try ensureColumns([field.name], in: C.table)
@@ -582,11 +613,11 @@ final class RecordStore: @unchecked Sendable {
     /// are linked. Links made in one save are a millisecond apart, so they keep the array's order. With
     /// `loaded`, only links to targets taken out since the fetch are removed.
     private func saveLinks<R: Record>(
-        _ targets: [any Record], loaded: Set<UUID>?, owner: R.Type, ownerID: SQLiteValue, field: RecordSchema<R>.Field,
-        visited: inout Set<RowKey>
+        _ targets: [any Record], loaded: Set<UUID>?, fetched: [UUID: any Record]?, owner: R.Type, ownerID: SQLiteValue,
+        field: RecordSchema<R>.Field, visited: inout Set<RowKey>
     ) throws {
-        func save<T: Record>(_ record: T) throws {
-            try saveRecord(record, visited: &visited)
+        func save<T: Record>(_ record: T, held: Bool = true) throws {
+            try saveRecord(record, visited: &visited, held: held, fetched: fetched?[record.id])
         }
         if registered[_RecordLink.table] == nil {
             try register([])
@@ -622,7 +653,7 @@ final class RecordStore: @unchecked Sendable {
                 relation: names[0], from: from, to: try ValueCoding.decode(UUID.self, from: target),
                 created: now.addingTimeInterval(Double(index) / 1000)
             )
-            try save(link)
+            try save(link, held: false)
         }
     }
 
