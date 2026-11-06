@@ -1,6 +1,7 @@
 import Foundation
 
-/// A sync engine: CloudKit's `CKSyncEngine`, or anything shaped like it. The container is its delegate.
+/// The sync engine the container drives: `CKSyncEngine` in apps, or the in-memory engine the tests use. The
+/// container is its delegate.
 ///
 /// The provider owns scheduling, retries, pushes, change tokens and the account. The container owns the
 /// records: it tells the engine what is pending, builds each batch the engine asks for, and applies what
@@ -450,6 +451,10 @@ extension RecordChangeData: Codable {
 
 
 /// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
+///
+/// It mirrors CloudKit's value types for three jobs: storing records that this app version can't decode yet,
+/// which are parked and tried again after an update; keeping fields a newer version added, which go back
+/// untouched; and letting the sync logic and its tests run on Linux, where `CKRecord` doesn't exist.
 package enum RecordValue: Sendable, Hashable {
     case string(String)
     /// Any integer, and a `Bool` as 0 or 1.
