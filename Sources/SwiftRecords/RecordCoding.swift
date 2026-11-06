@@ -30,6 +30,8 @@ struct EncodedRecord {
         let targets: [any Record]
         /// The IDs the relationship held when fetched, or nil when the value wasn't fetched.
         var loaded: Set<UUID>? = nil
+        /// The records as fetched, by ID, so a save can tell which copies it changed.
+        var fetched: [UUID: any Record]? = nil
     }
 
     var columns: [(name: String, value: SQLiteValue)] = []
@@ -199,7 +201,8 @@ final class RecordEncoder: Encoder {
                 }
             } else if let storage = value as? any AnyRelationshipStorage {
                 encoder.output.relations.append(.init(
-                    name: name, targetType: type(of: storage).collectionType.recordType, targets: storage.records, loaded: storage.loaded
+                    name: name, targetType: type(of: storage).collectionType.recordType, targets: storage.records, loaded: storage.loaded,
+                    fetched: storage.fetchedRecords.map { Dictionary($0.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
                 ))
             } else if let record = value as? any Record {
                 encoder.output.relations.append(.init(name: name, targetType: type(of: record), targets: [record]))

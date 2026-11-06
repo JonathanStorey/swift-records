@@ -1,0 +1,33 @@
+{
+  "originHash" : "05c42b347e70bd4285064a5a312171fda4bd26ef077508220a80af10a62090ec",
+  "pins" : [
+    {
+      "identity" : "swift-identification",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JonathanStorey/swift-identification.git",
+      "state" : {
+        "revision" : "820edfb3a67e566dfbafc412d82d175290f727d5",
+        "version" : "0.2.0"
+      }
+    },
+    {
+      "identity" : "swift-merging",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JonathanStorey/swift-merging.git",
+      "state" : {
+        "revision" : "b46bc78444a3042392691e97e52fa8cb3f6e851b",
+        "version" : "0.2.0"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "state" : {
+        "revision" : "4799286537280063c85a32f09884cfbca301b1a1",
+        "version" : "602.0.0"
+      }
+    }
+  ],
+  "version" : 3
+}
