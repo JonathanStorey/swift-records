@@ -6,7 +6,8 @@ import Foundation
 /// each zone's change log, and applies what it reports: received records, acknowledgements, conflicts,
 /// account changes and zone resets. Contexts reach it through each zone's `ZoneSync`.
 actor SyncHub: SyncDelegate {
-    /// Changes in one request, so a server is never asked to take too many at once.
+    /// The most changes offered in one batch. The engine may take fewer, to stay within CloudKit's size limit,
+    /// and hands the rest back through `unsent(_:)`.
     static let batchSize = 200
     /// How many of a zone's pending changes the engine hears of at a time.
     static let pendingWindow = 1_000
@@ -222,6 +223,13 @@ actor SyncHub: SyncDelegate {
             }
         }
         return batch.isEmpty ? nil : batch
+    }
+
+    func unsent(_ ids: [UUID]) async {
+        for id in ids {
+            inFlight.removeValue(forKey: id)
+            attempted.removeValue(forKey: id)
+        }
     }
 
     /// Forgets what a send in this scope tried, so the next one starts fresh. Sends in other databases keep

@@ -148,6 +148,18 @@ struct Device {
         #expect(phone.provider.sentBatches.map(\.count) == [200, 200, 50])
     }
 
+    @Test func recordsAFullBatchLeavesOutGoInTheNextOne() async throws {
+        let phone = try Device(server)
+        phone.provider.batchLimit = 30
+        for index in 0..<100 {
+            phone.context.insert(SyncCook(name: "Cook \(index)"))
+        }
+        try await phone.context.save()
+        #expect(server.count == 100)
+        #expect(phone.provider.sentBatches.map(\.count) == [30, 30, 30, 10])
+        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
+    }
+
     @Test func anUploadOfAnySizeFinishesInOnePass() async throws {
         let phone = try Device(server)
         try await phone.container.mainContext.performInBackground { context in

@@ -92,6 +92,22 @@ import CloudKit
     let server = TestServer()
     let zoneID = CKRecordZone.ID(zoneName: "default", ownerName: CKCurrentUserDefaultName)
 
+    /// The provider relies on the engine to stop a batch at CloudKit's size limit and hands the rest back.
+    @Test func theEngineStopsABatchAtTheSizeLimit() async throws {
+        let records = (0..<100).map { index -> CKRecord in
+            let record = CKRecord(recordType: "Big", recordID: CKRecord.ID(recordName: "big-\(index)", zoneID: zoneID))
+            record["payload"] = Data(repeating: UInt8(index), count: 200_000)
+            return record
+        }
+        let built = BuiltRecords(records: Dictionary(uniqueKeysWithValues: records.map { ($0.recordID, $0) }))
+        let batch = await CKSyncEngine.RecordZoneChangeBatch(
+            pendingChanges: records.map { .saveRecord($0.recordID) }, recordProvider: { built.records[$0] }
+        )
+        let count = try #require(batch).recordsToSave.count
+        #expect(count > 0)
+        #expect(count < records.count)
+    }
+
     @Test func savesBecomeCKRecordsAndBack() async throws {
         let phone = try Device(server)
         var recipe = SyncRecipe(title: "Soup", servings: 4, tags: ["winter"], steps: [SyncStep(text: "Chop")])
