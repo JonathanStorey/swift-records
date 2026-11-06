@@ -2,7 +2,6 @@
 import CloudKit
 import CryptoKit
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
 
 extension RecordContainer {
     /// The `CKRecord` a save becomes, or `nil` for a deletion, which you delete by `RecordContainer.recordID(for:in:)`.

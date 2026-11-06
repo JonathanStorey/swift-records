@@ -1,5 +1,5 @@
 import Foundation
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// An unsaved edit remembers the stored copy it started from, so saving it keeps what changed in the

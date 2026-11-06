@@ -8,7 +8,6 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
-        .library(name: "SwiftRecordsCloudKit", targets: ["SwiftRecordsCloudKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.0"..<"603.0.0"),
@@ -42,11 +41,6 @@ let package = Package(
             name: "SyncTestSupport",
             dependencies: ["SwiftRecords"]
         ),
-        // Syncs with CloudKit through `CKSyncEngine`, the first-class provider. Empty off Apple platforms.
-        .target(
-            name: "SwiftRecordsCloudKit",
-            dependencies: ["SwiftRecords"]
-        ),
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
@@ -55,7 +49,7 @@ let package = Package(
         .testTarget(
             name: "SwiftRecordsTests",
             dependencies: [
-                "SwiftRecords", "SyncTestSupport", "SwiftRecordsCloudKit",
+                "SwiftRecords", "SyncTestSupport",
                 .product(name: "Identification", package: "swift-identification"),
             ]
         ),

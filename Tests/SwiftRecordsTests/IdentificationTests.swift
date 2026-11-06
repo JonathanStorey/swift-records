@@ -1,7 +1,7 @@
 import Foundation
 import Identification
 import Testing
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 
 /// IDs SwiftRecords makes with swift-identification, which must never change, and the order it relies on.
 @Suite struct IdentificationTests {

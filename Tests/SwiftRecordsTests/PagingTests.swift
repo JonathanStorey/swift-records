@@ -1,5 +1,5 @@
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
+import SwiftRecords
 import Testing
 
 @Suite struct PagingTests {

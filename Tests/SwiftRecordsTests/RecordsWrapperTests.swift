@@ -1,7 +1,7 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// Each form of `@Records` compiles against the property type it fills.

@@ -107,7 +107,7 @@ rather than failing them, and `status` shows `.failed(.incompatibleRecord(type:i
 again or is deleted.
 
 `context.status` says where changes stand: `saving`, `saved` or `failed(_:)` for a local container, plus
-`syncing`, `offline` and `signedOut` with a sync provider. It is observable, so a view can show it.
+`syncing`, `offline` and `signedOut` with CloudKit sync. It is observable, so a view can show it.
 
 For work off the main actor, such as an import, use a background context. Its saves commit right away,
 `transaction(_:)` groups several into one commit, and the main context refreshes after each commit.
@@ -140,7 +140,7 @@ Registering also checks the types before anything is written, and throws
 - a read-only many-to-many side whose key path isn't a many-to-many to its type
 - an app type stored as `RecordLink`, the name the container keeps for many-to-many links
 - an `@Renamed` old name that is still a property's name, or is shared by two properties
-- with a sync provider, a type or property name a server can't take: it must be letters, digits and
+- with CloudKit sync, a type or property name CloudKit can't take: it must be letters, digits and
   underscores, starting with a letter
 
 ```swift
@@ -186,12 +186,12 @@ context.zone = try Zone("family", sharedBy: ownerName)    // shared/<owner>/fami
 ```
 
 A shared zone lives in the server's shared database, and its file sits in a folder for its owner, so it
-never mixes with a private zone of the same name. A shared zone syncs only with a provider whose `scopes`
-include `.shared`, and otherwise stays on the device.
+never mixes with a private zone of the same name. A shared zone syncs only while
+`syncsSharedDatabase` is on, and otherwise stays on the device.
 
 ### Sharing a zone
 
-With `CloudKitSyncProvider`, the owner shares one
+With CloudKit sync, the owner shares one
 of their zones and sends the invitation. Whoever accepts it gets the zone in their shared database, and
 everyone syncs it as their own:
 
@@ -207,8 +207,8 @@ try await container.stopSharing(zone)                      // a participant leav
 ```
 
 `share(_:)` sends the zone's pending changes first, so people who accept find its records. When the
-owner stops sharing, the zone and its records leave every participant's devices. A provider shares by
-offering `sharing`, a `ZoneSharing`, and a provider without one throws `RecordsError.sharingUnavailable`.
+owner stops sharing, the zone and its records leave every participant's devices. A container that doesn't
+sync, or doesn't sync the shared database, throws `RecordsError.sharingUnavailable`.
 
 Zone files are local to the device unless the container syncs. They are included in the device's own
 backups (iCloud or computer, whichever the user chose) and in phone-to-phone transfers. On macOS the
@@ -442,12 +442,14 @@ written by a background context or a sync provider.
 
 ## Sync
 
-A `SyncProvider` keeps zones in step with a server. Pass one when the container opens, and it syncs
-every zone except `.inMemory`, `.localOnly` and the zones `Zone.local(_:)` names, which stay on the
-device. The same app code works with or without a provider: sync adds to saving, it doesn't replace it.
+CloudKit keeps zones in step across the person's devices. Name the CloudKit container when the
+container opens, and it syncs every zone except `.inMemory`, `.localOnly` and the zones `Zone.local(_:)`
+names, which stay on the device. The same app code works with or without sync: sync adds to saving, it
+doesn't replace it. Sync needs CloudKit, so it's available on Apple platforms. On Linux the container is
+local only.
 
 ```swift
-let container = try RecordContainer(for: [ToDo.self], syncProvider: provider)
+let container = try RecordContainer(for: [ToDo.self], cloudKit: .container("iCloud.com.example.app"))
 context.zone = try .local("drafts")   // drafts stay on the device
 
 try await context.save()       // commits, then sends what the server doesn't have
@@ -457,7 +459,7 @@ try await context.refresh()    // also fetches the server's changes, for pull-to
 The async `save()` sends. The synchronous `save()` only commits, and its changes go with
 the next send. `refresh()` throws only what leaves `status` at `failed`: offline and signed out aren't
 errors, and changes wait on the device until they can go. `context.unsynced` names the saved records in
-the context's zone that the server hasn't confirmed. It stays empty without a provider and grows while
+the context's zone that the server hasn't confirmed. It stays empty without sync and grows while
 offline or signed out. `unsynced.count` counts them, `$notes.unsynced` narrows it to a
 `@Records` list, and `$note.isSynced` says whether one `@Recordable` record is saved and confirmed.
 
@@ -465,55 +467,9 @@ Besides pushes, the one sync the context starts on its own is when the app becom
 pushes can be missed while it's away. It downloads and sends what the save on leaving committed,
 and never saves, so an edit you're in the middle of stays unsaved.
 
-You can switch providers later, for example to a bigger server as traffic grows. Each provider has an
-`identifier`, its type name by default, so return something like the server's URL when one type can reach
-several servers. When a zone's provider identifier changes, the container treats the new server as empty:
-it keeps every local record, uploads them all and downloads from the beginning, even if the account
-looks different, since a new server's user IDs needn't match the old one's.
-
-### The provider is a sync engine
-
-Apps only pass a provider in. Writing one means importing the provider layer, which stays out of the
-app-facing surface:
-
-```swift
-@_spi(SyncProvider) import SwiftRecords
-```
-
-CloudKit's `CKSyncEngine` is the model. A provider is an engine and the container is its delegate: the
-container tells the engine what is pending, the engine decides when to send and fetch, asks the container
-for each batch, and reports everything that happened as events. A CloudKit provider wraps
-`CKSyncEngine` almost one to one, and its scheduling, push handling, retries and account tracking come
-for free.
-
-```swift
-public protocol SyncProvider: AnyObject, Sendable {
-    var identifier: String { get }
-    var scopes: Set<Zone.Scope> { get }                          // .private and .shared
-    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
-    func addPending(_ changes: [PendingRecordChange])            // .save(id, zone) or .delete(id, zone)
-    func removePending(_ changes: [PendingRecordChange])
-    func addPending(_ changes: [PendingZoneChange])
-    func removePending(_ changes: [PendingZoneChange])
-    func sendChanges(_ options: SendOptions) async throws
-    func fetchChanges(_ options: FetchOptions) async throws
-    func cancelOperations() async
-}
-
-public protocol SyncDelegate: AnyObject, Sendable {
-    func handle(_ event: SyncEvent) async
-    func nextBatch(_ context: SendContext) async -> RecordBatch?
-    func nextFetchOptions(_ context: FetchContext) async -> FetchOptions
-}
-```
-
-`SyncEvent` mirrors `CKSyncEngine.Event`: `stateUpdate` (the container stores the engine's serialized
-state per scope and hands it back to `start`), `accountChange`, `fetchedZoneChanges`,
-`fetchedRecordChanges`, `sentZoneChanges`, `sentRecordChanges`, and the will and did events around
-fetches and sends. A failed save comes back as a `SyncFailure`: `.serverRecordChanged` carries the
-server's copy, which the container merges and sends again in the same pass, and `.unknownItem`,
-`.zoneNotFound`, `.quotaExceeded`, `.networkUnavailable`, `.limitExceeded` and `.permissionFailure`
-each have their own handling.
+The container is CloudKit's `CKSyncEngine` delegate. It tells the engine what is pending, the engine
+decides when to send and fetch and asks for each batch, and the container applies what the engine reports.
+A failed save that met a newer copy on the server merges with it and goes again in the same pass.
 
 A zone deleted on the server arrives with its reason. `.deleted` and `.purged` remove the zone's records
 from the device, as the person asked. `.encryptedDataReset` keeps them and uploads everything again.
@@ -692,33 +648,31 @@ and so does one deleted through `$contact.delete()`.
 
 ### Syncing with CloudKit
 
-`CloudKitSyncProvider` is the first-class provider. It wraps one `CKSyncEngine` for the private database
-and another for the shared one, and it lives in its own library, `SwiftRecordsCloudKit`:
+The container runs one `CKSyncEngine` for the private database and another for the shared one:
 
 ```swift
-import SwiftRecordsCloudKit
-
-let provider = CloudKitSyncProvider(container: CKContainer(identifier: "iCloud.com.example.app"))
-let container = try RecordContainer(for: [Recipe.self], syncProvider: provider)
+let container = try RecordContainer(
+    for: [Recipe.self],
+    cloudKit: CloudKitOptions(containerIdentifier: "iCloud.com.example.app", linkPermission: .none)
+)
 ```
 
-The engines schedule sends after each save, fetch on pushes, retry, split batches and track the account.
-The provider only translates. Each zone is a `CKRecordZone` of the same name, created before its first
+The engines schedule sends after each save, fetch on pushes, retry, split batches and track the account. Each zone is a `CKRecordZone` of the same name, created before its first
 record, and SwiftRecords' own zones such as `.default` become `swiftrecords._default`, since CloudKit
 keeps names that start with an underscore for itself. A shared zone is the owner's zone in the shared
 database. An edit sets only its changed keys on a `CKRecord` rebuilt from the server copy's system fields,
 so an unchanged asset or long field never uploads again, and a stale copy still fails as a conflict and
 merges here. Asset files ride inside their records as `CKAsset`s, each with its ID in a field beside it,
-so a download names the file without hashing it again. Pass `sharedDatabase: false` to sync the private
-database alone.
+so a download names the file without hashing it again. Set `syncsSharedDatabase` to `false` to sync the
+private database alone.
 
 Sharing uses a zone-wide `CKShare`. Invite people with the system's interface, built from
-`provider.ckShare(for: zone)` and `provider.ckContainer`, such as `UICloudSharingController`. Accept the
-share the system hands the scene delegate with `try await container.acceptShare(metadata)`. Pass
-`linkPermission: .readWrite` to let the link alone admit people, rather than only those invited.
+`container.ckShare(for: zone)` and `container.ckContainer`, such as `UICloudSharingController`. Accept the
+share the system hands the scene delegate with `try await container.acceptShare(metadata)`. Set
+`linkPermission` to `.readWrite` to let the link alone admit people, rather than only those invited.
 
 The app needs the iCloud capability with CloudKit and a container, plus Background Modes with remote
-notifications so pushes start fetches. The provider checks as it starts. A missing capability, a container
+notifications so pushes start fetches. The container checks as it opens. A missing capability, a container
 the entitlements don't list, or one CloudKit doesn't know logs the steps to fix it in Xcode, and contexts
 show `.failed(.syncNotConfigured(problem:fix:))` until the app is rebuilt. A missing background mode logs a
 warning, and changes then arrive when the app returns to the foreground. Entitlements are read from the

@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 struct Address: Codable, Hashable, Sendable {

@@ -1,7 +1,6 @@
 #if canImport(CloudKit)
 import CloudKit
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
 
 /// Sharing with zone-wide `CKShare`s: one share per zone, saved in the owner's private database. People who
 /// accept it see the zone in their shared database, which the provider's second engine syncs.
@@ -11,12 +10,12 @@ import Foundation
 /// `windowScene(_:userDidAcceptCloudKitShareWith:)` by passing the metadata to
 /// `RecordContainer.acceptShare(_:)`.
 extension CloudKitSyncProvider: ZoneSharing {
-    public func share(_ zone: Zone) async throws -> ZoneShare {
+    func share(_ zone: Zone) async throws -> ZoneShare {
         try await ZoneShare(ckShare(for: zone), zone: zone)
     }
 
     /// The zone's `CKShare`, saved first when it has none, for the system's sharing interface.
-    public func ckShare(for zone: Zone) async throws -> CKShare {
+    func ckShare(for zone: Zone) async throws -> CKShare {
         guard zone.scope == .private else { throw RecordsError.sharingUnavailable(zone: zone.description) }
         if let existing = try await fetchShare(for: zone) {
             return existing
@@ -39,11 +38,11 @@ extension CloudKitSyncProvider: ZoneSharing {
         }
     }
 
-    public func existingShare(for zone: Zone) async throws -> ZoneShare? {
+    func existingShare(for zone: Zone) async throws -> ZoneShare? {
         try await fetchShare(for: zone).map { ZoneShare($0, zone: zone) }
     }
 
-    public func acceptShare(_ invitation: URL) async throws -> Zone {
+    func acceptShare(_ invitation: URL) async throws -> Zone {
         let metadata: CKShare.Metadata
         do {
             metadata = try await ckContainer.shareMetadata(for: invitation)
@@ -69,7 +68,7 @@ extension CloudKitSyncProvider: ZoneSharing {
         return zone
     }
 
-    public func stopSharing(_ zone: Zone) async throws {
+    func stopSharing(_ zone: Zone) async throws {
         // The owner deletes the share. A participant deletes their copy in the shared database, which
         // takes them out of it.
         let database = zone.scope == .shared ? ckContainer.sharedCloudDatabase : ckContainer.privateCloudDatabase
