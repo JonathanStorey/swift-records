@@ -35,6 +35,12 @@ actor SyncHub: SyncDelegate {
     private var inFlight: [UUID: (sync: ZoneSync, change: PendingChange, fields: SyncFields?)] = [:]
     /// Records already given to the send running now, which aren't given again unless they met a conflict.
     private var attempted: [UUID: Zone] = [:]
+    /// The log position each zone's send has read up to, so each batch reads on from there rather than
+    /// past every change already tried. A change that goes back to be tried again resets its zone's.
+    private var sendCursors: [Zone: Int] = [:]
+    /// Records the server refused because their parent wasn't there yet. They go again once the send has
+    /// offered the rest of their zone's changes, which include the parent.
+    private var waitingForParent: [Zone: Set<UUID>] = [:]
     private var conflictRounds: [UUID: Int] = [:]
 
     init(
@@ -119,6 +125,27 @@ actor SyncHub: SyncDelegate {
         }
     }
 
+    /// Takes back pending changes the store no longer has, such as a record inserted and deleted before it
+    /// ever went to the server. The engine would otherwise keep them, and the state it saves after every
+    /// page would grow with them.
+    private func dropStalePending(_ scope: ChangeScope) {
+        let held = provider.pendingRecordChanges.filter { scope.contains($0.zone) }
+        guard !held.isEmpty else { return }
+        var pending: [Zone: Set<UUID>] = [:]
+        var stale: [PendingRecordChange] = []
+        for change in held {
+            guard let sync = registry[change.zone] else { continue }
+            if pending[change.zone] == nil {
+                guard let ids = try? sync.store.pendingIDs() else { continue }
+                pending[change.zone] = ids
+            }
+            if pending[change.zone]?.contains(change.id) == false {
+                stale.append(change)
+            }
+        }
+        provider.removePending(stale)
+    }
+
     /// Tells the engine about the zone's pending changes, a window at a time.
     func registerPending(_ sync: ZoneSync) {
         guard let pending = try? sync.store.pendingChanges(limit: Self.pendingWindow), !pending.isEmpty else { return }
@@ -185,6 +212,7 @@ actor SyncHub: SyncDelegate {
             }
         case .didSendChanges(let context):
             forget(context.options.scope)
+            dropStalePending(context.options.scope)
             for sync in registry.all where context.options.scope.contains(sync.zone) {
                 registerPending(sync)
                 if context.reason == .scheduled {
@@ -205,21 +233,34 @@ actor SyncHub: SyncDelegate {
         for sync in registry.all.sorted(by: { $0.zone.name < $1.zone.name }) where context.options.scope.contains(sync.zone) {
             guard count < Self.batchSize else { break }
             let store = sync.store
-            guard let pending = try? store.pendingChanges(limit: Self.batchSize + attempted.count) else { continue }
-            for change in pending {
-                guard count < Self.batchSize else { break }
-                guard attempted[change.id] == nil, records?.contains(change.id) ?? true else { continue }
-                attempted[change.id] = sync.zone
-                guard let (record, fields, base) = try? store.syncRecord(for: change),
-                      let data = try? store.change(for: record, zone: sync.zone, base: base) else { continue }
-                inFlight[change.id] = (sync, change, fields)
-                if data.isDeletion {
-                    batch.deletes.append(RecordDeletion(id: data.id, zone: data.zone, type: data.type, tag: data.tag))
-                } else {
-                    batch.saves.append(data)
+            // Reads on past changes already tried until the batch is full or the zone has no more.
+            while count < Self.batchSize {
+                let cursor = sendCursors[sync.zone] ?? 0
+                guard let pending = try? store.pendingChanges(limit: Self.batchSize, after: cursor), !pending.isEmpty else {
+                    // The zone's changes have all been offered, so records waiting for a parent go again.
+                    guard let waiting = waitingForParent.removeValue(forKey: sync.zone), !waiting.isEmpty else { break }
+                    for id in waiting {
+                        attempted.removeValue(forKey: id)
+                    }
+                    sendCursors[sync.zone] = nil
+                    continue
                 }
-                count += 1
-                sync.markSyncing()
+                for change in pending {
+                    guard count < Self.batchSize else { break }
+                    sendCursors[sync.zone] = change.seq
+                    guard attempted[change.id] == nil, records?.contains(change.id) ?? true else { continue }
+                    attempted[change.id] = sync.zone
+                    guard let (record, fields, base) = try? store.syncRecord(for: change),
+                          let data = try? store.change(for: record, zone: sync.zone, base: base) else { continue }
+                    inFlight[change.id] = (sync, change, fields)
+                    if data.isDeletion {
+                        batch.deletes.append(RecordDeletion(id: data.id, zone: data.zone, type: data.type, tag: data.tag))
+                    } else {
+                        batch.saves.append(data)
+                    }
+                    count += 1
+                    sync.markSyncing()
+                }
             }
         }
         return batch.isEmpty ? nil : batch
@@ -228,14 +269,22 @@ actor SyncHub: SyncDelegate {
     func unsent(_ ids: [UUID]) async {
         for id in ids {
             inFlight.removeValue(forKey: id)
-            attempted.removeValue(forKey: id)
+            retry(id)
         }
+    }
+
+    /// Lets a change the send already took go again in this send, reading its zone from the start.
+    private func retry(_ id: UUID) {
+        guard let zone = attempted.removeValue(forKey: id) else { return }
+        sendCursors[zone] = nil
     }
 
     /// Forgets what a send in this scope tried, so the next one starts fresh. Sends in other databases keep
     /// theirs, since each database's engine sends on its own.
     private func forget(_ scope: ChangeScope) {
         inFlight = inFlight.filter { !scope.contains($0.value.sync.zone) }
+        sendCursors = sendCursors.filter { !scope.contains($0.key) }
+        waitingForParent = waitingForParent.filter { !scope.contains($0.key) }
         for (id, zone) in attempted where scope.contains(zone) {
             attempted.removeValue(forKey: id)
             conflictRounds.removeValue(forKey: id)
@@ -302,7 +351,7 @@ actor SyncHub: SyncDelegate {
             let rounds = conflictRounds[change.id, default: 0] + 1
             conflictRounds[change.id] = rounds
             if rounds < Self.maxConflictRounds {
-                attempted.removeValue(forKey: change.id)
+                retry(change.id)
             }
         }
         func failed(_ id: UUID, _ failure: SyncFailure) {
@@ -319,9 +368,17 @@ actor SyncHub: SyncDelegate {
                 }
             case .zoneNotFound:
                 provider.addPending([PendingZoneChange.save(entry.sync.zone)])
-                attempted.removeValue(forKey: id)
+                retry(id)
             case .quotaExceeded:
                 entry.sync.fail(.storageFull)
+            case .referenceViolation:
+                // Its parent hasn't gone yet. It goes again later in this send, after the parent, and if the
+                // parent still isn't there, with the next send.
+                let rounds = conflictRounds[id, default: 0] + 1
+                conflictRounds[id] = rounds
+                if rounds < Self.maxConflictRounds {
+                    waitingForParent[entry.sync.zone, default: []].insert(id)
+                }
             case .networkUnavailable, .other:
                 entry.sync.markOffline()
             case .limitExceeded, .permissionFailure:
@@ -329,13 +386,21 @@ actor SyncHub: SyncDelegate {
             }
         }
 
+        // Each zone records what the server accepted in one transaction.
+        var accepted: [ObjectIdentifier: (sync: ZoneSync, items: [ZoneSync.Acknowledgement])] = [:]
+        func accept(_ sync: ZoneSync, _ item: ZoneSync.Acknowledgement) {
+            accepted[ObjectIdentifier(sync), default: (sync, [])].items.append(item)
+        }
         for saved in result.saved {
             guard let entry = inFlight.removeValue(forKey: saved.id) else { continue }
-            entry.sync.acknowledge(entry.change, fields: entry.fields, tag: saved.tag, synced: saved.synced)
+            accept(entry.sync, .init(change: entry.change, fields: entry.fields, tag: saved.tag, synced: saved.synced))
         }
         for deleted in result.deleted {
             guard let entry = inFlight.removeValue(forKey: deleted.id) else { continue }
-            entry.sync.acknowledge(entry.change, fields: nil, tag: nil, synced: nil)
+            accept(entry.sync, .init(change: entry.change))
+        }
+        for (sync, items) in accepted.values {
+            sync.acknowledge(items)
         }
         for failure in result.failed {
             failed(failure.change.id, failure.failure)

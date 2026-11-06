@@ -253,8 +253,27 @@ final class ZoneSync: @unchecked Sendable {
 
     /// Records that the server accepted a change.
     func acknowledge(_ change: PendingChange, fields: SyncFields?, tag: Data?, synced: Date?) {
+        acknowledge([Acknowledgement(change: change, fields: fields, tag: tag, synced: synced)])
+    }
+
+    /// One change the server accepted, with the fields sent and the server's tag and time.
+    struct Acknowledgement {
+        var change: PendingChange
+        var fields: SyncFields?
+        var tag: Data?
+        var synced: Date?
+    }
+
+    /// Records that the server accepted a batch of changes, in one transaction, so a large upload commits
+    /// once per batch rather than once per record.
+    func acknowledge(_ acknowledgements: [Acknowledgement]) {
+        guard !acknowledgements.isEmpty else { return }
         do {
-            try store.transaction { try store.acknowledge(change, sent: fields, tag: tag, synced: synced) }
+            try store.transaction {
+                for item in acknowledgements {
+                    try store.acknowledge(item.change, sent: item.fields, tag: item.tag, synced: item.synced)
+                }
+            }
         } catch {
             fail(Self.recordsError(error))
         }

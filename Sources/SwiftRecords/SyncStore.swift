@@ -116,9 +116,44 @@ struct PendingChange: Hashable, Sendable {
     let id: UUID
     let kind: RecordChange.Kind
     let version: Int
+    /// Where the change sits in the log, so a send can read on from the last one it took.
+    var seq: Int = 0
 }
 
 // MARK: - Registered types
+
+extension RecordStore {
+    /// Record tables ordered so a type comes after every type its pointers name, and link tables, whose
+    /// pointers can name any type, come last. Ties and cycles go by name.
+    static func parentsFirst(_ types: [String: any Record.Type]) -> [String] {
+        func parents<R: Record>(_ type: R.Type) -> (tables: [String], anyType: Bool) {
+            let pointers = R.cachedSchema.fields.filter(\.isPointer)
+            return (pointers.compactMap { $0.pointerTarget?.table }, pointers.contains { $0.pointerTarget == nil })
+        }
+        var ordered: [String] = []
+        var placed: Set<String> = []
+        var visiting: Set<String> = []
+        var links: [String] = []
+        func place(_ table: String) {
+            guard !placed.contains(table), visiting.insert(table).inserted, let type = types[table] else { return }
+            let (tables, anyType) = parents(type)
+            if anyType {
+                links.append(table)
+            } else {
+                for parent in tables.sorted() where parent != table {
+                    place(parent)
+                }
+                ordered.append(table)
+            }
+            placed.insert(table)
+        }
+        for table in types.keys.sorted() {
+            place(table)
+        }
+        return ordered + links.sorted()
+    }
+}
+
 
 extension RecordStore {
     /// Registers record types and every type their relationships reach, with the link type every container
@@ -498,18 +533,19 @@ extension RecordStore {
         }
     }
 
-    /// The changes the server doesn't have, oldest first, at most `limit` of them.
-    func pendingChanges(limit: Int = .max) throws -> [PendingChange] {
+    /// The changes the server doesn't have, oldest first, at most `limit` of them, after the log position
+    /// `after`.
+    func pendingChanges(limit: Int = .max, after: Int = 0) throws -> [PendingChange] {
         try locked {
             try db.run("""
-                SELECT record_table, record_id, kind, version FROM "_records_meta"
-                WHERE kind IS NOT NULL AND version > acked ORDER BY seq LIMIT ?
-                """, [.integer(Int64(min(limit, Int(Int64.max))))]).compactMap { row in
+                SELECT seq, record_table, record_id, kind, version FROM "_records_meta"
+                WHERE kind IS NOT NULL AND version > acked AND seq > ? ORDER BY seq LIMIT ?
+                """, [.integer(Int64(after)), .integer(Int64(min(limit, Int(Int64.max))))]).compactMap { row in
                 guard case .text(let table) = row["record_table"], case .text(let kind) = row["kind"],
                       let kind = RecordChange.Kind(rawValue: kind) else { return nil }
                 return PendingChange(
                     table: table, id: try ValueCoding.decode(UUID.self, from: row["record_id"] ?? .null), kind: kind,
-                    version: Int(row["version"]?.integerValue ?? 0)
+                    version: Int(row["version"]?.integerValue ?? 0), seq: Int(row["seq"]?.integerValue ?? 0)
                 )
             }
         }
@@ -719,7 +755,8 @@ extension RecordStore {
             try db.run("UPDATE \"_records_assets\" SET uploaded = 0")
             try db.run("DELETE FROM \"_records_meta\" WHERE kind = 'delete' OR (kind IS NULL AND extra IS NULL AND parked IS NULL)")
             let now = SQLiteValue.real(Date().timeIntervalSince1970)
-            for table in registered.keys.sorted() where tableExists(table) {
+            // Parents go first, so each record's parent reaches the server before it, as CloudKit requires.
+            for table in Self.parentsFirst(registered) where tableExists(table) {
                 // Rows kept for their extra fields get a log entry, and every other record gets a row.
                 try db.run(
                     """

@@ -22,6 +22,9 @@ final class TestServer: @unchecked Sendable {
     var isOnline = true
     var isFull = false
     var rejectedTypes: Set<String> = []
+    /// Refuses a save whose `.deleteSelf` reference names a record neither stored nor in the same batch, as
+    /// CloudKit does.
+    var checksReferences = false
 
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -57,6 +60,14 @@ final class TestServer: @unchecked Sendable {
     /// Who `owner`'s zone is shared with, or `nil` when it isn't.
     func participants(of zone: Zone, owner: String) -> Set<String>? {
         withLock { shares["\(owner)|\(zone.name)"] }
+    }
+
+    /// Whether the server holds a record with this ID in the zone.
+    func holds(_ id: UUID, in zone: Zone, by user: String?) -> Bool {
+        withLock {
+            let prefix = space(zone, account: user)
+            return latest.contains { $0.key.hasPrefix(prefix) && $0.key.hasSuffix("|\(id)") && !$0.value.change.isDeletion }
+        }
     }
 
     /// Whether `user` may write to the zone.
@@ -265,13 +276,21 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
         let changes = batch.changes
         lock.withLock { batches.append(changes) }
         try check()
-        let (full, rejected) = server.withLock { (server.isFull, server.rejectedTypes) }
+        let (full, rejected, checksReferences) = server.withLock { (server.isFull, server.rejectedTypes, server.checksReferences) }
         guard !full else { throw SyncFailure.quotaExceeded }
         let user = user
         var result = SentRecordChanges()
+        let inBatch = Set(changes.filter { !$0.isDeletion }.map(\.id))
         for change in changes {
             if rejected.contains(change.type) {
                 result.failed.append(FailedSave(change: change, failure: .permissionFailure))
+                continue
+            }
+            if checksReferences, let fields = change.fields, fields.values.contains(where: { value in
+                guard case .reference(let target, .deleteSelf) = value else { return false }
+                return !inBatch.contains(target) && !server.holds(target, in: change.zone, by: user)
+            }) {
+                result.failed.append(FailedSave(change: change, failure: .referenceViolation))
                 continue
             }
             switch server.save(change, by: user) {
@@ -424,6 +443,7 @@ final class TestProvider: SyncProvider, @unchecked Sendable {
 
     func addPending(_ changes: [PendingRecordChange]) { engine.addPending(changes) }
     func removePending(_ changes: [PendingRecordChange]) { engine.removePending(changes) }
+    var pendingRecordChanges: [PendingRecordChange] { engine.pendingRecordChanges }
     func addPending(_ changes: [PendingZoneChange]) { engine.addPending(changes) }
     func removePending(_ changes: [PendingZoneChange]) { engine.removePending(changes) }
     func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }

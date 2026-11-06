@@ -109,6 +109,23 @@ final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
+    var pendingRecordChanges: [PendingRecordChange] {
+        allEngines.flatMap { scope, engine in
+            engine.state.pendingRecordZoneChanges.compactMap { change -> PendingRecordChange? in
+                switch change {
+                case .saveRecord(let recordID):
+                    guard let zone = Self.zone(for: recordID.zoneID, scope: scope), let id = UUID(uuidString: recordID.recordName) else { return nil }
+                    return .save(id, zone)
+                case .deleteRecord(let recordID):
+                    guard let zone = Self.zone(for: recordID.zoneID, scope: scope), let id = UUID(uuidString: recordID.recordName) else { return nil }
+                    return .delete(id, zone)
+                @unknown default:
+                    return nil
+                }
+            }
+        }
+    }
+
     func addPending(_ changes: [PendingZoneChange]) {
         // Only the owner creates or deletes a zone, so the shared database takes none.
         let changes = changes.filter { $0.zone.scope == .private }
@@ -513,6 +530,7 @@ final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
             return .networkUnavailable
         case .limitExceeded, .assetFileNotFound: return .limitExceeded
         case .permissionFailure: return .permissionFailure
+        case .referenceViolation: return .referenceViolation
         default: return .other(error.localizedDescription)
         }
     }

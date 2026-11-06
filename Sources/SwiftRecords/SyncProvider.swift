@@ -25,6 +25,9 @@ package protocol SyncProvider: AnyObject, Sendable {
     /// ≈ `state.remove(pendingRecordZoneChanges:)`.
     func removePending(_ changes: [PendingRecordChange])
 
+    /// ≈ `state.pendingRecordZoneChanges`. The record changes the engine holds as pending.
+    var pendingRecordChanges: [PendingRecordChange] { get }
+
     /// ≈ `state.add(pendingDatabaseChanges:)`. Zones to create or delete on the server.
     func addPending(_ changes: [PendingZoneChange])
 
@@ -58,6 +61,8 @@ extension SyncProvider {
     package func attach(_ container: RecordContainer) {}
 
     package func removePending(_ changes: [PendingRecordChange]) {}
+
+    package var pendingRecordChanges: [PendingRecordChange] { [] }
 
     package func addPending(_ changes: [PendingZoneChange]) {}
 
@@ -343,6 +348,9 @@ package enum SyncFailure: Error, Sendable, Hashable {
     case limitExceeded
     /// The server refuses the change for good, such as a record someone else owns.
     case permissionFailure
+    /// A `.deleteSelf` reference names a record the server doesn't have yet, such as a parent still waiting
+    /// to go. The record goes again once its parent has.
+    case referenceViolation
     case other(String)
 }
 

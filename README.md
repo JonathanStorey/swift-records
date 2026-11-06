@@ -658,6 +658,8 @@ let container = try RecordContainer(for: Recipe.self, sync: .cloudKit("iCloud.co
 
 The engines schedule sends after each save, fetch on pushes, retry and track the account. Each batch holds
 as many records as fit within CloudKit's request size, and the rest go in the next batch of the same send.
+Changes go in the order they were saved, and a reupload to a new account sends parent types before their
+children. A child that reaches CloudKit before its parent waits and goes again after it, in the same send.
 Each zone is a `CKRecordZone` of the same name, created before its first record, and SwiftRecords' own
 zones such as `.default` become `swiftrecords._default`, since CloudKit keeps names that start with an
 underscore for itself. A shared zone is the owner's zone in the shared database. An edit sets only its
