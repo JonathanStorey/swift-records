@@ -49,6 +49,8 @@ protocol AnyRelationshipStorage {
     static var collectionType: any RecordCollection.Type { get }
     var records: [any Record] { get }
     var loaded: Set<UUID>? { get }
+    /// The records as fetched, or nil when the value wasn't fetched.
+    var fetchedRecords: [any Record]? { get }
     static func make(fetched records: [any Record]) -> Self
 }
 
@@ -56,6 +58,7 @@ extension RelationshipStorage: AnyRelationshipStorage where Value: RecordCollect
     static var collectionType: any RecordCollection.Type { Value.self }
     var records: [any Record] { wrappedValue.records }
     var loaded: Set<UUID>? { fetched.map { Set($0.records.map { $0.id }) } }
+    var fetchedRecords: [any Record]? { fetched?.records }
 
     static func make(fetched records: [any Record]) -> Self {
         Self(fetched: Value.make(from: records))
