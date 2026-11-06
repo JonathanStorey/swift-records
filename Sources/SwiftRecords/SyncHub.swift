@@ -170,9 +170,6 @@ actor SyncHub: SyncDelegate {
         case .didFetchZoneChanges:
             break
         case .didFetchChanges(let context):
-            for sync in registry.all where context.options.scope.contains(sync.zone) {
-                await refetch(sync)
-            }
             if context.reason == .scheduled {
                 for sync in registry.all where context.options.scope.contains(sync.zone) {
                     sync.finish(error: nil, signedOut: isSignedOut)
@@ -286,19 +283,6 @@ actor SyncHub: SyncDelegate {
             guard let sync = registry[zone] ?? openZone(zone) else { continue }
             sync.receive(group)
             registerPending(sync)
-        }
-    }
-
-    /// Fetches whole the records whose partial changes this device couldn't apply. A failure keeps them
-    /// for the next fetch, and the zone shows offline.
-    private func refetch(_ sync: ZoneSync) async {
-        guard let ids = try? sync.refetch(), !ids.isEmpty else { return }
-        do {
-            let changes = try await provider.fetchRecords(ids)
-            sync.refetched(ids, changes: changes)
-            registerPending(sync)
-        } catch {
-            sync.markOffline()
         }
     }
 

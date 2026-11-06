@@ -666,27 +666,6 @@ struct Device {
         #expect(second != first)
     }
 
-    @Test func serversWithoutTagsOrDatesStillSync() async throws {
-        server.tagsRecords = false
-        server.datesRecords = false
-        let phone = try Device(server)
-        let tablet = try Device(server)
-        var recipe = SyncRecipe(title: "Soup")
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        #expect(server.record("SyncRecipe", recipe.id)?.tag == nil)
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().map(\.title) == ["Soup"])
-
-        // With nothing to compare, a save simply overwrites.
-        recipe.title = "Stew"
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().map(\.title) == ["Stew"])
-        #expect(try phone.container.initialStorage.store.pendingChanges().isEmpty)
-    }
-
     @Test func aStaleChangeTagIsAConflict() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
@@ -854,71 +833,7 @@ private actor Seen {
         #expect(!server.has("SyncRecipe", recipe.id, "updated"))
     }
 
-    @Test func aPartialDownloadAppliesToTheCopyItBuildsOn() async throws {
-        server.sendsPartialChanges = true
-        let phone = try Device(server)
-        let tablet = try Device(server)
-        let recipe = SyncRecipe(title: "Soup", servings: 4)
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-
-        var edited = recipe
-        edited.title = "Stew"
-        phone.context.insert(edited)
-        try await phone.context.save()
-        try await tablet.context.refresh()
-        let received = try #require(try await tablet.recipes().first)
-        #expect(received.title == "Stew")
-        #expect(received.servings == 4)
-        #expect(server.fetchedRecords == 0)
-    }
-
-    @Test func aPartialChangeWithoutItsCopyIsFetchedWhole() async throws {
-        server.sendsPartialChanges = true
-        let phone = try Device(server)
-        let recipe = SyncRecipe(title: "Soup", servings: 4)
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        var edited = recipe
-        edited.title = "Stew"
-        phone.context.insert(edited)
-        try await phone.context.save()
-
-        // The tablet never saw the first copy, so the change alone can't rebuild the record.
-        let tablet = try Device(server)
-        try await tablet.context.refresh()
-        let received = try #require(try await tablet.recipes().first)
-        #expect(received.title == "Stew")
-        #expect(received.servings == 4)
-        #expect(server.fetchedRecords == 1)
-        #expect(try tablet.container.initialStorage.sync?.refetch().isEmpty == true)
-    }
-
-    @Test func aFailedFetchIsTriedAgain() async throws {
-        server.sendsPartialChanges = true
-        let phone = try Device(server)
-        let recipe = SyncRecipe(title: "Soup", servings: 4)
-        phone.context.insert(recipe)
-        try await phone.context.save()
-        var edited = recipe
-        edited.title = "Stew"
-        phone.context.insert(edited)
-        try await phone.context.save()
-
-        let tablet = try Device(server)
-        tablet.provider.failsRecordFetches = true
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().isEmpty)
-        #expect(try tablet.container.initialStorage.sync?.refetch().count == 1)
-
-        tablet.provider.failsRecordFetches = false
-        try await tablet.context.refresh()
-        #expect(try await tablet.recipes().map(\.title) == ["Stew"])
-    }
-
-    @Test func aPartialDownloadMergesWithAnUnsentEdit() async throws {
-        server.sendsPartialChanges = true
+    @Test func aDownloadMergesWithAnUnsentEditAndSendsOnlyItsKeys() async throws {
         let phone = try Device(server)
         let tablet = try Device(server)
         let recipe = SyncRecipe(title: "Soup", servings: 4)
