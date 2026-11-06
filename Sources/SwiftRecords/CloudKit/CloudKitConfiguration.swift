@@ -2,7 +2,6 @@
 import CloudKit
 import Foundation
 import os
-@_spi(SyncProvider) import SwiftRecords
 #if os(macOS)
 import Security
 #endif

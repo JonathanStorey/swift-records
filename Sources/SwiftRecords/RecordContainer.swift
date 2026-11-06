@@ -54,21 +54,29 @@ public final class RecordContainer: @unchecked Sendable {
     ///
     /// Registering types creates their tables and applies renames and indexes in each zone as it opens,
     /// rather than the first time code uses each type. Types reached through relationships are registered
-    /// too. A sync provider needs it, because a server's records can arrive before any code has touched their
-    /// type.
+    /// too. Sync needs it, because a server's records can arrive before any code has touched their type.
     ///
-    /// `syncProvider` is the sync engine, `CloudKitSyncProvider`, and the
-    /// container becomes its delegate. It keeps each zone in step with its zone on the server, except
-    /// `.inMemory`, `.localOnly` and any `Zone.local(_:)`, which never sync. It stays fixed for the
-    /// container's life.
+    /// The container stays on the device. To sync with CloudKit, pass `cloudKit:` instead.
     ///
     /// `initialZone` is where the main context starts. It opens with the container, so an error opening it
     /// throws here. Switch zones later with `RecordContext.zone`.
     public convenience init(
         for types: [any Record.Type] = [],
         location: Location = .applicationSupport,
+        initialZone: Zone = .default
+    ) throws {
+        try self.init(
+            for: types, directory: try Self.directory(for: location), inMemory: location == .inMemory,
+            initialZone: initialZone, syncProvider: nil
+        )
+    }
+
+    /// Opens a container whose zones sync through `syncProvider`, for the package's own tests and engines.
+    package convenience init(
+        for types: [any Record.Type] = [],
+        location: Location = .applicationSupport,
         initialZone: Zone = .default,
-        syncProvider: (any SyncProvider)? = nil
+        syncProvider: (any SyncProvider)?
     ) throws {
         try self.init(
             for: types, directory: try Self.directory(for: location), inMemory: location == .inMemory,

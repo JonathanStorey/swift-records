@@ -1,5 +1,5 @@
 import Foundation
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// Checks that edits which only change values skip structural work, so views can keep their caches.

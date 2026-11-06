@@ -1,70 +1,70 @@
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
+import SwiftRecords
 
 /// What a server without a sync engine of its own provides: the requests `CKSyncEngine` makes of CloudKit,
 /// one method each. `PollingSyncEngine` drives a transport and does the rest.
 ///
 /// Throw `SyncFailure` when a whole request fails, such as `.networkUnavailable`. Answer for each record in
 /// the results instead when only some of a batch fails.
-public protocol SyncTransport: Sendable {
+package protocol SyncTransport: Sendable {
     /// Names the server, such as its URL.
-    @_spi(SyncProvider) var identifier: String { get }
+    var identifier: String { get }
 
     /// The databases the server has. The default is `.private` alone.
-    @_spi(SyncProvider) var scopes: Set<Zone.Scope> { get }
+    var scopes: Set<Zone.Scope> { get }
 
     /// A stable ID for the signed-in user, or `nil` when signed out. ≈ `fetchUserRecordID()`.
-    @_spi(SyncProvider) func currentUser() async throws -> String?
+    func currentUser() async throws -> String?
 
     /// Creates and deletes zones. ≈ `CKModifyRecordZonesOperation`. The default reports every change done,
     /// for a server whose zones need no creating.
-    @_spi(SyncProvider) func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges
+    func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges
 
     /// Saves and deletes a batch. ≈ `CKModifyRecordsOperation`. A server that versions records accepts a save
     /// only when its `tag` matches the server's copy, or it is `nil` and the server has no copy, and
     /// otherwise fails it with `.serverRecordChanged` and the server's copy.
-    @_spi(SyncProvider) func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges
+    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges
 
     /// The zones that changed or were deleted since `token`. ≈ `CKFetchDatabaseChangesOperation`.
-    @_spi(SyncProvider) func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges
+    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges
 
     /// A zone's changes since `token`, oldest first, with each record's latest change only.
     /// ≈ `CKFetchRecordZoneChangesOperation`.
-    @_spi(SyncProvider) func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
+    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges
 
     /// The server's whole copy of each record, and a deletion for one it no longer has.
     /// ≈ `CKFetchRecordsOperation`. A transport whose zone changes are ever partial must implement it: the
     /// container asks when it lacks the copy a partial change builds on. The default throws.
-    @_spi(SyncProvider) func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
 
     /// Zones the server says have changed, such as from a push. Each call returns a new stream. `nil`, the
     /// default, means the transport can't tell.
-    @_spi(SyncProvider) func changeNotifications() -> AsyncStream<[Zone]>?
+    func changeNotifications() -> AsyncStream<[Zone]>?
 }
 
-@_spi(SyncProvider) extension SyncTransport {
-    public var scopes: Set<Zone.Scope> { [.private] }
+extension SyncTransport {
+    package var scopes: Set<Zone.Scope> { [.private] }
 
-    public func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges {
+    package func modifyZones(save: [Zone], delete: [Zone]) async throws -> SentZoneChanges {
         SentZoneChanges(saved: save, deleted: delete)
     }
 
-    public func changeNotifications() -> AsyncStream<[Zone]>? { nil }
+    package func changeNotifications() -> AsyncStream<[Zone]>? { nil }
 
-    public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
         throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
     }
 }
 
 /// The zones a database fetch found. ≈ `CKSyncEngine.Event.FetchedDatabaseChanges`.
-@_spi(SyncProvider) public struct DatabaseChanges: Sendable, Hashable {
+package struct DatabaseChanges: Sendable, Hashable {
     /// Zones with changes to fetch.
-    public var modified: [Zone]
-    public var deleted: [ZoneDeletion]
+    package var modified: [Zone]
+    package var deleted: [ZoneDeletion]
     /// Where the next database fetch starts.
-    public var token: Data?
+    package var token: Data?
 
-    public init(modified: [Zone], deleted: [ZoneDeletion] = [], token: Data?) {
+    package init(modified: [Zone], deleted: [ZoneDeletion] = [], token: Data?) {
         self.modified = modified
         self.deleted = deleted
         self.token = token
@@ -72,15 +72,15 @@ public protocol SyncTransport: Sendable {
 }
 
 /// A page of a zone's changes. ≈ `CKSyncEngine.Event.FetchedRecordZoneChanges` with its change token.
-@_spi(SyncProvider) public struct ZoneChanges: Sendable, Hashable {
-    public var saved: [RecordChangeData]
-    public var deleted: [RecordDeletion]
+package struct ZoneChanges: Sendable, Hashable {
+    package var saved: [RecordChangeData]
+    package var deleted: [RecordDeletion]
     /// Where the next fetch of this zone starts.
-    public var token: Data?
+    package var token: Data?
     /// Whether more changes wait after this page.
-    public var moreComing: Bool
+    package var moreComing: Bool
 
-    public init(saved: [RecordChangeData], deleted: [RecordDeletion] = [], token: Data?, moreComing: Bool = false) {
+    package init(saved: [RecordChangeData], deleted: [RecordDeletion] = [], token: Data?, moreComing: Bool = false) {
         self.saved = saved
         self.deleted = deleted
         self.token = token
@@ -99,11 +99,11 @@ public protocol SyncTransport: Sendable {
 ///
 /// With `automaticallySync`, the default, it fetches as it starts and when the transport reports changes,
 /// and sends a moment after changes are added. Without it, it syncs only when asked, for tests.
-public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
-    public let transport: any SyncTransport
-    public let automaticallySync: Bool
+package final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
+    package let transport: any SyncTransport
+    package let automaticallySync: Bool
     /// How long changes wait before an automatic send, so a burst of saves goes together.
-    public let sendDelay: Duration
+    package let sendDelay: Duration
 
     private struct State: Codable {
         /// Whether the engine has checked the account at least once.
@@ -125,7 +125,7 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
     private var scheduledSend: Task<Void, Never>?
     private var listener: Task<Void, Never>?
 
-    public init(transport: any SyncTransport, automaticallySync: Bool = true, sendDelay: Duration = .seconds(1)) {
+    package init(transport: any SyncTransport, automaticallySync: Bool = true, sendDelay: Duration = .seconds(1)) {
         self.transport = transport
         self.automaticallySync = automaticallySync
         self.sendDelay = sendDelay
@@ -136,14 +136,14 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
         listener?.cancel()
     }
 
-    @_spi(SyncProvider) public var identifier: String { transport.identifier }
+    package var identifier: String { transport.identifier }
 
-    @_spi(SyncProvider) public var scopes: Set<Zone.Scope> { transport.scopes }
+    package var scopes: Set<Zone.Scope> { transport.scopes }
 
     /// The transport, when it conforms to `ZoneSharing`.
-    @_spi(SyncProvider) public var sharing: (any ZoneSharing)? { transport as? any ZoneSharing }
+    package var sharing: (any ZoneSharing)? { transport as? any ZoneSharing }
 
-    @_spi(SyncProvider) public func start(_ scope: Zone.Scope, state data: Data?, delegate: any SyncDelegate) async {
+    package func start(_ scope: Zone.Scope, state data: Data?, delegate: any SyncDelegate) async {
         let first = lock.withLock {
             if let data, let decoded = try? JSONDecoder().decode(State.self, from: data) {
                 state = decoded
@@ -171,23 +171,23 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     // MARK: Pending changes
 
-    @_spi(SyncProvider) public func addPending(_ changes: [PendingRecordChange]) {
+    package func addPending(_ changes: [PendingRecordChange]) {
         guard !changes.isEmpty else { return }
         lock.withLock { state.pendingRecords.formUnion(changes) }
         scheduleSend()
     }
 
-    @_spi(SyncProvider) public func removePending(_ changes: [PendingRecordChange]) {
+    package func removePending(_ changes: [PendingRecordChange]) {
         lock.withLock { state.pendingRecords.subtract(changes) }
     }
 
-    @_spi(SyncProvider) public func addPending(_ changes: [PendingZoneChange]) {
+    package func addPending(_ changes: [PendingZoneChange]) {
         guard !changes.isEmpty else { return }
         lock.withLock { state.pendingZones.formUnion(changes) }
         scheduleSend()
     }
 
-    @_spi(SyncProvider) public func removePending(_ changes: [PendingZoneChange]) {
+    package func removePending(_ changes: [PendingZoneChange]) {
         lock.withLock { state.pendingZones.subtract(changes) }
     }
 
@@ -206,19 +206,19 @@ public final class PollingSyncEngine: SyncProvider, @unchecked Sendable {
 
     // MARK: Operations
 
-    @_spi(SyncProvider) public func sendChanges(_ options: SendOptions) async throws {
+    package func sendChanges(_ options: SendOptions) async throws {
         try await send(options, reason: .manual)
     }
 
-    @_spi(SyncProvider) public func fetchChanges(_ options: FetchOptions) async throws {
+    package func fetchChanges(_ options: FetchOptions) async throws {
         try await fetch(options, reason: .manual)
     }
 
-    @_spi(SyncProvider) public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
         try await transport.fetchRecords(records)
     }
 
-    @_spi(SyncProvider) public func cancelOperations() async {
+    package func cancelOperations() async {
         lock.withLock {
             scheduledSend?.cancel()
             scheduledSend = nil

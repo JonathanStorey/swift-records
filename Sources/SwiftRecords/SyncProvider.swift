@@ -6,76 +6,76 @@ import Foundation
 /// records: it tells the engine what is pending, builds each batch the engine asks for, and applies what
 /// the engine reports in `SyncEvent`s. Each requirement names the `CKSyncEngine` API it mirrors, so a
 /// CloudKit provider is a thin wrapper.
-public protocol SyncProvider: AnyObject, Sendable {
+package protocol SyncProvider: AnyObject, Sendable {
     /// Names the server, such as `"cloudkit:iCloud.com.example.app"`. When it differs from the one a zone
     /// last synced with, the container treats the new server as empty and uploads every local record.
-    @_spi(SyncProvider) var identifier: String { get }
+    var identifier: String { get }
 
     /// The databases this provider serves. CloudKit serves `.private` and `.shared`.
-    @_spi(SyncProvider) var scopes: Set<Zone.Scope> { get }
+    var scopes: Set<Zone.Scope> { get }
 
     /// ≈ `CKSyncEngine(_:)`. Called once per scope as the container opens, with the state from the last
     /// `.stateUpdate` for that scope, or `nil` the first time.
-    @_spi(SyncProvider) func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async
 
     /// ≈ `state.add(pendingRecordZoneChanges:)`. Tells the engine these records have changes to send.
-    @_spi(SyncProvider) func addPending(_ changes: [PendingRecordChange])
+    func addPending(_ changes: [PendingRecordChange])
 
     /// ≈ `state.remove(pendingRecordZoneChanges:)`.
-    @_spi(SyncProvider) func removePending(_ changes: [PendingRecordChange])
+    func removePending(_ changes: [PendingRecordChange])
 
     /// ≈ `state.add(pendingDatabaseChanges:)`. Zones to create or delete on the server.
-    @_spi(SyncProvider) func addPending(_ changes: [PendingZoneChange])
+    func addPending(_ changes: [PendingZoneChange])
 
     /// ≈ `state.remove(pendingDatabaseChanges:)`.
-    @_spi(SyncProvider) func removePending(_ changes: [PendingZoneChange])
+    func removePending(_ changes: [PendingZoneChange])
 
     /// ≈ `sendChanges(_:)`. Sends now rather than when the engine would. Throws `SyncFailure` when the
     /// whole send fails, such as `.networkUnavailable`.
-    @_spi(SyncProvider) func sendChanges(_ options: SendOptions) async throws
+    func sendChanges(_ options: SendOptions) async throws
 
     /// ≈ `fetchChanges(_:)`. Fetches now rather than when the engine would.
-    @_spi(SyncProvider) func fetchChanges(_ options: FetchOptions) async throws
+    func fetchChanges(_ options: FetchOptions) async throws
 
     /// ≈ `cancelOperations()`.
-    @_spi(SyncProvider) func cancelOperations() async
+    func cancelOperations() async
 
     /// ≈ `CKFetchRecordsOperation`. The server's whole copy of each record, and a deletion for one it no
     /// longer has. The container asks only after a partial download it can't apply, so an engine that
     /// always delivers whole records, as `CKSyncEngine` does, never needs it.
-    @_spi(SyncProvider) func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
+    func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData]
 
     /// Shares the person's zones with other people and joins zones others share. `nil`, the default, means
     /// the provider can't share.
-    @_spi(SyncProvider) var sharing: (any ZoneSharing)? { get }
+    var sharing: (any ZoneSharing)? { get }
 
     /// Called once as a container opens with this provider, before syncing starts, for a provider that
     /// converts records with the container's help, as `CloudKitSyncProvider` does. Keep it weakly.
-    @_spi(SyncProvider) func attach(_ container: RecordContainer)
+    func attach(_ container: RecordContainer)
 }
 
-@_spi(SyncProvider) extension SyncProvider {
-    public var scopes: Set<Zone.Scope> { [.private] }
+extension SyncProvider {
+    package var scopes: Set<Zone.Scope> { [.private] }
 
-    public var sharing: (any ZoneSharing)? { nil }
+    package var sharing: (any ZoneSharing)? { nil }
 
-    public func attach(_ container: RecordContainer) {}
+    package func attach(_ container: RecordContainer) {}
 
-    public func removePending(_ changes: [PendingRecordChange]) {}
+    package func removePending(_ changes: [PendingRecordChange]) {}
 
-    public func addPending(_ changes: [PendingZoneChange]) {}
+    package func addPending(_ changes: [PendingZoneChange]) {}
 
-    public func removePending(_ changes: [PendingZoneChange]) {}
+    package func removePending(_ changes: [PendingZoneChange]) {}
 
-    public func cancelOperations() async {}
+    package func cancelOperations() async {}
 
-    public func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
+    package func fetchRecords(_ records: [RecordID]) async throws -> [RecordChangeData] {
         throw SyncFailure.other("\(Self.self) sends only whole records, so it can't fetch them one by one")
     }
 }
 
 /// The engine's delegate. The container implements it, and apps never do. ≈ `CKSyncEngineDelegate`.
-@_spi(SyncProvider) public protocol SyncDelegate: AnyObject, Sendable {
+package protocol SyncDelegate: AnyObject, Sendable {
     /// ≈ `handleEvent(_:syncEngine:)`. Events for one engine arrive one at a time, in order.
     func handle(_ event: SyncEvent) async
 
@@ -88,7 +88,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// Something that happened in the engine. ≈ `CKSyncEngine.Event`, one case each.
-@_spi(SyncProvider) public enum SyncEvent: Sendable {
+package enum SyncEvent: Sendable {
     /// The engine's state changed. The container stores it and hands it back to `start`.
     case stateUpdate(Zone.Scope, Data)
     case accountChange(AccountChange)
@@ -105,17 +105,17 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// A record with changes to send. ≈ `CKSyncEngine.PendingRecordZoneChange`.
-@_spi(SyncProvider) public enum PendingRecordChange: Sendable, Hashable, Codable {
+package enum PendingRecordChange: Sendable, Hashable, Codable {
     case save(UUID, Zone)
     case delete(UUID, Zone)
 
-    public var id: UUID {
+    package var id: UUID {
         switch self {
         case .save(let id, _), .delete(let id, _): id
         }
     }
 
-    public var zone: Zone {
+    package var zone: Zone {
         switch self {
         case .save(_, let zone), .delete(_, let zone): zone
         }
@@ -123,11 +123,11 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// A zone to create or delete on the server. ≈ `CKSyncEngine.PendingDatabaseChange`.
-@_spi(SyncProvider) public enum PendingZoneChange: Sendable, Hashable, Codable {
+package enum PendingZoneChange: Sendable, Hashable, Codable {
     case save(Zone)
     case delete(Zone)
 
-    public var zone: Zone {
+    package var zone: Zone {
         switch self {
         case .save(let zone), .delete(let zone): zone
         }
@@ -135,7 +135,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// Which records or zones an operation covers. ≈ `CKSyncEngine.SendChangesOptions.Scope`.
-@_spi(SyncProvider) public enum ChangeScope: Sendable, Hashable {
+package enum ChangeScope: Sendable, Hashable {
     case all
     case zones(Set<Zone>)
     case excludingZones(Set<Zone>)
@@ -144,7 +144,7 @@ public protocol SyncProvider: AnyObject, Sendable {
     case database(Zone.Scope)
 
     /// Whether the scope covers a zone at all.
-    public func contains(_ zone: Zone) -> Bool {
+    package func contains(_ zone: Zone) -> Bool {
         switch self {
         case .all, .records: true
         case .database(let scope): zone.scope == scope
@@ -155,28 +155,28 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// ≈ `CKSyncEngine.SendChangesOptions`.
-@_spi(SyncProvider) public struct SendOptions: Sendable, Hashable {
-    public var scope: ChangeScope
+package struct SendOptions: Sendable, Hashable {
+    package var scope: ChangeScope
 
-    public init(scope: ChangeScope = .all) {
+    package init(scope: ChangeScope = .all) {
         self.scope = scope
     }
 }
 
 /// ≈ `CKSyncEngine.FetchChangesOptions`.
-@_spi(SyncProvider) public struct FetchOptions: Sendable, Hashable {
-    public var scope: ChangeScope
+package struct FetchOptions: Sendable, Hashable {
+    package var scope: ChangeScope
     /// Zones to fetch before the others, such as the one on screen.
-    public var prioritizedZones: [Zone]
+    package var prioritizedZones: [Zone]
 
-    public init(scope: ChangeScope = .all, prioritizedZones: [Zone] = []) {
+    package init(scope: ChangeScope = .all, prioritizedZones: [Zone] = []) {
         self.scope = scope
         self.prioritizedZones = prioritizedZones
     }
 }
 
 /// Why the engine is syncing. ≈ `CKSyncEngine.SyncReason`.
-@_spi(SyncProvider) public enum SyncReason: Sendable, Hashable {
+package enum SyncReason: Sendable, Hashable {
     /// The engine decided to, such as after a push or a change.
     case scheduled
     /// Someone called `sendChanges(_:)` or `fetchChanges(_:)`.
@@ -184,58 +184,58 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// ≈ `CKSyncEngine.SendChangesContext`.
-@_spi(SyncProvider) public struct SendContext: Sendable, Hashable {
-    public let reason: SyncReason
-    public let options: SendOptions
+package struct SendContext: Sendable, Hashable {
+    package let reason: SyncReason
+    package let options: SendOptions
 
-    public init(reason: SyncReason, options: SendOptions) {
+    package init(reason: SyncReason, options: SendOptions) {
         self.reason = reason
         self.options = options
     }
 }
 
 /// ≈ `CKSyncEngine.FetchChangesContext`.
-@_spi(SyncProvider) public struct FetchContext: Sendable, Hashable {
-    public let reason: SyncReason
-    public let options: FetchOptions
+package struct FetchContext: Sendable, Hashable {
+    package let reason: SyncReason
+    package let options: FetchOptions
 
-    public init(reason: SyncReason, options: FetchOptions) {
+    package init(reason: SyncReason, options: FetchOptions) {
         self.reason = reason
         self.options = options
     }
 }
 
 /// Changes to send in one request. ≈ `CKSyncEngine.RecordZoneChangeBatch`.
-@_spi(SyncProvider) public struct RecordBatch: Sendable, Hashable {
-    public var saves: [RecordChangeData]
-    public var deletes: [RecordDeletion]
+package struct RecordBatch: Sendable, Hashable {
+    package var saves: [RecordChangeData]
+    package var deletes: [RecordDeletion]
     /// Whether all of a zone's changes in the batch succeed or fail together. The container sends `false`,
     /// so one conflict fails only its own record.
-    public var atomicByZone: Bool
+    package var atomicByZone: Bool
 
-    public init(saves: [RecordChangeData] = [], deletes: [RecordDeletion] = [], atomicByZone: Bool = false) {
+    package init(saves: [RecordChangeData] = [], deletes: [RecordDeletion] = [], atomicByZone: Bool = false) {
         self.saves = saves
         self.deletes = deletes
         self.atomicByZone = atomicByZone
     }
 
-    public var isEmpty: Bool { saves.isEmpty && deletes.isEmpty }
+    package var isEmpty: Bool { saves.isEmpty && deletes.isEmpty }
 
     /// Every change in the batch, saves first, as a server that takes one list would want them.
-    public var changes: [RecordChangeData] {
+    package var changes: [RecordChangeData] {
         saves + deletes.map { RecordChangeData(id: $0.id, zone: $0.zone, type: $0.type, fields: nil, tag: $0.tag) }
     }
 }
 
 /// A record deleted, or to delete. ≈ a `CKRecord.ID` with its record type.
-@_spi(SyncProvider) public struct RecordDeletion: Sendable, Hashable, Codable {
-    public let id: UUID
-    public let zone: Zone
-    public let type: String
+package struct RecordDeletion: Sendable, Hashable, Codable {
+    package let id: UUID
+    package let zone: Zone
+    package let type: String
     /// The tag of the copy the deletion is based on, for a server that checks it. CloudKit doesn't.
-    public var tag: Data?
+    package var tag: Data?
 
-    public init(id: UUID, zone: Zone, type: String, tag: Data? = nil) {
+    package init(id: UUID, zone: Zone, type: String, tag: Data? = nil) {
         self.id = id
         self.zone = zone
         self.type = type
@@ -244,15 +244,15 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// What happened to a batch. ≈ `CKSyncEngine.Event.SentRecordZoneChanges`.
-@_spi(SyncProvider) public struct SentRecordChanges: Sendable, Hashable {
+package struct SentRecordChanges: Sendable, Hashable {
     /// The server's copies of the saved records, with their new tags and save times. Their fields may be
     /// left out.
-    public var saved: [RecordChangeData]
-    public var failed: [FailedSave]
-    public var deleted: [RecordDeletion]
-    public var failedDeletes: [FailedDelete]
+    package var saved: [RecordChangeData]
+    package var failed: [FailedSave]
+    package var deleted: [RecordDeletion]
+    package var failedDeletes: [FailedDelete]
 
-    public init(saved: [RecordChangeData] = [], failed: [FailedSave] = [], deleted: [RecordDeletion] = [], failedDeletes: [FailedDelete] = []) {
+    package init(saved: [RecordChangeData] = [], failed: [FailedSave] = [], deleted: [RecordDeletion] = [], failedDeletes: [FailedDelete] = []) {
         self.saved = saved
         self.failed = failed
         self.deleted = deleted
@@ -261,12 +261,12 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// What happened to zone changes. ≈ `CKSyncEngine.Event.SentDatabaseChanges`.
-@_spi(SyncProvider) public struct SentZoneChanges: Sendable, Hashable {
-    public var saved: [Zone]
-    public var failed: [FailedZoneChange]
-    public var deleted: [Zone]
+package struct SentZoneChanges: Sendable, Hashable {
+    package var saved: [Zone]
+    package var failed: [FailedZoneChange]
+    package var deleted: [Zone]
 
-    public init(saved: [Zone] = [], failed: [FailedZoneChange] = [], deleted: [Zone] = []) {
+    package init(saved: [Zone] = [], failed: [FailedZoneChange] = [], deleted: [Zone] = []) {
         self.saved = saved
         self.failed = failed
         self.deleted = deleted
@@ -274,38 +274,38 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// ≈ `CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave`.
-@_spi(SyncProvider) public struct FailedSave: Sendable, Hashable {
-    public let change: RecordChangeData
-    public let failure: SyncFailure
+package struct FailedSave: Sendable, Hashable {
+    package let change: RecordChangeData
+    package let failure: SyncFailure
 
-    public init(change: RecordChangeData, failure: SyncFailure) {
+    package init(change: RecordChangeData, failure: SyncFailure) {
         self.change = change
         self.failure = failure
     }
 }
 
-@_spi(SyncProvider) public struct FailedDelete: Sendable, Hashable {
-    public let deletion: RecordDeletion
-    public let failure: SyncFailure
+package struct FailedDelete: Sendable, Hashable {
+    package let deletion: RecordDeletion
+    package let failure: SyncFailure
 
-    public init(deletion: RecordDeletion, failure: SyncFailure) {
+    package init(deletion: RecordDeletion, failure: SyncFailure) {
         self.deletion = deletion
         self.failure = failure
     }
 }
 
-@_spi(SyncProvider) public struct FailedZoneChange: Sendable, Hashable {
-    public let zone: Zone
-    public let failure: SyncFailure
+package struct FailedZoneChange: Sendable, Hashable {
+    package let zone: Zone
+    package let failure: SyncFailure
 
-    public init(zone: Zone, failure: SyncFailure) {
+    package init(zone: Zone, failure: SyncFailure) {
         self.zone = zone
         self.failure = failure
     }
 }
 
 /// ≈ `CKSyncEngine.Event.AccountChange.ChangeType`, with user IDs as text.
-@_spi(SyncProvider) public enum AccountChange: Sendable, Hashable {
+package enum AccountChange: Sendable, Hashable {
     /// Someone signed in, or the engine learned who is signed in for the first time.
     case signIn(user: String)
     /// The person signed out. `nil` when the engine never knew anyone, as on a device that was never signed in.
@@ -314,8 +314,8 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// A zone the server no longer has. ≈ `CKSyncEngine.Event.FetchedDatabaseChanges.Deletion`.
-@_spi(SyncProvider) public struct ZoneDeletion: Sendable, Hashable {
-    public enum Reason: Sendable, Hashable {
+package struct ZoneDeletion: Sendable, Hashable {
+    package enum Reason: Sendable, Hashable {
         /// Deleted, such as by the app on another device. Local data goes too.
         case deleted
         /// The person deleted the app's data, such as in Settings. Local data goes too.
@@ -324,17 +324,17 @@ public protocol SyncProvider: AnyObject, Sendable {
         case encryptedDataReset
     }
 
-    public let zone: Zone
-    public let reason: Reason
+    package let zone: Zone
+    package let reason: Reason
 
-    public init(zone: Zone, reason: Reason) {
+    package init(zone: Zone, reason: Reason) {
         self.zone = zone
         self.reason = reason
     }
 }
 
 /// Why a change, or a whole operation, failed. ≈ the `CKError` codes sync has to act on.
-@_spi(SyncProvider) public enum SyncFailure: Error, Sendable, Hashable {
+package enum SyncFailure: Error, Sendable, Hashable {
     /// The server holds a newer copy, which the container merges and sends again.
     case serverRecordChanged(RecordChangeData)
     /// The record is gone from the server.
@@ -370,37 +370,37 @@ public protocol SyncProvider: AnyObject, Sendable {
 /// On a download, a server may send only what changed since the copy at `baseTag`: `changedKeys` names the
 /// fields `fields` carries, and `clearedKeys` the ones that became `nil`. The container applies it only to
 /// that exact copy, and otherwise asks the provider for the whole record with `fetchRecords(_:)`.
-@_spi(SyncProvider) public struct RecordChangeData: Sendable, Hashable {
-    public var id: UUID
-    public var zone: Zone
+package struct RecordChangeData: Sendable, Hashable {
+    package var id: UUID
+    package var zone: Zone
     /// The stored type name, such as `"Recipe"`.
-    public var type: String
+    package var type: String
     /// The record's values, or `nil` for a deletion. For a partial download, only the changed fields.
-    public var fields: [String: RecordValue]?
+    package var fields: [String: RecordValue]?
     /// The server's data for the copy this change is based on, which only the provider reads: a CloudKit
     /// record's archived system fields, a version number, a hash. `nil` for a copy the server never had,
     /// and always `nil` for a server that doesn't version records.
-    public var tag: Data?
+    package var tag: Data?
     /// When the server saved this copy, if it says. The container stores it as `@Timestamped(.synced)` and
     /// never relies on it.
-    public var synced: Date?
+    package var synced: Date?
     /// The fields set since the copy the change builds on. `nil`: the change is the whole record.
-    public var changedKeys: Set<String>?
+    package var changedKeys: Set<String>?
     /// The fields set to `nil` since the copy the change builds on.
-    public var clearedKeys: Set<String>
+    package var clearedKeys: Set<String>
     /// For a partial download: the tag of the copy it builds on.
-    public var baseTag: Data?
+    package var baseTag: Data?
     /// The files behind this change's `.asset` values, by asset ID. A record and its files travel together,
     /// as CloudKit's `CKAsset`s do: an upload names every file this device has, and a download names the
     /// files that came with it, which the container copies in before the event that carried them ends.
     /// Never encoded.
-    public var assetFiles: [String: URL]
+    package var assetFiles: [String: URL]
     /// The fields of `@Encrypted` properties, which a server that can stores end-to-end encrypted, as
     /// CloudKit does in `encryptedValues`. Set on uploads. A download needs none, since the container knows
     /// its own schema.
-    public var encryptedKeys: Set<String>
+    package var encryptedKeys: Set<String>
 
-    public init(
+    package init(
         id: UUID, zone: Zone, type: String, fields: [String: RecordValue]?, tag: Data? = nil, synced: Date? = nil,
         changedKeys: Set<String>? = nil, clearedKeys: Set<String> = [], baseTag: Data? = nil, assetFiles: [String: URL] = [:],
         encryptedKeys: Set<String> = []
@@ -418,24 +418,24 @@ public protocol SyncProvider: AnyObject, Sendable {
         self.encryptedKeys = encryptedKeys
     }
 
-    public var isDeletion: Bool { fields == nil }
+    package var isDeletion: Bool { fields == nil }
 
     /// Whether this is a download of only the fields that changed since `baseTag`, which needs that copy.
-    public var isPartial: Bool { !isDeletion && changedKeys != nil && baseTag != nil }
+    package var isPartial: Bool { !isDeletion && changedKeys != nil && baseTag != nil }
 
     /// The fields an upload sends: only the changed ones, or every one for a whole-record change.
-    public var sentFields: [String: RecordValue]? {
+    package var sentFields: [String: RecordValue]? {
         guard let fields, let changedKeys else { return fields }
         return fields.filter { changedKeys.contains($0.key) }
     }
 }
 
-@_spi(SyncProvider) extension RecordChangeData: Codable {
+extension RecordChangeData: Codable {
     private enum CodingKeys: String, CodingKey {
         case id, zone, type, fields, tag, synced, changedKeys, clearedKeys, baseTag
     }
 
-    public init(from decoder: any Decoder) throws {
+    package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             id: try container.decode(UUID.self, forKey: .id),
@@ -450,7 +450,7 @@ public protocol SyncProvider: AnyObject, Sendable {
         )
     }
 
-    public func encode(to encoder: any Encoder) throws {
+    package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(zone, forKey: .zone)
@@ -467,12 +467,12 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// A record on the server, by its ID, zone and type. ≈ `CKRecord.ID`, with the type for servers that file by it.
-@_spi(SyncProvider) public struct RecordID: Sendable, Hashable, Codable {
-    public let id: UUID
-    public let zone: Zone
-    public let type: String
+package struct RecordID: Sendable, Hashable, Codable {
+    package let id: UUID
+    package let zone: Zone
+    package let type: String
 
-    public init(id: UUID, zone: Zone, type: String) {
+    package init(id: UUID, zone: Zone, type: String) {
         self.id = id
         self.zone = zone
         self.type = type
@@ -480,7 +480,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 }
 
 /// A field's value as CloudKit holds it, one case for each kind of `CKRecordValue` a record uses.
-@_spi(SyncProvider) public enum RecordValue: Sendable, Hashable {
+package enum RecordValue: Sendable, Hashable {
     case string(String)
     /// Any integer, and a `Bool` as 0 or 1.
     case int(Int64)
@@ -498,13 +498,13 @@ public protocol SyncProvider: AnyObject, Sendable {
     case asset(String)
 }
 
-@_spi(SyncProvider) extension RecordValue: Codable {
+extension RecordValue: Codable {
     // A single key names the kind, so a value written to a file reads plainly: {"string":"Soup"}.
     private enum CodingKeys: String, CodingKey {
         case string, int, double, date, bytes, strings, ints, doubles, dates, reference, action, asset
     }
 
-    public init(from decoder: any Decoder) throws {
+    package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         guard let key = container.allKeys.first(where: { $0 != .action }) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "No value"))
@@ -527,7 +527,7 @@ public protocol SyncProvider: AnyObject, Sendable {
         }
     }
 
-    public func encode(to encoder: any Encoder) throws {
+    package func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .string(let value): try container.encode(value, forKey: .string)
@@ -555,7 +555,7 @@ public protocol SyncProvider: AnyObject, Sendable {
 /// The owner shares one of their private zones and sends the invitation's URL. Each participant who
 /// accepts it sees the zone in their `.shared` database, as `Zone(name, sharedBy: owner)`, and syncs it like
 /// their own. A provider that shares must serve the `.shared` scope.
-public protocol ZoneSharing: AnyObject, Sendable {
+package protocol ZoneSharing: AnyObject, Sendable {
     /// Shares one of the person's private zones, or returns the share it already has. The zone and its
     /// records are on the server before this is called.
     func share(_ zone: Zone) async throws -> ZoneShare

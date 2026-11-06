@@ -1,5 +1,5 @@
 import Foundation
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// Records as they cross to a server: plain values and a reference from each child to its parent. A
@@ -86,7 +86,6 @@ import Testing
 
 #if canImport(CloudKit)
 import CloudKit
-@testable import SwiftRecordsCloudKit
 
 @MainActor
 @Suite struct CKRecordTests {
@@ -276,6 +275,23 @@ import CloudKit
         #expect(isNotConfigured(CloudKitConfiguration.problem(for: CKError(.missingEntitlement), container: id)))
         #expect(isNotConfigured(CloudKitConfiguration.problem(for: CKError(.badContainer), container: id)))
         #expect(CloudKitConfiguration.problem(for: CKError(.networkUnavailable), container: id) == nil)
+    }
+}
+/// The public way to turn on CloudKit sync, and its defaults.
+@Suite struct CloudKitOptionsTests {
+    @Test func defaultsSyncBothDatabasesOnTheirOwn() {
+        let options = CloudKitOptions.container("iCloud.com.example.app")
+        #expect(options.containerIdentifier == "iCloud.com.example.app")
+        #expect(options.syncsSharedDatabase)
+        #expect(options.automaticallySync)
+        #expect(options.linkPermission == .none)
+        #expect(CloudKitOptions.default.containerIdentifier == nil)
+    }
+
+    @Test func aContainerWithoutCloudKitStaysLocal() throws {
+        let container = try RecordContainer(location: .inMemory, cloudKit: nil)
+        #expect(container.ckContainer == nil)
+        #expect(container.syncHub == nil)
     }
 }
 #endif

@@ -1,7 +1,6 @@
 #if canImport(CloudKit)
 import CloudKit
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
 
 /// Syncs with CloudKit through `CKSyncEngine`: the first-class provider.
 ///
@@ -21,12 +20,12 @@ import Foundation
 /// `.failed(.syncNotConfigured(problem:fix:))`, and a missing background mode logs a warning. A field-level change sets only its changed keys on the `CKRecord`, built on
 /// the server copy's system fields, so an unchanged asset or long field never uploads again. Asset files
 /// travel inside their records as `CKAsset`s and land as the records do, with no separate transfer.
-public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
-    public let ckContainer: CKContainer
-    public let scopes: Set<Zone.Scope>
+final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
+    let ckContainer: CKContainer
+    let scopes: Set<Zone.Scope>
     /// What someone who opens a share's link may do without being invited. `.none` admits only the people
     /// invited through the system's sharing interface.
-    public let linkPermission: CKShare.ParticipantPermission
+    let linkPermission: CKShare.ParticipantPermission
     private let automaticallySync: Bool
 
     private let lock = NSLock()
@@ -49,7 +48,7 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
     ///   - linkPermission: What anyone with a share's link may do: `.none` to admit only invited people,
     ///     `.readOnly` or `.readWrite` to let the link alone admit them.
     ///   - automaticallySync: Whether the engines send and fetch on their own. Turn it off in tests.
-    public init(
+    init(
         container: CKContainer = .default(), sharedDatabase: Bool = true, linkPermission: CKShare.ParticipantPermission = .none,
         automaticallySync: Bool = true
     ) {
@@ -64,18 +63,18 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    public var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
+    var identifier: String { "cloudkit:\(ckContainer.containerIdentifier ?? "default")" }
 
     /// Shares zones with zone-wide `CKShare`s when the shared database syncs.
-    public var sharing: (any ZoneSharing)? { scopes.contains(.shared) ? self : nil }
+    var sharing: (any ZoneSharing)? { scopes.contains(.shared) ? self : nil }
 
-    public func attach(_ container: RecordContainer) {
+    func attach(_ container: RecordContainer) {
         lock.withLock { self.container = container }
     }
 
     // MARK: SyncProvider
 
-    @_spi(SyncProvider) public func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
+    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
         lock.withLock { self.delegate = delegate }
         guard await checkConfiguration(firstScope: scope == .private) else { return }
         let serialization = state.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
@@ -89,7 +88,7 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    @_spi(SyncProvider) public func addPending(_ changes: [PendingRecordChange]) {
+    func addPending(_ changes: [PendingRecordChange]) {
         // A private zone exists on the server only once created, so each one is created before its records.
         let newZones = lock.withLock {
             let zones = Set(changes.map(\.zone)).filter { $0.scope == .private && !createdZones.contains($0) }
@@ -104,26 +103,26 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    @_spi(SyncProvider) public func removePending(_ changes: [PendingRecordChange]) {
+    func removePending(_ changes: [PendingRecordChange]) {
         for (scope, group) in Dictionary(grouping: changes, by: \.zone.scope) {
             engine(scope)?.state.remove(pendingRecordZoneChanges: group.map(Self.pendingChange))
         }
     }
 
-    @_spi(SyncProvider) public func addPending(_ changes: [PendingZoneChange]) {
+    func addPending(_ changes: [PendingZoneChange]) {
         // Only the owner creates or deletes a zone, so the shared database takes none.
         let changes = changes.filter { $0.zone.scope == .private }
         guard !changes.isEmpty else { return }
         engine(.private)?.state.add(pendingDatabaseChanges: changes.map(Self.databaseChange))
     }
 
-    @_spi(SyncProvider) public func removePending(_ changes: [PendingZoneChange]) {
+    func removePending(_ changes: [PendingZoneChange]) {
         let changes = changes.filter { $0.zone.scope == .private }
         guard !changes.isEmpty else { return }
         engine(.private)?.state.remove(pendingDatabaseChanges: changes.map(Self.databaseChange))
     }
 
-    @_spi(SyncProvider) public func sendChanges(_ options: SendOptions) async throws {
+    func sendChanges(_ options: SendOptions) async throws {
         try throwIfNotConfigured()
         for (scope, engine) in allEngines {
             guard let ckOptions = Self.sendOptions(options, scope: scope) else { continue }
@@ -135,7 +134,7 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    @_spi(SyncProvider) public func fetchChanges(_ options: FetchOptions) async throws {
+    func fetchChanges(_ options: FetchOptions) async throws {
         try throwIfNotConfigured()
         lock.withLock { manualFetches += 1 }
         defer { lock.withLock { manualFetches -= 1 } }
@@ -150,7 +149,7 @@ public final class CloudKitSyncProvider: SyncProvider, @unchecked Sendable {
         }
     }
 
-    public func cancelOperations() async {
+    func cancelOperations() async {
         for (_, engine) in allEngines {
             await engine.cancelOperations()
         }

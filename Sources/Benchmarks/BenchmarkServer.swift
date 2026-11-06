@@ -1,6 +1,6 @@
 import Foundation
-@_spi(SyncProvider) import SwiftRecords
-@_spi(SyncProvider) import SyncTestSupport
+import SwiftRecords
+import SyncTestSupport
 
 /// A sync server in memory, so sync timings measure the local database rather than a network or files.
 /// Each upload and download costs a dictionary lookup per record.

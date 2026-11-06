@@ -1,5 +1,5 @@
 import Foundation
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// What `@Records` shows before the context saves.

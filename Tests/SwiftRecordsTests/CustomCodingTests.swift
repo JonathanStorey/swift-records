@@ -1,6 +1,6 @@
 import Foundation
 import Identification
-@_spi(SyncProvider) @testable import SwiftRecords
+@testable import SwiftRecords
 import Testing
 
 /// A record whose own Codable groups properties into nested containers.
