@@ -57,7 +57,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// too. A sync provider needs it, because a server's records can arrive before any code has touched their
     /// type.
     ///
-    /// `syncProvider` is the sync engine, such as `CloudKitSyncProvider` or a `PollingSyncEngine`, and the
+    /// `syncProvider` is the sync engine, `CloudKitSyncProvider`, and the
     /// container becomes its delegate. It keeps each zone in step with its zone on the server, except
     /// `.inMemory`, `.localOnly` and any `Zone.local(_:)`, which never sync. It stays fixed for the
     /// container's life.

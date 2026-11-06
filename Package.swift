@@ -8,7 +8,6 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
-        .library(name: "SwiftRecordsFileSync", targets: ["SwiftRecordsFileSync"]),
         .library(name: "SwiftRecordsCloudKit", targets: ["SwiftRecordsCloudKit"]),
     ],
     dependencies: [
@@ -38,9 +37,9 @@ let package = Package(
                 .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ]
         ),
-        // Syncs through a shared folder, such as iCloud Drive, using only the public `SyncProvider` API.
+        // A sync engine over an in-memory server, for the tests and benchmarks. Not a product.
         .target(
-            name: "SwiftRecordsFileSync",
+            name: "SyncTestSupport",
             dependencies: ["SwiftRecords"]
         ),
         // Syncs with CloudKit through `CKSyncEngine`, the first-class provider. Empty off Apple platforms.
@@ -51,12 +50,12 @@ let package = Package(
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["SwiftRecords", .product(name: "Identification", package: "swift-identification")]
+            dependencies: ["SwiftRecords", "SyncTestSupport", .product(name: "Identification", package: "swift-identification")]
         ),
         .testTarget(
             name: "SwiftRecordsTests",
             dependencies: [
-                "SwiftRecords", "SwiftRecordsFileSync", "SwiftRecordsCloudKit",
+                "SwiftRecords", "SyncTestSupport", "SwiftRecordsCloudKit",
                 .product(name: "Identification", package: "swift-identification"),
             ]
         ),
