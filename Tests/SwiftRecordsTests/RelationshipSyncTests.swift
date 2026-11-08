@@ -1,6 +1,7 @@
 import Foundation
 import Identification
 @testable import SwiftRecords
+import SyncTestSupport
 import Testing
 
 /// Relationships across devices, where each side may hold an older copy or see records in any order.

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import SwiftRecords
+import SyncTestSupport
 
 /// Keeps the lines both sides added to a text file since the base, ours first. Without a base it says so,
 /// so a test can tell a three-way merge from a two-way one.
