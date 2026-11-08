@@ -946,8 +946,9 @@ to refuse saves as CloudKit does when iCloud storage is full. Crate's `CrateSync
 
 The package's own sync scenarios, such as edits to different properties on two devices both surviving, are
 written once in `Sources/SyncScenarios`. The tests run them on the in-memory server, and the Mac app in
-[`LiveTests`](LiveTests) runs the same ones on real CloudKit from Terminal, along with account checks and
-benchmarks. Its README covers setup and a checklist for what only real devices can show.
+[`LiveTests`](LiveTests) runs the same ones on real CloudKit, along with account checks and benchmarks,
+in a window or from Terminal. Open `SwiftRecords.xcworkspace` to work on the package, the live app and
+Crate together. The live app's README covers setup and a checklist for what only real devices can show.
 
 ## Benchmarks
 

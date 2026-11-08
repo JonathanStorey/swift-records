@@ -34,9 +34,10 @@ jobs:
             xcodebuild build -project Crate.xcodeproj -scheme Crate -destination "$destination" \
               -skipMacroValidation -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO -quiet
           done
-      - name: Build the live test app
+      - name: Build the live test app through the workspace
         run: |
-          xcodebuild build -project LiveTests/SwiftRecordsLive.xcodeproj -scheme SwiftRecordsLive \
+          xcodebuild -list -workspace SwiftRecords.xcworkspace
+          xcodebuild build -workspace SwiftRecords.xcworkspace -scheme SwiftRecordsLive \
             -destination 'generic/platform=macOS' -skipMacroValidation -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO -quiet
 

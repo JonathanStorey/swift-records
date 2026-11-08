@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		5EC0DE000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000002 /* main.swift */; };
+		5EC0DE000000000000000068 /* LiveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000069 /* LiveApp.swift */; };
+		5EC0DE000000000000000066 /* LiveRun.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000067 /* LiveRun.swift */; };
+		5EC0DE000000000000000064 /* CommandLineRun.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000065 /* CommandLineRun.swift */; };
 		5EC0DE000000000000000003 /* CloudKitBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000004 /* CloudKitBackend.swift */; };
 		5EC0DE000000000000000005 /* AccountChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000006 /* AccountChecks.swift */; };
 		5EC0DE000000000000000007 /* SyncBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000008 /* SyncBackend.swift */; };
@@ -19,6 +22,9 @@
 
 /* Begin PBXFileReference section */
 		5EC0DE000000000000000002 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000069 /* LiveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveApp.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000067 /* LiveRun.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveRun.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000065 /* CommandLineRun.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineRun.swift; sourceTree = "<group>"; };
 		5EC0DE000000000000000004 /* CloudKitBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitBackend.swift; sourceTree = "<group>"; };
 		5EC0DE000000000000000006 /* AccountChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountChecks.swift; sourceTree = "<group>"; };
 		5EC0DE000000000000000008 /* SyncBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncBackend.swift; sourceTree = "<group>"; };
@@ -64,6 +70,9 @@
 			isa = PBXGroup;
 			children = (
 				5EC0DE000000000000000002 /* main.swift */,
+				5EC0DE000000000000000069 /* LiveApp.swift */,
+				5EC0DE000000000000000067 /* LiveRun.swift */,
+				5EC0DE000000000000000065 /* CommandLineRun.swift */,
 				5EC0DE000000000000000004 /* CloudKitBackend.swift */,
 				5EC0DE000000000000000006 /* AccountChecks.swift */,
 				5EC0DE000000000000000011 /* SwiftRecordsLive.entitlements */,
@@ -147,6 +156,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				5EC0DE000000000000000001 /* main.swift in Sources */,
+				5EC0DE000000000000000068 /* LiveApp.swift in Sources */,
+				5EC0DE000000000000000066 /* LiveRun.swift in Sources */,
+				5EC0DE000000000000000064 /* CommandLineRun.swift in Sources */,
 				5EC0DE000000000000000003 /* CloudKitBackend.swift in Sources */,
 				5EC0DE000000000000000005 /* AccountChecks.swift in Sources */,
 				5EC0DE000000000000000007 /* SyncBackend.swift in Sources */,
@@ -204,7 +216,6 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = SwiftRecordsLive;
-				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -222,7 +233,6 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = SwiftRecordsLive;
-				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";

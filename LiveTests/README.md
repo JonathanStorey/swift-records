@@ -1,31 +1,48 @@
 # Live tests
 
-A small Mac app that runs SwiftRecords' sync scenarios and benchmarks against real CloudKit, from
-Terminal. The scenarios are the same ones the package's tests run on the in-memory server
-(`Sources/SyncScenarios`), so the two can't drift apart. It needs an app, not `swift test`, because only a
-signed app with the iCloud entitlement can reach CloudKit.
+A small Mac app that runs SwiftRecords' sync scenarios and benchmarks against real CloudKit. The scenarios
+are the same ones the package's tests run on the in-memory server (`Sources/SyncScenarios`), so the two
+can't drift apart. It needs an app, not `swift test`, because only a signed app with the iCloud entitlement
+can reach CloudKit.
+
+Open `SwiftRecords.xcworkspace` at the repository root. It holds the package, this app and Crate, so the
+whole of SwiftRecords is there to read, edit and set breakpoints in while the app runs.
 
 ## Setup, once
 
-1. Sign in to iCloud on the Mac, in System Settings.
-2. Put your team ID in `Signing.xcconfig`, and change the bundle ID if you like. The app's iCloud
-   container is `iCloud.<bundle ID>`, apart from your apps' own data. You can find the team ID under
-   Membership in your Apple developer account, or in Xcode's Signing & Capabilities.
-3. Run `./run.sh account`. The first build registers the app and creates its container, which can take a
-   minute to become usable. If the container check fails, open `SwiftRecordsLive.xcodeproj`, select the
-   target, and check that Signing & Capabilities shows the iCloud container ticked.
+1. Sign in to iCloud on the Mac, and add your Apple ID in Xcode under Settings, Accounts.
+2. In `LiveTests/Signing.xcconfig`, set your team ID and change the bundle ID to your own prefix, such as
+   `com.yourname.SwiftRecordsLive`. Apple won't register one that starts with `com.example`. The app's
+   iCloud container is `iCloud.<bundle ID>`, apart from your apps' own data. Your team ID is under
+   Membership in your Apple developer account.
+3. Select the SwiftRecordsLive target, open Signing & Capabilities, and check that iCloud shows the
+   container ticked. If it shows red, press the refresh button, or + to add `iCloud.<bundle ID>`. A new
+   container can take a minute to become usable.
+4. If Xcode asks to trust the SwiftRecords macros, choose Trust & Enable.
 
 ## Running
 
+**In Xcode.** Choose the SwiftRecordsLive scheme and My Mac, and press Run (⌘R). The window checks the
+account, then lists every scenario with a Run button, and Run All runs them in order. Each row shows
+waiting, running, ✔ or ✘, with its time and, for a failure, the check that didn't hold. To debug one, set a
+breakpoint anywhere in SwiftRecords, such as in `SyncHub`, and press that row's Run button.
+
+**In Terminal.** `run.sh` builds the app and runs it without a window, printing the same results:
+
 ```
-./run.sh                    # account checks, then every scenario
+./run.sh scenarios          # account checks, then every scenario
 ./run.sh scenarios edit     # only scenarios whose name contains "edit"
 ./run.sh benchmarks 200     # the benchmarks with 200 records (100 by default)
 ./run.sh all                # checks, scenarios and benchmarks
 ./run.sh list               # the scenario names
 ```
 
-Each run prints one line per check, a ✔ or ✘ with the time it took, and exits 0 when everything passed.
+It exits 0 when everything passed, 1 when something failed, and 2 when CloudKit can't be reached.
+
+**Without CloudKit.** The package's own scheme (named SwiftRecords or swift-records-Package, depending on
+the Xcode version) runs the same scenarios on the in-memory server with Test (⌘U),
+along with the rest of the package's tests, with no account.
+
 Everything runs in CloudKit's development environment, never production. Each scenario works in a zone of
 its own, named `swiftrecords-live-…`, and deletes it afterwards. A run also deletes any such zones a
 crashed run left behind.
