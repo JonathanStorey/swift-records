@@ -1,6 +1,7 @@
 import Foundation
 import Identification
 @testable import SwiftRecords
+import SyncTestSupport
 import Testing
 
 /// CloudKit refuses a record whose `.deleteSelf` reference names a record it doesn't have, so parents go

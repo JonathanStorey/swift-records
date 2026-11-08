@@ -1,5 +1,6 @@
 import Foundation
 @testable import SwiftRecords
+import SyncTestSupport
 import Testing
 
 @Record

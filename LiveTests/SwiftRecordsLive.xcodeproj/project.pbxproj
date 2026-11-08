@@ -1,0 +1,271 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5EC0DE000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000002 /* main.swift */; };
+		5EC0DE000000000000000003 /* CloudKitBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000004 /* CloudKitBackend.swift */; };
+		5EC0DE000000000000000005 /* AccountChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000006 /* AccountChecks.swift */; };
+		5EC0DE000000000000000007 /* SyncBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE000000000000000008 /* SyncBackend.swift */; };
+		5EC0DE000000000000000009 /* ScenarioModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE00000000000000000A /* ScenarioModels.swift */; };
+		5EC0DE00000000000000000B /* SyncScenarios.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE00000000000000000C /* SyncScenarios.swift */; };
+		5EC0DE00000000000000000D /* SyncBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC0DE00000000000000000E /* SyncBenchmarks.swift */; };
+		5EC0DE00000000000000000F /* SwiftRecords in Frameworks */ = {isa = PBXBuildFile; productRef = 5EC0DE000000000000000010 /* SwiftRecords */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		5EC0DE000000000000000002 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000004 /* CloudKitBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitBackend.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000006 /* AccountChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountChecks.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000008 /* SyncBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncBackend.swift; sourceTree = "<group>"; };
+		5EC0DE00000000000000000A /* ScenarioModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioModels.swift; sourceTree = "<group>"; };
+		5EC0DE00000000000000000C /* SyncScenarios.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncScenarios.swift; sourceTree = "<group>"; };
+		5EC0DE00000000000000000E /* SyncBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncBenchmarks.swift; sourceTree = "<group>"; };
+		5EC0DE000000000000000011 /* SwiftRecordsLive.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SwiftRecordsLive.entitlements; sourceTree = "<group>"; };
+		5EC0DE000000000000000012 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		5EC0DE000000000000000013 /* SwiftRecordsLive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftRecordsLive.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5EC0DE000000000000000014 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5EC0DE00000000000000000F /* SwiftRecords in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5EC0DE000000000000000015 = {
+			isa = PBXGroup;
+			children = (
+				5EC0DE000000000000000012 /* Signing.xcconfig */,
+				5EC0DE000000000000000016 /* SwiftRecordsLive */,
+				5EC0DE000000000000000017 /* SyncScenarios */,
+				5EC0DE000000000000000018 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5EC0DE000000000000000018 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5EC0DE000000000000000013 /* SwiftRecordsLive.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5EC0DE000000000000000016 /* SwiftRecordsLive */ = {
+			isa = PBXGroup;
+			children = (
+				5EC0DE000000000000000002 /* main.swift */,
+				5EC0DE000000000000000004 /* CloudKitBackend.swift */,
+				5EC0DE000000000000000006 /* AccountChecks.swift */,
+				5EC0DE000000000000000011 /* SwiftRecordsLive.entitlements */,
+			);
+			path = SwiftRecordsLive;
+			sourceTree = "<group>";
+		};
+		5EC0DE000000000000000017 /* SyncScenarios */ = {
+			isa = PBXGroup;
+			children = (
+				5EC0DE000000000000000008 /* SyncBackend.swift */,
+				5EC0DE00000000000000000A /* ScenarioModels.swift */,
+				5EC0DE00000000000000000C /* SyncScenarios.swift */,
+				5EC0DE00000000000000000E /* SyncBenchmarks.swift */,
+			);
+			name = SyncScenarios;
+			path = ../Sources/SyncScenarios;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5EC0DE000000000000000019 /* SwiftRecordsLive */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5EC0DE00000000000000001A /* Build configuration list for PBXNativeTarget "SwiftRecordsLive" */;
+			buildPhases = (
+				5EC0DE00000000000000001B /* Sources */,
+				5EC0DE000000000000000014 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SwiftRecordsLive;
+			packageProductDependencies = (
+				5EC0DE000000000000000010 /* SwiftRecords */,
+			);
+			productName = SwiftRecordsLive;
+			productReference = 5EC0DE000000000000000013 /* SwiftRecordsLive.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5EC0DE00000000000000001C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					5EC0DE000000000000000019 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 5EC0DE00000000000000001D /* Build configuration list for PBXProject "SwiftRecordsLive" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5EC0DE000000000000000015;
+			packageReferences = (
+				5EC0DE00000000000000001E /* XCLocalSwiftPackageReference ".." */,
+			);
+			productRefGroup = 5EC0DE000000000000000018 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5EC0DE000000000000000019 /* SwiftRecordsLive */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5EC0DE00000000000000001B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5EC0DE000000000000000001 /* main.swift in Sources */,
+				5EC0DE000000000000000003 /* CloudKitBackend.swift in Sources */,
+				5EC0DE000000000000000005 /* AccountChecks.swift in Sources */,
+				5EC0DE000000000000000007 /* SyncBackend.swift in Sources */,
+				5EC0DE000000000000000009 /* ScenarioModels.swift in Sources */,
+				5EC0DE00000000000000000B /* SyncScenarios.swift in Sources */,
+				5EC0DE00000000000000000D /* SyncBenchmarks.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5EC0DE00000000000000001F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5EC0DE000000000000000020 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		5EC0DE000000000000000021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5EC0DE000000000000000012 /* Signing.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = SwiftRecordsLive/SwiftRecordsLive.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SwiftRecordsLive;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		5EC0DE000000000000000022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5EC0DE000000000000000012 /* Signing.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = SwiftRecordsLive/SwiftRecordsLive.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SwiftRecordsLive;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5EC0DE00000000000000001A /* Build configuration list for PBXNativeTarget "SwiftRecordsLive" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC0DE000000000000000021 /* Debug */,
+				5EC0DE000000000000000022 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5EC0DE00000000000000001D /* Build configuration list for PBXProject "SwiftRecordsLive" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC0DE00000000000000001F /* Debug */,
+				5EC0DE000000000000000020 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		5EC0DE00000000000000001E /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5EC0DE000000000000000010 /* SwiftRecords */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwiftRecords;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5EC0DE00000000000000001C /* Project object */;
+}

@@ -25,6 +25,9 @@ let package = Package(
             ]
         ),
         .target(name: "CrateUI", dependencies: ["CrateModels"]),
-        .testTarget(name: "CrateModelsTests", dependencies: ["CrateModels"]),
+        .testTarget(
+            name: "CrateModelsTests",
+            dependencies: ["CrateModels", .product(name: "SwiftRecordsTesting", package: "swift-records")]
+        ),
     ]
 )

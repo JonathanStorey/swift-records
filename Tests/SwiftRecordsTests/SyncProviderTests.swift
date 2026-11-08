@@ -1,6 +1,7 @@
 import Foundation
 import Identification
 @testable import SwiftRecords
+import SyncTestSupport
 import Testing
 
 @Record("SyncRecipe")

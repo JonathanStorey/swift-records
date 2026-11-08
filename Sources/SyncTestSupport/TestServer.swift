@@ -1,32 +1,33 @@
 import Foundation
-@testable import SwiftRecords
-import SyncTestSupport
+import SwiftRecords
 
 /// A stand-in sync server that several in-memory containers share, each playing one device. It checks
 /// `synced` dates the way the protocol asks: a save based on an older copy comes back as a conflict.
-final class TestServer: @unchecked Sendable {
+package final class TestServer: @unchecked Sendable {
     /// Tells servers apart, as a provider's URL would.
-    let name = UUID().uuidString
+    package let name = UUID().uuidString
     private let lock = NSLock()
     /// Each record's latest change, deletions included, with the sequence number it was stored at.
     private var latest: [String: (change: RecordChangeData, sequence: Int, previous: RecordChangeData?)] = [:]
     private var assets: [String: Data] = [:]
     private var sequence = 0
     /// Goes up with each `reset(reason:)`, so devices can tell the zones were deleted.
-    private(set) var epoch = 0
+    package private(set) var epoch = 0
     /// Why the last reset happened.
-    private(set) var resetReason = ZoneDeletion.Reason.purged
+    package private(set) var resetReason = ZoneDeletion.Reason.purged
 
     /// The signed-in account. Zones keep each account's records apart.
-    var account: String? = "alice"
-    var isOnline = true
-    var isFull = false
-    var rejectedTypes: Set<String> = []
+    package var account: String? = "alice"
+    package var isOnline = true
+    package var isFull = false
+    package var rejectedTypes: Set<String> = []
     /// Refuses a save whose `.deleteSelf` reference names a record neither stored nor in the same batch, as
     /// CloudKit does.
-    var checksReferences = false
+    package var checksReferences = false
 
-    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    package init() {}
+
+    package func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
         return try body()
@@ -41,12 +42,12 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// Shares `owner`'s zone with `user`, who sees it in the shared database.
-    func share(_ zone: Zone, of owner: String, with user: String) {
+    package func share(_ zone: Zone, of owner: String, with user: String) {
         withLock { shares["\(owner)|\(zone.name)", default: []].insert(user) }
     }
 
     /// Stops sharing `owner`'s zone with `user`, or with everyone.
-    func unshare(_ zone: Zone, of owner: String, with user: String? = nil) {
+    package func unshare(_ zone: Zone, of owner: String, with user: String? = nil) {
         withLock {
             let key = "\(owner)|\(zone.name)"
             if let user {
@@ -58,12 +59,12 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// Who `owner`'s zone is shared with, or `nil` when it isn't.
-    func participants(of zone: Zone, owner: String) -> Set<String>? {
+    package func participants(of zone: Zone, owner: String) -> Set<String>? {
         withLock { shares["\(owner)|\(zone.name)"] }
     }
 
     /// Whether the server holds a record with this ID in the zone.
-    func holds(_ id: UUID, in zone: Zone, by user: String?) -> Bool {
+    package func holds(_ id: UUID, in zone: Zone, by user: String?) -> Bool {
         withLock {
             let prefix = space(zone, account: user)
             return latest.contains { $0.key.hasPrefix(prefix) && $0.key.hasSuffix("|\(id)") && !$0.value.change.isDeletion }
@@ -93,7 +94,7 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// Stores a change from `user`, and returns the stored copy, or the newer copy it conflicts with.
-    func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
+    package func save(_ change: RecordChangeData, by user: String?) -> Result<RecordChangeData, SyncFailure> {
         withLock {
             guard mayWrite(change.zone, user) else { return .failure(.permissionFailure) }
             // Files travel inside their records, as `CKAsset`s do.
@@ -128,7 +129,7 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// Stores a record as if another device had saved it.
-    func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, fields: [String: RecordValue]) {
+    package func put(_ type: String, id: UUID = UUID(), zone: Zone = .default, fields: [String: RecordValue]) {
         withLock {
             sequence += 1
             let change = RecordChangeData(
@@ -142,7 +143,7 @@ final class TestServer: @unchecked Sendable {
 
     /// The zones `user` has records in, or that are shared with `user`, those with changes after `cursor`,
     /// and the latest sequence number.
-    func zones(for user: String?, in scope: Zone.Scope = .private, changedAfter cursor: Int) -> (all: Set<Zone>, changed: Set<Zone>, sequence: Int) {
+    package func zones(for user: String?, in scope: Zone.Scope = .private, changedAfter cursor: Int) -> (all: Set<Zone>, changed: Set<Zone>, sequence: Int) {
         withLock {
             switch scope {
             case .private:
@@ -164,7 +165,7 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// The zone's latest changes for `user` after `cursor`, oldest first, at most `limit`, and the new cursor.
-    func changes(in zone: Zone, for user: String?, since cursor: Int, limit: Int) -> (changes: [RecordChangeData], cursor: Int, hasMore: Bool) {
+    package func changes(in zone: Zone, for user: String?, since cursor: Int, limit: Int) -> (changes: [RecordChangeData], cursor: Int, hasMore: Bool) {
         withLock {
             let prefix = space(zone, account: user)
             let found = latest.filter { $0.key.hasPrefix(prefix) && $0.value.sequence > cursor }.values.sorted { $0.sequence < $1.sequence }
@@ -187,45 +188,45 @@ final class TestServer: @unchecked Sendable {
     }
 
     /// The stored copy of a record the current account can see.
-    func record(_ type: String, _ id: UUID, zone: Zone = .default) -> RecordChangeData? {
+    package func record(_ type: String, _ id: UUID, zone: Zone = .default) -> RecordChangeData? {
         withLock { latest[key(zone, type, id, account: account)]?.change }
     }
 
     /// One field of a stored record, as it crosses the wire.
-    func value(_ type: String, _ id: UUID, _ field: String) -> RecordValue? {
+    package func value(_ type: String, _ id: UUID, _ field: String) -> RecordValue? {
         record(type, id)?.fields?[field]
     }
 
     /// The ID of the asset file a stored record's field points to.
-    func assetID(_ type: String, _ id: UUID, _ field: String) -> String? {
+    package func assetID(_ type: String, _ id: UUID, _ field: String) -> String? {
         guard case .asset(let asset)? = value(type, id, field) else { return nil }
         return asset
     }
 
     /// Whether a stored record has the field at all.
-    func has(_ type: String, _ id: UUID, _ field: String) -> Bool {
+    package func has(_ type: String, _ id: UUID, _ field: String) -> Bool {
         value(type, id, field) != nil
     }
 
     /// The stored records of a type, not counting deletions, across every account.
-    func records(_ type: String) -> [RecordChangeData] {
+    package func records(_ type: String) -> [RecordChangeData] {
         withLock { latest.values.map(\.change).filter { $0.type == type && !$0.isDeletion } }
     }
 
     /// Records stored, not counting deletions, across every account.
-    var count: Int { withLock { latest.values.filter { !$0.change.isDeletion }.count } }
+    package var count: Int { withLock { latest.values.filter { !$0.change.isDeletion }.count } }
 
-    func storeAsset(_ data: Data, id: String) {
+    package func storeAsset(_ data: Data, id: String) {
         withLock { assets[id] = data }
     }
 
-    func asset(_ id: String) -> Data? {
+    package func asset(_ id: String) -> Data? {
         withLock { assets[id] }
     }
 
     /// Deletes everything, as when a person deletes the app's data in Settings, or for `.encryptedDataReset`,
     /// when the server loses it.
-    func reset(reason: ZoneDeletion.Reason = .purged) {
+    package func reset(reason: ZoneDeletion.Reason = .purged) {
         withLock {
             latest = [:]
             assets = [:]
@@ -236,28 +237,28 @@ final class TestServer: @unchecked Sendable {
 }
 
 /// A transport that talks to a `TestServer`, as one device.
-final class TestTransport: SyncTransport, @unchecked Sendable {
-    let server: TestServer
+package final class TestTransport: SyncTransport, @unchecked Sendable {
+    package let server: TestServer
     private let lock = NSLock()
     private var batches: [[RecordChangeData]] = []
     /// Saves on the server without answering, as if the app quit before hearing back.
-    var dropsAcknowledgements = false
+    package var dropsAcknowledgements = false
     /// Signs this device in as someone other than the server's account, `.some(nil)` for signed out.
-    var account: String??
+    package var account: String??
     /// Changes per download page.
-    var pageSize = 100
+    package var pageSize = 100
 
-    var identifier: String { server.name }
+    package var identifier: String { server.name }
 
-    var scopes: Set<Zone.Scope> { [.private, .shared] }
+    package var scopes: Set<Zone.Scope> { [.private, .shared] }
 
-    init(server: TestServer, account: String?? = nil) {
+    package init(server: TestServer, account: String?? = nil) {
         self.server = server
         self.account = account
     }
 
     /// Every batch the container asked to upload.
-    var sentBatches: [[RecordChangeData]] { lock.withLock { batches } }
+    package var sentBatches: [[RecordChangeData]] { lock.withLock { batches } }
 
     private var user: String? {
         lock.withLock { account } ?? server.withLock { server.account }
@@ -268,11 +269,11 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
         guard server.withLock({ server.isOnline }) else { throw SyncFailure.networkUnavailable }
     }
 
-    func currentUser() async throws -> String? {
+    package func currentUser() async throws -> String? {
         user
     }
 
-    func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
+    package func modifyRecords(_ batch: RecordBatch) async throws -> SentRecordChanges {
         let changes = batch.changes
         lock.withLock { batches.append(changes) }
         try check()
@@ -316,7 +317,7 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
         var zones: [Zone]
     }
 
-    func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
+    package func fetchDatabaseChanges(_ scope: Zone.Scope, since token: Data?) async throws -> DatabaseChanges {
         try check()
         let (epoch, reason) = server.withLock { (server.epoch, server.resetReason) }
         var known = token.flatMap { try? JSONDecoder().decode(DatabaseToken.self, from: $0) }
@@ -341,7 +342,7 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
         )
     }
 
-    func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
+    package func fetchZoneChanges(_ zone: Zone, since token: Data?) async throws -> ZoneChanges {
         try check()
         let start = token.flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
         let page = server.changes(in: zone, for: user, since: start, limit: pageSize)
@@ -356,7 +357,7 @@ final class TestTransport: SyncTransport, @unchecked Sendable {
 
 extension TestTransport: ZoneSharing {
     /// Invitations read `test://share/<owner>/<zone>`.
-    func share(_ zone: Zone) async throws -> ZoneShare {
+    package func share(_ zone: Zone) async throws -> ZoneShare {
         try check()
         guard let owner = user else { throw SyncFailure.permissionFailure }
         if server.participants(of: zone, owner: owner) == nil {
@@ -367,7 +368,7 @@ extension TestTransport: ZoneSharing {
         return try await existingShare(for: zone)!
     }
 
-    func existingShare(for zone: Zone) async throws -> ZoneShare? {
+    package func existingShare(for zone: Zone) async throws -> ZoneShare? {
         try check()
         guard let owner = zone.owner ?? user, let users = server.participants(of: zone, owner: owner) else { return nil }
         let participants = [ShareParticipant(id: owner, role: .owner, status: .accepted)]
@@ -376,7 +377,7 @@ extension TestTransport: ZoneSharing {
         return ZoneShare(zone: seen, url: URL(string: "test://share/\(owner)/\(zone.name)"), participants: participants)
     }
 
-    func acceptShare(_ invitation: URL) async throws -> Zone {
+    package func acceptShare(_ invitation: URL) async throws -> Zone {
         try check()
         let parts = invitation.pathComponents.filter { $0 != "/" }
         guard invitation.scheme == "test", parts.count == 2, let user,
@@ -387,7 +388,7 @@ extension TestTransport: ZoneSharing {
         return try Zone(zone.name, sharedBy: parts[0])
     }
 
-    func stopSharing(_ zone: Zone) async throws {
+    package func stopSharing(_ zone: Zone) async throws {
         try check()
         if let owner = zone.owner {
             server.unshare(zone, of: owner, with: user)
@@ -398,55 +399,55 @@ extension TestTransport: ZoneSharing {
 }
 
 /// One device's engine on a `TestServer`, which syncs only when asked so tests control each step.
-final class TestProvider: SyncProvider, @unchecked Sendable {
-    let transport: TestTransport
+package final class TestProvider: SyncProvider, @unchecked Sendable {
+    package let transport: TestTransport
     private let engine: PollingSyncEngine
 
-    init(server: TestServer, account: String?? = nil, automaticallySync: Bool = false) {
+    package init(server: TestServer, account: String?? = nil, automaticallySync: Bool = false) {
         transport = TestTransport(server: server, account: account)
         engine = PollingSyncEngine(transport: transport, automaticallySync: automaticallySync, sendDelay: .milliseconds(10))
     }
 
-    var server: TestServer { transport.server }
-    var sentBatches: [[RecordChangeData]] { transport.sentBatches }
+    package var server: TestServer { transport.server }
+    package var sentBatches: [[RecordChangeData]] { transport.sentBatches }
 
-    var dropsAcknowledgements: Bool {
+    package var dropsAcknowledgements: Bool {
         get { transport.dropsAcknowledgements }
         set { transport.dropsAcknowledgements = newValue }
     }
 
-    var account: String?? {
+    package var account: String?? {
         get { transport.account }
         set { transport.account = newValue }
     }
 
-    var pageSize: Int {
+    package var pageSize: Int {
         get { transport.pageSize }
         set { transport.pageSize = newValue }
     }
 
     /// The most changes one upload takes, like CloudKit's size limit.
-    var batchLimit: Int? {
+    package var batchLimit: Int? {
         get { engine.batchLimit }
         set { engine.batchLimit = newValue }
     }
 
     // MARK: SyncProvider
 
-    var identifier: String { engine.identifier }
-    var scopes: Set<Zone.Scope> { engine.scopes }
-    var sharing: (any ZoneSharing)? { engine.sharing }
+    package var identifier: String { engine.identifier }
+    package var scopes: Set<Zone.Scope> { engine.scopes }
+    package var sharing: (any ZoneSharing)? { engine.sharing }
 
-    func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
+    package func start(_ scope: Zone.Scope, state: Data?, delegate: any SyncDelegate) async {
         await engine.start(scope, state: state, delegate: delegate)
     }
 
-    func addPending(_ changes: [PendingRecordChange]) { engine.addPending(changes) }
-    func removePending(_ changes: [PendingRecordChange]) { engine.removePending(changes) }
-    var pendingRecordChanges: [PendingRecordChange] { engine.pendingRecordChanges }
-    func addPending(_ changes: [PendingZoneChange]) { engine.addPending(changes) }
-    func removePending(_ changes: [PendingZoneChange]) { engine.removePending(changes) }
-    func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }
-    func fetchChanges(_ options: FetchOptions) async throws { try await engine.fetchChanges(options) }
-    func cancelOperations() async { await engine.cancelOperations() }
+    package func addPending(_ changes: [PendingRecordChange]) { engine.addPending(changes) }
+    package func removePending(_ changes: [PendingRecordChange]) { engine.removePending(changes) }
+    package var pendingRecordChanges: [PendingRecordChange] { engine.pendingRecordChanges }
+    package func addPending(_ changes: [PendingZoneChange]) { engine.addPending(changes) }
+    package func removePending(_ changes: [PendingZoneChange]) { engine.removePending(changes) }
+    package func sendChanges(_ options: SendOptions) async throws { try await engine.sendChanges(options) }
+    package func fetchChanges(_ options: FetchOptions) async throws { try await engine.fetchChanges(options) }
+    package func cancelOperations() async { await engine.cancelOperations() }
 }

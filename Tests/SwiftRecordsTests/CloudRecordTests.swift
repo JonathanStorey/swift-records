@@ -1,5 +1,6 @@
 import Foundation
 @testable import SwiftRecords
+import SyncTestSupport
 import Testing
 
 /// Records as they cross to a server: plain values and a reference from each child to its parent. A

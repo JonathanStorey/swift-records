@@ -8,6 +8,7 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
+        .library(name: "SwiftRecordsTesting", targets: ["SwiftRecordsTesting"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.0"..<"603.0.0"),
@@ -41,6 +42,17 @@ let package = Package(
             name: "SyncTestSupport",
             dependencies: ["SwiftRecords"]
         ),
+        // The in-memory server for apps' own tests: `RecordContainer(for:syncingWith:)`.
+        .target(
+            name: "SwiftRecordsTesting",
+            dependencies: ["SwiftRecords", "SyncTestSupport"]
+        ),
+        // Sync scenarios written once against `SyncBackend`. The tests run them on the in-memory server, and
+        // the live app in `LiveTests` compiles the same files and runs them on CloudKit. Not a product.
+        .target(
+            name: "SyncScenarios",
+            dependencies: ["SwiftRecords"]
+        ),
         // Times the heaviest operations on a large store: `swift run -c release Benchmarks`.
         .executableTarget(
             name: "Benchmarks",
@@ -49,7 +61,7 @@ let package = Package(
         .testTarget(
             name: "SwiftRecordsTests",
             dependencies: [
-                "SwiftRecords", "SyncTestSupport",
+                "SwiftRecords", "SyncTestSupport", "SwiftRecordsTesting", "SyncScenarios",
                 .product(name: "Identification", package: "swift-identification"),
             ]
         ),

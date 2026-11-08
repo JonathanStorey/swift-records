@@ -1,0 +1,5 @@
+// Your Apple developer team and the live app's bundle ID. The app's iCloud container is named after the
+// bundle ID, as iCloud.<bundle ID>, so it stays apart from your apps' own data. Xcode creates it the first
+// time it signs the app.
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = com.example.SwiftRecordsLive

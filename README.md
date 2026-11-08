@@ -923,6 +923,32 @@ view whose own edit was saved keeps its cached array instead of fetching again.
 relationship, every property wrapper, merging and CloudKit sync. Its README lists what each screen covers,
 how to sign it and run it on two devices, and conflicts to try.
 
+## Testing
+
+Add the `SwiftRecordsTesting` product to your test target to test sync without CloudKit. `TestCloud` is an
+in-memory server, and each container that syncs with it plays one device:
+
+```swift
+import SwiftRecordsTesting
+
+let cloud = TestCloud()
+let phone = try RecordContainer(for: [Note.self], syncingWith: cloud)
+let laptop = try RecordContainer(for: [Note.self], syncingWith: cloud)
+phone.mainContext.insert(Note(text: "Hi"))
+try await phone.mainContext.save()       // saves and sends
+try await laptop.mainContext.refresh()   // fetches the note
+cloud.isOnline = false                   // saves stay pending, and contexts show .offline
+```
+
+It syncs only when a context asks, so a test controls the order of events. Conflicts, merges, deletions
+and assets behave as they do with CloudKit. Set `account` to switch or sign out every device, and `isFull`
+to refuse saves as CloudKit does when iCloud storage is full. Crate's `CrateSyncTests` use it.
+
+The package's own sync scenarios, such as edits to different properties on two devices both surviving, are
+written once in `Sources/SyncScenarios`. The tests run them on the in-memory server, and the Mac app in
+[`LiveTests`](LiveTests) runs the same ones on real CloudKit from Terminal, along with account checks and
+benchmarks. Its README covers setup and a checklist for what only real devices can show.
+
 ## Benchmarks
 
 The `Benchmarks` program times the heaviest operations on a store of recipes with five nested steps
