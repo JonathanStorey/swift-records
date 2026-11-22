@@ -17,7 +17,7 @@ let package = Package(
     ],
     dependencies: [
         // Tracks main so each resolve picks up the newest swift-versioning. Package.resolved is ignored for the same reason.
-        .package(url: "https://github.com/JonathanStorey/swift-versioning", branch: "claude/project-thread-5tqpds"),
+        .package(url: "https://github.com/JonathanStorey/swift-versioning", branch: "main"),
     ],
     targets: [
         .target(
