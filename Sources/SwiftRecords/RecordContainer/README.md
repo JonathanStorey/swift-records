@@ -94,6 +94,8 @@ The type lookup happens before the row's lock is taken, since the lookup takes t
 
 `save(their: CKRecord)` is the entry point for a server record. It decodes the record as its registered type into JSON, copies each asset file into the container, and hands the JSON to the function above. A record whose name is not a UUID was not written by this package, and a share record is not a record at all, so both are skipped.
 
+The container trusts the sync engine's order. CKSyncEngine handles events one at a time and always delivers a record's current server version, so `save(their:)` does not compare versions. The same version delivered twice changes nothing, but an older version delivered after a newer one would replace it.
+
 ### Failures
 
 `save(failed:error:)` decides what a failed upload means.
