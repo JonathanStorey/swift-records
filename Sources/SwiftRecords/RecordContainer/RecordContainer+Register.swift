@@ -40,9 +40,16 @@ extension RecordContainer {
     public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .local) throws(DatabaseError) {
         if storage.isInMemory {
             self.init()
+            for type in types { register(type) }
         } else {
-            try self.init(url: Self.storeURL(appGroup: storage.appGroup))
+            try self.init(for: types, url: Self.storeURL(appGroup: storage.appGroup))
         }
+    }
+
+    /// A container stored in the file at `url`, created if it does not exist, with each of
+    /// `types` registered, as tests reopen one across launches.
+    convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
+        try self.init(url: url)
         for type in types { register(type) }
     }
 

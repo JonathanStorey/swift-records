@@ -88,6 +88,26 @@ private enum Newer {
     }
 }
 
+/// A record named by a slug, so two devices that create it apart name the same record.
+private struct Page: Codable, Equatable, Identifiable, Mergeable {
+    var id: String
+    var title = ""
+    var body = ""
+}
+
+/// A seeded generator, so a randomized run can be replayed: SplitMix64.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9e37_79b9_7f4a_7c15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xbf58_476d_1ce4_e5b9
+        z = (z ^ (z >> 27)) &* 0x94d0_49bb_1331_11eb
+        return z ^ (z >> 31)
+    }
+}
+
 private enum Incompatible {
     struct Draft: Codable, Identifiable, Mergeable {
         var id: UUID
@@ -161,9 +181,27 @@ private final class Device {
     /// What the last upload sent, by record.
     var lastSent: [CKRecord.ID: CKRecord] = [:]
 
-    init(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self]) {
+    /// The database file, kept across launches, or `nil` for a device that keeps it in memory.
+    let url: URL?
+
+    init(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self], url: URL? = nil) {
         self.server = server
-        container = RecordContainer.inMemory(types)
+        self.url = url
+        container = url.map { try! RecordContainer(for: types, url: $0) } ?? RecordContainer.inMemory(types)
+    }
+
+    /// A device that keeps its database in a new file, so it can be launched again.
+    static func onDisk(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self]) -> Device {
+        Device(server, registering: types, url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records"))
+    }
+
+    /// This device after the app quits and launches again, perhaps as a newer version that
+    /// registers `types`: the same file, and the sync state the engine saved.
+    func relaunched(registering types: [any (Codable & Mergeable).Type] = [Draft.self]) -> Device {
+        let device = Device(server, registering: types, url: url)
+        device.known = known
+        device.cursor = cursor
+        return device
     }
 
     /// Fetches every change since the last fetch, as `fetchedRecordZoneChanges` delivers them.
@@ -626,6 +664,255 @@ private final class Device {
         try mine.sync()
         try yours.sync()
         #expect(try server.value(Post.self, id: id, zone: .public)?.likes == Views(rawValue: 2))
+    }
+}
+
+@Suite struct CloudKitInstallScenarioTests {
+    private let id = UUID()
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aFreshInstallReceivesEverythingAndSendsNothingBack() throws {
+        let server = Server()
+        let mine = Device(server)
+        let ids = (0..<50).map { _ in UUID() }
+        for (index, id) in ids.enumerated() { try mine.save(Draft(id: id, title: "\(index)")) }
+        try mine.sync()
+
+        let fresh = Device(server)
+        try fresh.fetch()
+        for (index, id) in ids.enumerated() {
+            #expect(try fresh.value(id: id)?.title == "\(index)")
+            #expect(try fresh.container.row(id: id)?.status == .synced)
+        }
+        #expect(try fresh.container.pendingChanges().saves.isEmpty)
+
+        let clock = server.clock
+        try fresh.sync()
+        #expect(server.clock == clock, "A fresh install uploads nothing it only received.")
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aReinstallStartsFromTheServerWithoutTheUnsentEdit() throws {
+        let server = Server()
+        let mine = Device(server)
+        try mine.save(Draft(id: id, title: "Synced"))
+        try mine.sync()
+        try mine.save(Draft(id: id, title: "Never sent"))
+
+        // The app is deleted with its database and sync state, then installed again.
+        let reinstalled = Device(server)
+        try reinstalled.sync()
+        #expect(try reinstalled.value(id: id)?.title == "Synced")
+        #expect(try reinstalled.container.row(id: id)?.status == .synced)
+        #expect(try server.value(Draft.self, id: id)?.title == "Synced")
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aRecordSentBeforeTheAppQuitIsNotDuplicated() throws {
+        let server = Server()
+        let mine = Device.onDisk(server)
+        try mine.save(Draft(id: id, title: "New"))
+
+        // The server saves the new record, but the app quits before hearing back.
+        let record = try #require(try mine.container.send(id: id))
+        _ = try server.save(record)
+
+        let relaunched = mine.relaunched()
+        #expect(try relaunched.container.pendingChanges().saves.count == 1, "The record still waits to upload.")
+        try relaunched.sync()
+        #expect(server.records.count == 1)
+        #expect(try server.value(Draft.self, id: id)?.title == "New")
+        #expect(try relaunched.container.row(id: id)?.status == .synced)
+        #expect(try relaunched.container.pendingChanges().saves.isEmpty)
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func anAppUpdateReadsOldRowsAndSyncsItsNewField() throws {
+        let server = Server()
+        let mine = Device.onDisk(server, registering: [Older.Draft.self])
+        let yours = Device.onDisk(server, registering: [Older.Draft.self])
+        try mine.save(Older.Draft(id: id, title: "Old"), zone: "Drafts")
+        try mine.sync()
+        try yours.fetch()
+
+        // Both devices update to a version that adds an optional color.
+        let mineUpdated = mine.relaunched(registering: [Newer.Draft.self])
+        let yoursUpdated = yours.relaunched(registering: [Newer.Draft.self])
+        let old = try #require(try mineUpdated.value(Newer.Draft.self, id: id))
+        #expect(old.title == "Old")
+        #expect(old.color == nil)
+
+        try mineUpdated.save(Newer.Draft(id: id, title: "Old", color: "blue"), zone: "Drafts")
+        try mineUpdated.sync()
+        try yoursUpdated.fetch()
+        #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.color == "blue")
+        #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.title == "Old")
+    }
+}
+
+@Suite struct CloudKitDevicesScenarioTests {
+    private let id = UUID()
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func threeDevicesConvergeInEveryOrder() throws {
+        let expected = Draft(id: id, title: "A", body: "B", tags: ["a", "c"], views: Views(rawValue: 7))
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let server = Server()
+            let devices = [Device(server), Device(server), Device(server)]
+            try devices[0].save(Draft(id: id))
+            try devices[0].sync()
+            for device in devices { try device.fetch() }
+
+            try devices[0].save(Draft(id: id, title: "A", views: Views(rawValue: 1)))
+            try devices[1].save(Draft(id: id, body: "B", views: Views(rawValue: 2)))
+            try devices[2].save(Draft(id: id, tags: ["a", "c"], views: Views(rawValue: 4)))
+            for index in order { try devices[index].sync() }
+            for device in devices { try device.sync() }
+
+            for device in devices { #expect(try device.value(id: id) == expected, "order \(order)") }
+            #expect(try server.value(Draft.self, id: id) == expected, "order \(order)")
+        }
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aDeviceOfflineAcrossLaunchesLosesNothing() throws {
+        let server = Server()
+        var mine = Device.onDisk(server)
+        let yours = Device(server)
+        try mine.save(Draft(id: id))
+        try mine.sync()
+        try yours.fetch()
+
+        // Offline: an edit, a quit, another edit and a new record, another quit.
+        try mine.save(Draft(id: id, title: "Offline"))
+        mine = mine.relaunched()
+        try mine.save(Draft(id: id, title: "Offline", body: "Still offline"))
+        let created = UUID()
+        try mine.save(Draft(id: created, title: "Made offline"))
+        mine = mine.relaunched()
+
+        // Meanwhile the other device changes the same record.
+        try yours.save(Draft(id: id, tags: ["a", "b"], views: Views(rawValue: 5)))
+        try yours.sync()
+
+        try mine.sync()
+        try yours.fetch()
+        let expected = Draft(id: id, title: "Offline", body: "Still offline", tags: ["a", "b"], views: Views(rawValue: 5))
+        #expect(try mine.value(id: id) == expected)
+        #expect(try yours.value(id: id) == expected)
+        #expect(try yours.value(id: created)?.title == "Made offline")
+        #expect(try mine.container.pendingChanges().saves.isEmpty)
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aRecordCreatedOnTwoDevicesBecomesOne() throws {
+        let server = Server()
+        let mine = Device(server, registering: [Page.self]), yours = Device(server, registering: [Page.self])
+        try mine.save(Page(id: "intro", title: "Mine"), zone: "Drafts")
+        try yours.save(Page(id: "intro", body: "Yours"), zone: "Drafts")
+        try mine.sync()
+        try yours.sync()
+        try mine.sync()
+
+        let id = try RecordContainer.recordID(for: "intro", type: "Page")
+        #expect(server.records.count == 1)
+        let stored = try #require(try server.value(Page.self, id: id))
+        #expect(try mine.value(Page.self, id: id) == stored)
+        #expect(try yours.value(Page.self, id: id) == stored)
+        #expect(try mine.container.pendingChanges().saves.isEmpty)
+        #expect(try yours.container.pendingChanges().saves.isEmpty)
+    }
+}
+
+@Suite struct CloudKitDeliveryScenarioTests {
+    private let id = UUID()
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aChangeDeliveredTwiceOrLateChangesNothing() throws {
+        let server = Server()
+        let mine = Device(server), yours = Device(server)
+        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: Zone("Drafts").zoneID)
+        try mine.save(Draft(id: id, title: "First"))
+        try mine.sync()
+        let first = try #require(server.records[recordID]?.record.copy() as? CKRecord)
+        try mine.save(Draft(id: id, title: "Second"))
+        try mine.sync()
+        let second = try #require(server.records[recordID]?.record.copy() as? CKRecord)
+
+        try yours.container.save(their: [second])
+        try yours.container.save(their: [second])
+        #expect(try yours.value(id: id)?.title == "Second")
+        try yours.container.save(their: [first])
+        #expect(try yours.value(id: id)?.title == "Second", "An older version delivered late does not replace a newer one.")
+        #expect(try yours.container.pendingChanges().saves.isEmpty)
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func failuresWorthRetryingKeepTheChangeUntilItIsConfirmedOnce() throws {
+        let server = Server()
+        let mine = Device(server)
+        try mine.save(Draft(id: id, title: "Patient"))
+        for code: CKError.Code in [.networkUnavailable, .networkFailure, .zoneBusy, .requestRateLimited, .serviceUnavailable] {
+            let record = try #require(try mine.container.send(id: id), "\(code)")
+            try mine.container.save(failed: record, error: CKError(code))
+            #expect(try mine.container.row(id: id)?.status == .waitingToUpload, "\(code)")
+            #expect(try mine.container.pendingChanges().saves.count == 1, "\(code)")
+        }
+        try mine.sync()
+        #expect(server.clock == 1, "The record is saved on the server exactly once.")
+        #expect(try server.value(Draft.self, id: id)?.title == "Patient")
+        #expect(try mine.container.row(id: id)?.status == .synced)
+
+        try mine.container.delete(id: id)
+        let recordID = try #require(try mine.container.send(deleted: id))
+        try mine.container.save(failed: recordID, error: CKError(.networkUnavailable))
+        #expect(try mine.container.pendingChanges().deletes == [recordID])
+        try mine.sync()
+        #expect(server.records.isEmpty)
+        #expect(try mine.container.row(id: id) == nil)
+    }
+}
+
+@Suite struct CloudKitRandomScenarioTests {
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test(arguments: [1, 2, 3] as [UInt64])
+    func randomActivityConverges(seed: UInt64) throws {
+        var random = SeededGenerator(state: seed)
+        let server = Server()
+        let devices = [Device(server), Device(server), Device(server)]
+        let ids = (0..<5).map { _ in UUID() }
+
+        for _ in 0..<200 {
+            let device = devices.randomElement(using: &random)!
+            let id = ids.randomElement(using: &random)!
+            switch Int.random(in: 0..<10, using: &random) {
+            case 0..<5:
+                var draft = try device.value(id: id) ?? Draft(id: id)
+                switch Int.random(in: 0..<3, using: &random) {
+                case 0: draft.title = ["One", "Two", "Three"].randomElement(using: &random)!
+                case 1: draft.views.rawValue += 1
+                default: draft.tags.append(["x", "y", "z"].randomElement(using: &random)!)
+                }
+                try device.save(draft)
+            case 5:
+                if try device.container.row(id: id) != nil { try device.container.delete(id: id) }
+            case 6: try device.send()
+            case 7: try device.fetch()
+            default: try device.sync()
+            }
+        }
+
+        for _ in 0..<2 {
+            for device in devices { try device.sync() }
+        }
+        for device in devices { try device.fetch() }
+        for id in ids {
+            let stored = try server.value(Draft.self, id: id)
+            for (index, device) in devices.enumerated() {
+                #expect(try device.value(id: id) == stored, "seed \(seed), device \(index), record \(id)")
+                #expect(try device.container.pendingRows().isEmpty, "seed \(seed), device \(index)")
+            }
+        }
     }
 }
 
