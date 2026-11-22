@@ -12,5 +12,5 @@
 import SwiftRecords
 ```
 
-Requires Swift 6.4. Depends on the `main` branch of
+Requires Swift 6.3 or later. Depends on the `main` branch of
 [swift-versioning](https://github.com/JonathanStorey/swift-versioning).
