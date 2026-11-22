@@ -5,9 +5,9 @@ extension RecordContainer {
     /// Where a container keeps its database.
     ///
     /// ```swift
-    /// try RecordContainer(for: Note.self)                                         // .localOnly
+    /// try RecordContainer(for: Note.self)                                         // .local
     /// try RecordContainer(for: Note.self, storage: .inMemory)
-    /// try RecordContainer(for: Note.self, storage: .localOnly(in: "group.com.example.notes"))
+    /// try RecordContainer(for: Note.self, storage: .local(in: "group.com.example.notes"))
     /// ```
     public struct Storage: Hashable, Sendable {
         /// The app group whose shared container holds the file, or `nil` for the app's own
@@ -21,12 +21,12 @@ extension RecordContainer {
         public static let inMemory = Storage(appGroup: nil, isInMemory: true)
 
         /// In `default.records` in the app's Application Support folder, created if needed.
-        public static let localOnly = Storage(appGroup: nil, isInMemory: false)
+        public static let local = Storage(appGroup: nil, isInMemory: false)
 
         /// In `default.records` in the Application Support folder of `appGroup`'s shared
         /// container, so an app and its extensions share one database. App groups exist only
         /// on Apple platforms.
-        public static func localOnly(in appGroup: String) -> Storage {
+        public static func local(in appGroup: String) -> Storage {
             Storage(appGroup: appGroup, isInMemory: false)
         }
     }
@@ -37,7 +37,7 @@ extension RecordContainer {
     /// let container = try RecordContainer(for: [Note.self, Tag.self])
     /// let preview = try RecordContainer(for: [Note.self], storage: .inMemory)
     /// ```
-    public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .localOnly) throws(DatabaseError) {
+    public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .local) throws(DatabaseError) {
         if storage.isInMemory {
             self.init()
         } else {
@@ -53,7 +53,7 @@ extension RecordContainer {
     /// ```
     ///
     /// The first type is separate, so at least one type is always given.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., storage: Storage = .localOnly) throws(DatabaseError) {
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., storage: Storage = .local) throws(DatabaseError) {
         try self.init(for: [type] + others, storage: storage)
     }
 }

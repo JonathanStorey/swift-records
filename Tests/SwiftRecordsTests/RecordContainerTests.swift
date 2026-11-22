@@ -77,7 +77,7 @@ private struct Memo: Codable, Mergeable {
 
     #if !canImport(Darwin)
     @Test func anAppGroupNeedsAnApplePlatform() {
-        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, storage: .localOnly(in: "group.example")) }
+        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, storage: .local(in: "group.example")) }
     }
     #endif
 }
