@@ -8,9 +8,9 @@ import CSQLite
 
 /// The database that holds records: a single SQLite connection, and nothing else.
 ///
-/// A container is created for the record types it holds. `RecordContainer(for:)` keeps
-/// everything in memory, so it starts empty and is gone when the container is released.
-/// `RecordContainer(for:url:)` stores the database in a file.
+/// A container is created for the record types it holds. `RecordContainer(for:)` stores the
+/// database in `default.records` in Application Support, and
+/// `RecordContainer(for:inMemory: true)` keeps it in memory.
 public final class RecordContainer: @unchecked Sendable {
     /// The database file, or `nil` when the container is in memory.
     public let url: URL?
@@ -104,6 +104,30 @@ extension DatabaseError {
 }
 
 extension RecordContainer {
+    /// The database file: `default.records` in Application Support, or in the Application
+    /// Support folder of `appGroup`'s shared container. The folder is created if needed.
+    static func storeURL(appGroup: String?) throws(DatabaseError) -> URL {
+        let folder: URL
+        if let appGroup {
+            #if canImport(Darwin)
+            guard let shared = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
+                throw DatabaseError(code: SQLITE_CANTOPEN, description: "The app group \(appGroup) has no shared container. Check the app's entitlements.")
+            }
+            folder = shared.appendingPathComponent("Library/Application Support", isDirectory: true)
+            #else
+            throw DatabaseError(code: SQLITE_CANTOPEN, description: "App groups exist only on Apple platforms.")
+            #endif
+        } else {
+            folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            throw DatabaseError(code: SQLITE_CANTOPEN, description: "Could not create \(folder.path): \(error.localizedDescription)")
+        }
+        return folder.appendingPathComponent("default.records")
+    }
+
     /// The result of `body`, with no other locked work on the container running at the same time.
     func locked<T, Failure: Error>(_ body: () throws(Failure) -> T) throws(Failure) -> T {
         lock.lock()

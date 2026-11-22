@@ -163,7 +163,7 @@ private final class Device {
 
     init(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self]) {
         self.server = server
-        container = RecordContainer(for: types)
+        container = RecordContainer.inMemory(types)
     }
 
     /// Fetches every change since the last fetch, as `fetchedRecordZoneChanges` delivers them.

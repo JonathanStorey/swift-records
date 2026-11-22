@@ -246,12 +246,15 @@ value: `var attachment: Asset` with `rawValue: URL?`, or
 ## RecordContainer
 
 `RecordContainer` is the database that holds records, a SQLite connection
-and nothing more. Without a location it lives in memory, which suits tests
-and previews. With a URL it is stored in that file.
+and nothing more. It is opened for the record types it holds, as SwiftData's
+`ModelContainer` is. The file lives in one place, `default.records` in
+Application Support, or in an app group's shared container so an app and its
+extensions share it. `inMemory: true` suits tests and previews.
 
 ```swift
-let preview = RecordContainer(for: Note.self, Tag.self)                // in memory
-let container = try RecordContainer(for: [Note.self, Tag.self], url: storeURL)   // a file, created if needed
+let container = try RecordContainer(for: Note.self, Tag.self)        // Application Support/default.records
+let preview = try RecordContainer(for: [Note.self], inMemory: true)  // in memory
+let shared = try RecordContainer(for: Note.self, appGroup: "group.com.example.notes")
 ```
 
 Opening a file throws a `DatabaseError` with SQLite's result code and

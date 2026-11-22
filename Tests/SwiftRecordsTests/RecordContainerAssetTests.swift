@@ -37,7 +37,7 @@ private struct Sketch: Codable, Identifiable, Mergeable {
 
 @Suite struct RecordContainerAssetTests {
     @Test func bothSidesChangesToADrawingMergeIntoAStoredFile() throws {
-        let container = RecordContainer(for: Sketch.self)
+        let container = RecordContainer.inMemory(Sketch.self)
         var sketch = Sketch(drawing: Drawing(rawValue: Data([1])))
         try container.save(our: sketch, zone: "Sketches")
         try container.update(id: sketch.id) { row in

@@ -2,38 +2,39 @@ import Foundation
 import Versioning
 
 extension RecordContainer {
-    /// An empty container held in memory, with each of `types` registered.
+    /// A container with each of `types` registered, stored in `default.records` in the
+    /// app's Application Support folder, created if needed.
     ///
     /// ```swift
-    /// let container = RecordContainer(for: [Note.self, Tag.self])
+    /// let container = try RecordContainer(for: [Note.self, Tag.self])
+    /// let preview = try RecordContainer(for: [Note.self], inMemory: true)
     /// ```
-    public convenience init(for types: [any (Codable & Mergeable).Type]) {
-        self.init()
+    ///
+    /// - Parameters:
+    ///   - inMemory: Keeps the database in memory instead, so it starts empty and is gone
+    ///     when the container is released, as for previews and tests.
+    ///   - appGroup: Stores the file in the Application Support folder of this app group's
+    ///     shared container instead, so an app and its extensions share one database.
+    ///     App groups exist only on Apple platforms.
+    public convenience init(for types: [any (Codable & Mergeable).Type], inMemory: Bool = false, appGroup: String? = nil) throws(DatabaseError) {
+        if inMemory {
+            self.init()
+        } else {
+            try self.init(url: Self.storeURL(appGroup: appGroup))
+        }
         for type in types { register(type) }
     }
 
-    /// A container stored in the file at `url`, created if it does not exist, with each of
-    /// `types` registered.
-    public convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
-        try self.init(url: url)
-        for type in types { register(type) }
-    }
-
-    /// An empty container held in memory, with each of `types` registered.
+    /// A container with each of the given types registered, as ``init(for:inMemory:appGroup:)``
+    /// opens it.
     ///
     /// ```swift
-    /// let container = RecordContainer(for: Note.self, Tag.self)
+    /// let container = try RecordContainer(for: Note.self, Tag.self)
     /// ```
     ///
     /// The first type is separate, so at least one type is always given.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type...) {
-        self.init(for: [type] + others)
-    }
-
-    /// A container stored in the file at `url`, created if it does not exist, with each of
-    /// `types` registered.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., url: URL) throws(DatabaseError) {
-        try self.init(for: [type] + others, url: url)
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., inMemory: Bool = false, appGroup: String? = nil) throws(DatabaseError) {
+        try self.init(for: [type] + others, inMemory: inMemory, appGroup: appGroup)
     }
 }
 

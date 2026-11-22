@@ -58,21 +58,26 @@ private struct Memo: Codable, Mergeable {
     private static let types = ["Tag", "Memo"]
 
     @Test func registersAnArrayOfTypes() throws {
-        let container = RecordContainer(for: [Tag.self, Memo.self])
+        let container = try RecordContainer(for: [Tag.self, Memo.self], inMemory: true)
+        #expect(container.url == nil)
         for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
     }
 
     @Test func registersVariadicTypes() throws {
-        let container = RecordContainer(for: Tag.self, Memo.self)
+        let container = try RecordContainer(for: Tag.self, Memo.self, inMemory: true)
         for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
     }
 
-    @Test func registersTypesInAFile() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let array = try RecordContainer(for: [Tag.self], url: url)
-        let variadic = try RecordContainer(for: Tag.self, Memo.self, url: url)
-        #expect(throws: Never.self) { try array.registeredType(named: "Tag") }
-        for name in Self.types { #expect(throws: Never.self) { try variadic.registeredType(named: name) } }
+    @Test func storesTheDatabaseInApplicationSupport() throws {
+        let url = try RecordContainer.storeURL(appGroup: nil)
+        #expect(url.lastPathComponent == "default.records")
+        #expect(url.deletingLastPathComponent().lastPathComponent == "Application Support"
+            || url.deletingLastPathComponent().path.hasSuffix(".local/share"))
     }
+
+    #if !canImport(Darwin)
+    @Test func anAppGroupNeedsAnApplePlatform() {
+        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, appGroup: "group.example") }
+    }
+    #endif
 }
