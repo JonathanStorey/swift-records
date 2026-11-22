@@ -2,6 +2,42 @@ import Foundation
 import Versioning
 
 extension RecordContainer {
+    /// An empty container held in memory, with each of `types` registered.
+    ///
+    /// ```swift
+    /// let container = RecordContainer(for: [Note.self, Tag.self])
+    /// ```
+    public convenience init(for types: [any (Codable & Mergeable).Type]) {
+        self.init()
+        for type in types { register(type) }
+    }
+
+    /// A container stored in the file at `url`, created if it does not exist, with each of
+    /// `types` registered.
+    public convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
+        try self.init(url: url)
+        for type in types { register(type) }
+    }
+
+    /// An empty container held in memory, with each of `types` registered.
+    ///
+    /// ```swift
+    /// let container = RecordContainer(for: Note.self, Tag.self)
+    /// ```
+    ///
+    /// The first type is separate, so at least one type is always given.
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type...) {
+        self.init(for: [type] + others)
+    }
+
+    /// A container stored in the file at `url`, created if it does not exist, with each of
+    /// `types` registered.
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., url: URL) throws(DatabaseError) {
+        try self.init(for: [type] + others, url: url)
+    }
+}
+
+extension RecordContainer {
     /// A record type the container can merge, decode and encode.
     typealias RecordType = any (Codable & Mergeable).Type
 
@@ -17,10 +53,9 @@ extension RecordContainer {
     /// stored first, so the next launch runs on.
     ///
     /// ```swift
-    /// let container = RecordContainer()
-    /// container.register(Note.self)
+    /// let container = RecordContainer(for: Note.self)
     /// ```
-    func register<Record: Codable & Mergeable>(_ type: Record.Type) {
+    private func register<Record: Codable & Mergeable>(_ type: Record.Type) {
         let name = Self.recordType(of: type)
         locked { registrations[name] = type }
         guard let schema = try? JSONSchema(for: type) else { return }

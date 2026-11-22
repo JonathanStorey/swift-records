@@ -153,7 +153,7 @@ private final class Server {
 /// A device: its container, and what it last heard from the server.
 @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private final class Device {
-    let container = RecordContainer()
+    let container: RecordContainer
     let server: Server
     /// The server version of each record this device last fetched or saved.
     var known: [CKRecord.ID: Int] = [:]
@@ -163,11 +163,7 @@ private final class Device {
 
     init(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self]) {
         self.server = server
-        for type in types { register(type) }
-    }
-
-    private func register<T: Codable & Mergeable>(_ type: T.Type) {
-        container.register(type)
+        container = RecordContainer(for: types)
     }
 
     /// Fetches every change since the last fetch, as `fetchedRecordZoneChanges` delivers them.

@@ -232,8 +232,7 @@ private func json(_ value: some Encodable) -> Data {
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func savesARecordNamedByAHashOfItsID() throws {
         let page = Page(slug: "intro", title: "Hello")
-        let container = RecordContainer()
-        container.register(Page.self)
+        let container = RecordContainer(for: Page.self)
         let name = try RecordContainer.recordID(for: page.slug, type: "Page")
         try container.save(their: record(["slug": "intro" as NSString, "title": "Hello" as NSString], type: "Page", name: name.uuidString))
 
@@ -243,8 +242,7 @@ private func json(_ value: some Encodable) -> Data {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func savesTheDecodedRecordAsBase() throws {
-        let container = RecordContainer()
-        container.register(Note.self)
+        let container = RecordContainer(for: Note.self)
         try container.save(their: record(["id": id.uuidString as NSString, "title": "Hello" as NSString], type: "Note"))
 
         let row = try #require(try container.row(id: id))
@@ -258,8 +256,7 @@ private func json(_ value: some Encodable) -> Data {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func skipsARecordNotNamedByAUUID() throws {
-        let container = RecordContainer()
-        container.register(Note.self)
+        let container = RecordContainer(for: Note.self)
         try container.save(their: record(["title": "Hello" as NSString], type: "Note", name: "not-a-uuid"))
         #expect(try container.row(id: id) == nil)
     }
@@ -267,8 +264,7 @@ private func json(_ value: some Encodable) -> Data {
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func skipsANewRecordItCannotRead() throws {
         for (registered, type) in [(true, "Note"), (false, "Other")] {
-            let container = RecordContainer()
-            if registered { container.register(Note.self) }
+            let container = registered ? RecordContainer(for: Note.self) : RecordContainer()
             try container.save(their: record(["title": "Hello" as NSString], type: type))
             #expect(try container.row(id: id) == nil)
         }
@@ -276,8 +272,7 @@ private func json(_ value: some Encodable) -> Data {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aVersionItCannotReadKeepsTheRowsContent() throws {
-        let container = RecordContainer()
-        container.register(Note.self)
+        let container = RecordContainer(for: Note.self)
         try container.save(their: record(["id": id.uuidString as NSString, "title": "Hello" as NSString], type: "Note"))
         try container.save(our: Note(id: id, title: "Ours"), zone: "Notes")
         try container.save(their: record(["title": "Newer" as NSString], type: "Note"))
@@ -297,8 +292,7 @@ private func noteRecord(_ title: String) -> CKRecord {
 
 @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func noteContainer() -> RecordContainer {
-    let container = RecordContainer()
-    container.register(Note.self)
+    let container = RecordContainer(for: Note.self)
     return container
 }
 
@@ -533,8 +527,7 @@ private struct Attachment: Codable, Mergeable {
 @Suite struct RecordContainerAssetCloudKitTests {
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func keepsADownloadedAssetAfterTheEngineRemovesItsFile() throws {
-        let container = RecordContainer()
-        container.register(Attachment.self)
+        let container = RecordContainer(for: Attachment.self)
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data([7]).write(to: file)
         try container.save(their: record(["id": id.uuidString as NSString, "file": CKAsset(fileURL: file)], type: "Attachment"))
@@ -550,8 +543,7 @@ private struct Attachment: Codable, Mergeable {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsTheStoredFile() throws {
-        let container = RecordContainer()
-        container.register(Attachment.self)
+        let container = RecordContainer(for: Attachment.self)
         try container.save(our: Attachment(id: id, file: Data([8])), id: \.id, zone: "Notes")
 
         let sent = try #require(try container.send(id: id))
@@ -580,8 +572,7 @@ private struct Locked: Codable, Identifiable, Mergeable {
 @Suite struct RecordContainerChangedFieldTests {
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     private func synced() throws -> RecordContainer {
-        let container = RecordContainer()
-        container.register(Memo.self)
+        let container = RecordContainer(for: Memo.self)
         let server = record(["id": id.uuidString as NSString, "title": "Hello" as NSString, "subtitle": "Draft" as NSString], type: "Memo")
         server.encryptedValues["pin"] = 4 as NSNumber
         try container.save(their: server)
@@ -611,8 +602,7 @@ private struct Locked: Codable, Identifiable, Mergeable {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func clearsAnEncryptedValueUnderACustomKeyOnTheEncryptedSide() throws {
-        let container = RecordContainer()
-        container.register(Locked.self)
+        let container = RecordContainer(for: Locked.self)
         let server = record(["id": id.uuidString as NSString], type: "Locked")
         server.encryptedValues["pin_code"] = 4 as NSNumber
         try container.save(their: server)
@@ -625,8 +615,7 @@ private struct Locked: Codable, Identifiable, Mergeable {
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aNewRecordSendsEveryField() throws {
-        let container = RecordContainer()
-        container.register(Memo.self)
+        let container = RecordContainer(for: Memo.self)
         try container.save(our: Memo(id: id, title: "New", subtitle: "Sub"), zone: "Notes")
 
         let sent = try #require(try container.send(id: id))

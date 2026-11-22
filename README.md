@@ -250,8 +250,8 @@ and nothing more. Without a location it lives in memory, which suits tests
 and previews. With a URL it is stored in that file.
 
 ```swift
-let preview = RecordContainer()                      // in memory
-let container = try RecordContainer(url: storeURL)   // a file, created if needed
+let preview = RecordContainer(for: Note.self, Tag.self)                // in memory
+let container = try RecordContainer(for: [Note.self, Tag.self], url: storeURL)   // a file, created if needed
 ```
 
 Opening a file throws a `DatabaseError` with SQLite's result code and

@@ -43,8 +43,7 @@ private func json(_ note: Note) -> JSONRepresentation {
 
 private extension RecordContainer {
     static func registered() -> RecordContainer {
-        let container = RecordContainer()
-        container.register(Note.self)
+        let container = RecordContainer(for: Note.self)
         return container
     }
 

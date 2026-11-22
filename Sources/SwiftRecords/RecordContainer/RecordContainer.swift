@@ -8,8 +8,9 @@ import CSQLite
 
 /// The database that holds records: a single SQLite connection, and nothing else.
 ///
-/// `RecordContainer()` keeps everything in memory, so it starts empty and is gone when the
-/// container is released. `RecordContainer(url:)` stores the database in a file.
+/// A container is created for the record types it holds. `RecordContainer(for:)` keeps
+/// everything in memory, so it starts empty and is gone when the container is released.
+/// `RecordContainer(for:url:)` stores the database in a file.
 public final class RecordContainer: @unchecked Sendable {
     /// The database file, or `nil` when the container is in memory.
     public let url: URL?
@@ -49,8 +50,8 @@ public final class RecordContainer: @unchecked Sendable {
     /// and `sweepAssets`.
     private var assetsToSweep: Set<UUID>?
 
-    /// An empty container held in memory.
-    public convenience init() {
+    /// An empty container held in memory, with no record types registered.
+    convenience init() {
         do {
             try self.init(path: ":memory:", url: nil)
         } catch {
@@ -58,43 +59,10 @@ public final class RecordContainer: @unchecked Sendable {
         }
     }
 
-    /// A container stored in the file at `url`, created if it does not exist.
-    public convenience init(url: URL) throws(DatabaseError) {
+    /// A container stored in the file at `url`, created if it does not exist, with no record
+    /// types registered.
+    convenience init(url: URL) throws(DatabaseError) {
         try self.init(path: url.path, url: url)
-    }
-
-    /// An empty container held in memory, with each of `types` registered.
-    ///
-    /// ```swift
-    /// let container = RecordContainer(for: [Note.self, Tag.self])
-    /// ```
-    public convenience init(for types: [any (Codable & Mergeable).Type]) {
-        self.init()
-        for type in types { register(type) }
-    }
-
-    /// A container stored in the file at `url`, created if it does not exist, with each of
-    /// `types` registered.
-    public convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
-        try self.init(url: url)
-        for type in types { register(type) }
-    }
-
-    /// An empty container held in memory, with each of `types` registered.
-    ///
-    /// ```swift
-    /// let container = RecordContainer(for: Note.self, Tag.self)
-    /// ```
-    ///
-    /// The first type is separate so `RecordContainer()` stays the empty container.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type...) {
-        self.init(for: [type] + others)
-    }
-
-    /// A container stored in the file at `url`, created if it does not exist, with each of
-    /// `types` registered.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., url: URL) throws(DatabaseError) {
-        try self.init(for: [type] + others, url: url)
     }
 
     private init(path: String, url: URL?) throws(DatabaseError) {

@@ -14,7 +14,7 @@ A container is one SQLite connection with three tables.
 | `record_type` | The schema each record type was last registered with. |
 | `engine_state` | One opaque blob of sync state, saved and restored by whoever drives the container. |
 
-`RecordContainer()` keeps the database in memory, so it starts empty and is gone with the container. `RecordContainer(url:)` keeps it in a file, created if needed. The database runs in WAL mode, so a read can run beside a write and each commit is cheap.
+A container is created for its record types, which it registers on opening. `RecordContainer(for:)` keeps the database in memory, so it starts empty and is gone with the container. `RecordContainer(for:url:)` keeps it in a file, created if needed. The database runs in WAL mode, so a read can run beside a write and each commit is cheap.
 
 ### The `record` row
 
@@ -215,7 +215,7 @@ Every app update can change a record type. Devices running different versions of
 
 ### Breaking changes
 
-**At registration.** `register(_:)` builds the type's `JSONSchema` and compares it with the schema stored in `record_type` from the last time the type was registered.
+**At registration.** When the container opens, `register(_:)` builds each type's `JSONSchema` and compares it with the schema stored in `record_type` from the last time the type was registered.
 
 1. If the schemas are equal, nothing happens.
 2. Otherwise the new schema is stored first.
