@@ -177,7 +177,12 @@ private final class Device {
     let server: Server
     /// The server version of each record this device last fetched or saved.
     var known: [CKRecord.ID: Int] = [:]
-    var cursor = 0
+    /// The server clock as of the last fetch, kept as the engine's state in the container,
+    /// so it outlives a launch and is lost wherever the container clears that state.
+    var cursor: Int {
+        get { container.engineStateData.flatMap { try? JSONDecoder().decode(Int.self, from: $0) } ?? 0 }
+        set { container.engineStateData = try? JSONEncoder().encode(newValue) }
+    }
     /// What the last upload sent, by record.
     var lastSent: [CKRecord.ID: CKRecord] = [:]
 
@@ -196,11 +201,10 @@ private final class Device {
     }
 
     /// This device after the app quits and launches again, perhaps as a newer version that
-    /// registers `types`: the same file, and the sync state the engine saved.
+    /// registers `types`: the same file, holding the sync state the engine saved.
     func relaunched(registering types: [any (Codable & Mergeable).Type] = [Draft.self]) -> Device {
         let device = Device(server, registering: types, url: url)
         device.known = known
-        device.cursor = cursor
         return device
     }
 
@@ -747,6 +751,44 @@ private final class Device {
         try yoursUpdated.fetch()
         #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.color == "blue")
         #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.title == "Old")
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aDeviceThatUpdatesLaterFetchesTheFieldItMissed() throws {
+        let server = Server()
+        let mine = Device.onDisk(server, registering: [Newer.Draft.self])
+        let yours = Device.onDisk(server, registering: [Older.Draft.self])
+        try mine.save(Newer.Draft(id: id, title: "New", color: "blue"), zone: "Drafts")
+        try mine.sync()
+        try yours.fetch()
+        #expect(try yours.value(Newer.Draft.self, id: id)?.color == nil, "The older app cannot keep a field it does not have.")
+
+        let yoursUpdated = yours.relaunched(registering: [Newer.Draft.self])
+        #expect(yoursUpdated.cursor == 0, "A changed schema starts the engine over.")
+        try yoursUpdated.fetch()
+        #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.color == "blue")
+        #expect(try yoursUpdated.container.pendingRows().isEmpty)
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aDeviceThatUpdatesLaterFetchesARecordTypeItDidNotHave() throws {
+        let server = Server()
+        let mine = Device.onDisk(server, registering: [Draft.self, Page.self])
+        let yours = Device.onDisk(server, registering: [Draft.self])
+        try mine.save(Draft(id: id, title: "Kept"))
+        try mine.save(Page(id: "intro", title: "Welcome"))
+        try mine.sync()
+        try yours.save(Draft(id: UUID(), title: "Unsent"))
+        try yours.fetch()
+        let page = try RecordContainer.recordID(for: "intro", type: "Page")
+        #expect(try yours.container.row(id: page) == nil, "The older app skips a type it does not have.")
+
+        let yoursUpdated = yours.relaunched(registering: [Draft.self, Page.self])
+        try yoursUpdated.fetch()
+        let arrived = try yoursUpdated.value(Page.self, id: page)
+        #expect(arrived == Page(id: "intro", title: "Welcome"))
+        let waiting = try yoursUpdated.container.pendingChanges().saves
+        #expect(waiting.count == 1, "The unsent edit still waits after the engine starts over.")
     }
 }
 

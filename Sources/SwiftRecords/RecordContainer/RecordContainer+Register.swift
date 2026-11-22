@@ -80,6 +80,11 @@ extension RecordContainer {
     /// since records saved under the older schema would be skipped. The new schema is
     /// stored first, so the next launch runs on.
     ///
+    /// A new or changed schema also clears the sync engine's state, so the engine fetches
+    /// everything again. Records that arrived while this app could not read them, or read
+    /// them without a field it now has, come back whole. A version this device already has
+    /// changes nothing, and unsent changes stay waiting in their rows.
+    ///
     /// ```swift
     /// let container = RecordContainer(for: Note.self)
     /// ```
@@ -90,6 +95,7 @@ extension RecordContainer {
         let stored = storedSchema(named: name)
         guard stored != schema else { return }
         store(schema, named: name)
+        engineStateData = nil
         if let stored {
             assert(schema.isSuperset(of: stored), "\(name) can no longer read records saved under its previous schema, so they would be skipped. Make each new property optional, and keep each property's type.")
         }

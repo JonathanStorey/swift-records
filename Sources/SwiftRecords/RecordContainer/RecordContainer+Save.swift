@@ -25,7 +25,7 @@ extension RecordContainer {
             id INTEGER PRIMARY KEY CHECK (id = 0),
             data BLOB NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS record_type (
+        CREATE TABLE IF NOT EXISTS record_schema (
             name TEXT PRIMARY KEY NOT NULL,
             schema TEXT NOT NULL
         )
@@ -182,14 +182,14 @@ extension RecordContainer {
     /// The schema the record type `name` was last registered with, or `nil` when it has none.
     func storedSchema(named name: String) -> JSONSchema? {
         var text: String?
-        try? run("SELECT schema FROM record_type WHERE name = ?", name) { (statement) throws(DatabaseError) in text = statement.text(at: 0) }
+        try? run("SELECT schema FROM record_schema WHERE name = ?", name) { (statement) throws(DatabaseError) in text = statement.text(at: 0) }
         return text.flatMap { try? JSONDecoder().decode(JSONSchema.self, from: Data($0.utf8)) }
     }
 
     /// Keeps `schema` as the one the record type `name` was last registered with.
     func store(_ schema: JSONSchema, named name: String) {
         guard let data = try? JSONEncoder().encode(schema) else { return }
-        try? run("INSERT OR REPLACE INTO record_type (name, schema) VALUES (?, ?)", name, String(decoding: data, as: UTF8.self))
+        try? run("INSERT OR REPLACE INTO record_schema (name, schema) VALUES (?, ?)", name, String(decoding: data, as: UTF8.self))
     }
 
     /// Every zone that holds a row, for making sure each exists before its records upload.

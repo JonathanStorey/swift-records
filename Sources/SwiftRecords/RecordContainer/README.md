@@ -11,7 +11,7 @@ A container is one SQLite connection with three tables.
 | Table | What it holds |
 | --- | --- |
 | `record` | One row per record. |
-| `record_type` | The schema each record type was last registered with. |
+| `record_schema` | The schema each record type was last registered with. |
 | `engine_state` | One opaque blob of sync state, saved and restored by whoever drives the container. |
 
 A container is created for its record types, which it registers on opening. `RecordContainer(for:)` keeps the database in `default.records` in Application Support, created if needed, or in the Application Support folder of an app group's shared container with `storage: .local(in:)`. `RecordContainer(for:storage: .inMemory)` keeps it in memory, so it starts empty and is gone with the container. The database runs in WAL mode, so a read can run beside a write and each commit is cheap.
@@ -213,14 +213,16 @@ Every app update can change a record type. Devices running different versions of
 
 **Older devices keep fields they do not know.** An older app decodes a newer record as its own type, which drops the newer fields from its local copy. But when the older app edits the record, `send(id:)` uploads only the top-level fields that changed from `base`, and the server leaves every other field alone. The newer fields survive on the server untouched, and newer devices still see them.
 
+**Updating fetches everything again.** When that older device updates, its local copy still lacks the newer fields, and the sync engine has already fetched past the record. A record of a type the older app did not have at all was never stored. So whenever `register(_:)` finds a new or changed schema, it clears the engine's state, and the engine fetches every record again on its next launch. A version the device already has changes nothing, and changes waiting to upload stay in their rows, ready for `pendingChanges()` to hand back to the engine.
+
 **Removing a property.** The key is ignored when decoding. It stays on the server until something clears it.
 
 ### Breaking changes
 
-**At registration.** When the container opens, `register(_:)` builds each type's `JSONSchema` and compares it with the schema stored in `record_type` from the last time the type was registered.
+**At registration.** When the container opens, `register(_:)` builds each type's `JSONSchema` and compares it with the schema stored in `record_schema` from the last time the type was registered.
 
 1. If the schemas are equal, nothing happens.
-2. Otherwise the new schema is stored first.
+2. Otherwise the new schema is stored first, and the engine's state is cleared so everything is fetched again.
 3. If there was a stored schema and the new one is not a superset of it (`isSuperset(of:)`), the container asserts with a message that names the type and says how to fix it.
 
 Storing first means the assert fires once, in the build that made the change, during development. The next launch runs on with the new schema as the baseline. A shipped build, with assertions off, never stops.
