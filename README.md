@@ -257,8 +257,8 @@ let preview = try RecordContainer(for: [Note.self], storage: .inMemory)  // in m
 let shared = try RecordContainer(for: Note.self, storage: .local(in: "group.com.example.notes"))
 ```
 
-Opening a file throws a `DatabaseError` with SQLite's result code and
-message. On Linux, install SQLite's headers first
+Opening a file throws a `DatabaseError` whose `description` says what SQLite
+reported. On Linux, install SQLite's headers first
 (`apt-get install libsqlite3-dev`).
 
 ## Requirements

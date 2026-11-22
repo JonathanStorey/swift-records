@@ -13,7 +13,7 @@ import CSQLite
 /// `RecordContainer(for:storage: .inMemory)` keeps it in memory.
 public final class RecordContainer: @unchecked Sendable {
     /// The database file, or `nil` when the container is in memory.
-    public let url: URL?
+    let url: URL?
 
     // Opened with SQLITE_OPEN_FULLMUTEX, so SQLite serializes every call on it.
     let connection: OpaquePointer
@@ -92,7 +92,7 @@ public final class RecordContainer: @unchecked Sendable {
 /// An error SQLite reported, with its result code and message.
 public struct DatabaseError: Error, Equatable, CustomStringConvertible {
     /// The SQLite result code, such as `SQLITE_CANTOPEN` (14).
-    public let code: Int32
+    let code: Int32
     public let description: String
 }
 
