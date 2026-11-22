@@ -10,7 +10,7 @@ import CSQLite
 ///
 /// A container is created for the record types it holds. `RecordContainer(for:)` stores the
 /// database in `default.records` in Application Support, and
-/// `RecordContainer(for:inMemory: true)` keeps it in memory.
+/// `RecordContainer(for:storage: .inMemory)` keeps it in memory.
 public final class RecordContainer: @unchecked Sendable {
     /// The database file, or `nil` when the container is in memory.
     public let url: URL?

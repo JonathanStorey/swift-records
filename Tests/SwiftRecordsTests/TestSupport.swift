@@ -4,7 +4,7 @@ import Versioning
 extension RecordContainer {
     /// An in-memory container with `types` registered. Opening one in memory cannot fail.
     static func inMemory(_ types: [any (Codable & Mergeable).Type]) -> RecordContainer {
-        try! RecordContainer(for: types, inMemory: true)
+        try! RecordContainer(for: types, storage: .inMemory)
     }
 
     /// An in-memory container with each of the given types registered.

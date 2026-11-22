@@ -249,12 +249,12 @@ value: `var attachment: Asset` with `rawValue: URL?`, or
 and nothing more. It is opened for the record types it holds, as SwiftData's
 `ModelContainer` is. The file lives in one place, `default.records` in
 Application Support, or in an app group's shared container so an app and its
-extensions share it. `inMemory: true` suits tests and previews.
+extensions share it. `storage: .inMemory` suits tests and previews.
 
 ```swift
 let container = try RecordContainer(for: Note.self, Tag.self)        // Application Support/default.records
-let preview = try RecordContainer(for: [Note.self], inMemory: true)  // in memory
-let shared = try RecordContainer(for: Note.self, appGroup: "group.com.example.notes")
+let preview = try RecordContainer(for: [Note.self], storage: .inMemory)  // in memory
+let shared = try RecordContainer(for: Note.self, storage: .appGroup("group.com.example.notes"))
 ```
 
 Opening a file throws a `DatabaseError` with SQLite's result code and

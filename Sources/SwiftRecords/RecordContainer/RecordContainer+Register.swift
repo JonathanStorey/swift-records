@@ -2,39 +2,43 @@ import Foundation
 import Versioning
 
 extension RecordContainer {
-    /// A container with each of `types` registered, stored in `default.records` in the
-    /// app's Application Support folder, created if needed.
+    /// Where a container keeps its database.
+    public enum Storage: Hashable, Sendable {
+        /// In memory, so it starts empty and is gone when the container is released, as for
+        /// previews and tests.
+        case inMemory
+        /// In `default.records` in the app's Application Support folder, created if needed.
+        case localOnly
+        /// In `default.records` in the Application Support folder of this app group's shared
+        /// container, so an app and its extensions share one database. App groups exist only
+        /// on Apple platforms.
+        case appGroup(String)
+    }
+
+    /// A container with each of `types` registered, kept in `storage`.
     ///
     /// ```swift
     /// let container = try RecordContainer(for: [Note.self, Tag.self])
-    /// let preview = try RecordContainer(for: [Note.self], inMemory: true)
+    /// let preview = try RecordContainer(for: [Note.self], storage: .inMemory)
     /// ```
-    ///
-    /// - Parameters:
-    ///   - inMemory: Keeps the database in memory instead, so it starts empty and is gone
-    ///     when the container is released, as for previews and tests.
-    ///   - appGroup: Stores the file in the Application Support folder of this app group's
-    ///     shared container instead, so an app and its extensions share one database.
-    ///     App groups exist only on Apple platforms.
-    public convenience init(for types: [any (Codable & Mergeable).Type], inMemory: Bool = false, appGroup: String? = nil) throws(DatabaseError) {
-        if inMemory {
-            self.init()
-        } else {
-            try self.init(url: Self.storeURL(appGroup: appGroup))
+    public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .localOnly) throws(DatabaseError) {
+        switch storage {
+        case .inMemory: self.init()
+        case .localOnly: try self.init(url: Self.storeURL(appGroup: nil))
+        case .appGroup(let group): try self.init(url: Self.storeURL(appGroup: group))
         }
         for type in types { register(type) }
     }
 
-    /// A container with each of the given types registered, as ``init(for:inMemory:appGroup:)``
-    /// opens it.
+    /// A container with each of the given types registered, kept in `storage`.
     ///
     /// ```swift
     /// let container = try RecordContainer(for: Note.self, Tag.self)
     /// ```
     ///
     /// The first type is separate, so at least one type is always given.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., inMemory: Bool = false, appGroup: String? = nil) throws(DatabaseError) {
-        try self.init(for: [type] + others, inMemory: inMemory, appGroup: appGroup)
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., storage: Storage = .localOnly) throws(DatabaseError) {
+        try self.init(for: [type] + others, storage: storage)
     }
 }
 

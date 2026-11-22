@@ -58,13 +58,13 @@ private struct Memo: Codable, Mergeable {
     private static let types = ["Tag", "Memo"]
 
     @Test func registersAnArrayOfTypes() throws {
-        let container = try RecordContainer(for: [Tag.self, Memo.self], inMemory: true)
+        let container = try RecordContainer(for: [Tag.self, Memo.self], storage: .inMemory)
         #expect(container.url == nil)
         for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
     }
 
     @Test func registersVariadicTypes() throws {
-        let container = try RecordContainer(for: Tag.self, Memo.self, inMemory: true)
+        let container = try RecordContainer(for: Tag.self, Memo.self, storage: .inMemory)
         for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
     }
 
@@ -77,7 +77,7 @@ private struct Memo: Codable, Mergeable {
 
     #if !canImport(Darwin)
     @Test func anAppGroupNeedsAnApplePlatform() {
-        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, appGroup: "group.example") }
+        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, storage: .appGroup("group.example")) }
     }
     #endif
 }
