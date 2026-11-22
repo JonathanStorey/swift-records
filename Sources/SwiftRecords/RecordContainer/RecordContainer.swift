@@ -63,6 +63,40 @@ public final class RecordContainer: @unchecked Sendable {
         try self.init(path: url.path, url: url)
     }
 
+    /// An empty container held in memory, with each of `types` registered.
+    ///
+    /// ```swift
+    /// let container = RecordContainer(for: [Note.self, Tag.self])
+    /// ```
+    public convenience init(for types: [any (Codable & Mergeable).Type]) {
+        self.init()
+        for type in types { register(type) }
+    }
+
+    /// A container stored in the file at `url`, created if it does not exist, with each of
+    /// `types` registered.
+    public convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
+        try self.init(url: url)
+        for type in types { register(type) }
+    }
+
+    /// An empty container held in memory, with each of `types` registered.
+    ///
+    /// ```swift
+    /// let container = RecordContainer(for: Note.self, Tag.self)
+    /// ```
+    ///
+    /// The first type is separate so `RecordContainer()` stays the empty container.
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type...) {
+        self.init(for: [type] + others)
+    }
+
+    /// A container stored in the file at `url`, created if it does not exist, with each of
+    /// `types` registered.
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., url: URL) throws(DatabaseError) {
+        try self.init(for: [type] + others, url: url)
+    }
+
     private init(path: String, url: URL?) throws(DatabaseError) {
         var connection: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX

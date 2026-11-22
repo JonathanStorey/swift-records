@@ -45,3 +45,34 @@ import Versioning
         }
     }
 }
+
+private struct Tag: Codable, Mergeable {
+    var name = ""
+}
+
+private struct Memo: Codable, Mergeable {
+    var text = ""
+}
+
+@Suite struct RecordContainerInitTests {
+    private static let types = ["Tag", "Memo"]
+
+    @Test func registersAnArrayOfTypes() throws {
+        let container = RecordContainer(for: [Tag.self, Memo.self])
+        for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
+    }
+
+    @Test func registersVariadicTypes() throws {
+        let container = RecordContainer(for: Tag.self, Memo.self)
+        for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
+    }
+
+    @Test func registersTypesInAFile() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let array = try RecordContainer(for: [Tag.self], url: url)
+        let variadic = try RecordContainer(for: Tag.self, Memo.self, url: url)
+        #expect(throws: Never.self) { try array.registeredType(named: "Tag") }
+        for name in Self.types { #expect(throws: Never.self) { try variadic.registeredType(named: name) } }
+    }
+}
