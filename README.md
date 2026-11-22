@@ -254,7 +254,7 @@ extensions share it. `storage: .inMemory` suits tests and previews.
 ```swift
 let container = try RecordContainer(for: Note.self, Tag.self)        // Application Support/default.records
 let preview = try RecordContainer(for: [Note.self], storage: .inMemory)  // in memory
-let shared = try RecordContainer(for: Note.self, storage: .appGroup("group.com.example.notes"))
+let shared = try RecordContainer(for: Note.self, storage: .localOnly(in: "group.com.example.notes"))
 ```
 
 Opening a file throws a `DatabaseError` with SQLite's result code and

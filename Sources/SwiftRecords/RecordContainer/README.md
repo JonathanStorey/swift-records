@@ -14,7 +14,7 @@ A container is one SQLite connection with three tables.
 | `record_type` | The schema each record type was last registered with. |
 | `engine_state` | One opaque blob of sync state, saved and restored by whoever drives the container. |
 
-A container is created for its record types, which it registers on opening. `RecordContainer(for:)` keeps the database in `default.records` in Application Support, created if needed, or in the Application Support folder of an app group's shared container with `storage: .appGroup(_:)`. `RecordContainer(for:storage: .inMemory)` keeps it in memory, so it starts empty and is gone with the container. The database runs in WAL mode, so a read can run beside a write and each commit is cheap.
+A container is created for its record types, which it registers on opening. `RecordContainer(for:)` keeps the database in `default.records` in Application Support, created if needed, or in the Application Support folder of an app group's shared container with `storage: .localOnly(in:)`. `RecordContainer(for:storage: .inMemory)` keeps it in memory, so it starts empty and is gone with the container. The database runs in WAL mode, so a read can run beside a write and each commit is cheap.
 
 ### The `record` row
 

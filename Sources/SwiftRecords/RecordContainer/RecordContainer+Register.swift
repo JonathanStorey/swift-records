@@ -3,16 +3,32 @@ import Versioning
 
 extension RecordContainer {
     /// Where a container keeps its database.
-    public enum Storage: Hashable, Sendable {
+    ///
+    /// ```swift
+    /// try RecordContainer(for: Note.self)                                         // .localOnly
+    /// try RecordContainer(for: Note.self, storage: .inMemory)
+    /// try RecordContainer(for: Note.self, storage: .localOnly(in: "group.com.example.notes"))
+    /// ```
+    public struct Storage: Hashable, Sendable {
+        /// The app group whose shared container holds the file, or `nil` for the app's own
+        /// Application Support folder.
+        let appGroup: String?
+        /// Whether the database lives only in memory, with no file.
+        let isInMemory: Bool
+
         /// In memory, so it starts empty and is gone when the container is released, as for
         /// previews and tests.
-        case inMemory
+        public static let inMemory = Storage(appGroup: nil, isInMemory: true)
+
         /// In `default.records` in the app's Application Support folder, created if needed.
-        case localOnly
-        /// In `default.records` in the Application Support folder of this app group's shared
+        public static let localOnly = Storage(appGroup: nil, isInMemory: false)
+
+        /// In `default.records` in the Application Support folder of `appGroup`'s shared
         /// container, so an app and its extensions share one database. App groups exist only
         /// on Apple platforms.
-        case appGroup(String)
+        public static func localOnly(in appGroup: String) -> Storage {
+            Storage(appGroup: appGroup, isInMemory: false)
+        }
     }
 
     /// A container with each of `types` registered, kept in `storage`.
@@ -22,10 +38,10 @@ extension RecordContainer {
     /// let preview = try RecordContainer(for: [Note.self], storage: .inMemory)
     /// ```
     public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .localOnly) throws(DatabaseError) {
-        switch storage {
-        case .inMemory: self.init()
-        case .localOnly: try self.init(url: Self.storeURL(appGroup: nil))
-        case .appGroup(let group): try self.init(url: Self.storeURL(appGroup: group))
+        if storage.isInMemory {
+            self.init()
+        } else {
+            try self.init(url: Self.storeURL(appGroup: storage.appGroup))
         }
         for type in types { register(type) }
     }
