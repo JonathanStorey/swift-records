@@ -66,8 +66,7 @@ private struct Renamed: Codable, Identifiable, Mergeable {
 private extension RecordContainer {
     /// A container holding `project` as the server's version, synced.
     static func synced(_ project: Project) throws -> RecordContainer {
-        let container = RecordContainer()
-        container.register(Project.self)
+        let container = RecordContainer.inMemory(Project.self)
         try container.receive(project)
         return container
     }
@@ -301,8 +300,7 @@ private func temporaryFolder() -> URL {
     }
 
     @Test func resendingAZoneKeepsItsAssets() throws {
-        let container = RecordContainer()
-        container.register(Photo.self)
+        let container = RecordContainer.inMemory(Photo.self)
         try container.save(our: Photo(id: id, picture: Data([5])), zone: "Photos")
         try container.update(id: id) { row in
             row.metadata = Data([1])
@@ -326,8 +324,7 @@ private func temporaryFolder() -> URL {
     }
 
     @Test func aRolledBackTransactionKeepsTheFilesItsRowsUse() throws {
-        let container = RecordContainer()
-        container.register(Photo.self)
+        let container = RecordContainer.inMemory(Photo.self)
         try container.save(our: Photo(id: id, picture: Data([6])), zone: "Photos")
         try container.update(id: id) { row in
             row.metadata = Data([1])
@@ -380,8 +377,7 @@ private func temporaryFolder() -> URL {
 
 @Suite struct RecordContainerRobustnessTests {
     @Test func manyThreadsCanSaveAndReadAtOnce() throws {
-        let container = RecordContainer()
-        container.register(Project.self)
+        let container = RecordContainer.inMemory(Project.self)
         let ids = (0..<20).map { _ in UUID() }
         DispatchQueue.concurrentPerform(iterations: 400) { index in
             let id = ids[(index / 4) % ids.count]
@@ -412,8 +408,7 @@ private func temporaryFolder() -> URL {
 
     @Test func aFailedTransactionWritesNothing() throws {
         let id = UUID()
-        let container = RecordContainer()
-        container.register(Project.self)
+        let container = RecordContainer.inMemory(Project.self)
         let json = try JSONRepresentation(Project(id: id))
         #expect(throws: DatabaseError.self) {
             try container.transaction { () throws(DatabaseError) in

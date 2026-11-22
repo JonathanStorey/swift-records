@@ -45,3 +45,39 @@ import Versioning
         }
     }
 }
+
+private struct Tag: Codable, Mergeable {
+    var name = ""
+}
+
+private struct Memo: Codable, Mergeable {
+    var text = ""
+}
+
+@Suite struct RecordContainerInitTests {
+    private static let types = ["Tag", "Memo"]
+
+    @Test func registersAnArrayOfTypes() throws {
+        let container = try RecordContainer(for: [Tag.self, Memo.self], storage: .inMemory)
+        #expect(container.url == nil)
+        for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
+    }
+
+    @Test func registersVariadicTypes() throws {
+        let container = try RecordContainer(for: Tag.self, Memo.self, storage: .inMemory)
+        for name in Self.types { #expect(throws: Never.self) { try container.registeredType(named: name) } }
+    }
+
+    @Test func storesTheDatabaseInApplicationSupport() throws {
+        let url = try RecordContainer.storeURL(appGroup: nil)
+        #expect(url.lastPathComponent == "default.records")
+        #expect(url.deletingLastPathComponent().lastPathComponent == "Application Support"
+            || url.deletingLastPathComponent().path.hasSuffix(".local/share"))
+    }
+
+    #if !canImport(Darwin)
+    @Test func anAppGroupNeedsAnApplePlatform() {
+        #expect(throws: DatabaseError.self) { try RecordContainer(for: Tag.self, storage: .local(in: "group.example")) }
+    }
+    #endif
+}

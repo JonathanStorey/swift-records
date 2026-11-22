@@ -7,8 +7,12 @@ on:
 
 jobs:
   linux:
+    # 6.0 is the declared minimum, and the newest release catches what it deprecates.
+    strategy:
+      matrix:
+        swift: ["6.0", "6.4"]
     runs-on: ubuntu-latest
-    container: swift:6.4
+    container: swift:${{ matrix.swift }}
     steps:
       - uses: actions/checkout@v4
       - run: apt-get update && apt-get install -y libsqlite3-dev

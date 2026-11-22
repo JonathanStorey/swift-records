@@ -2,6 +2,63 @@ import Foundation
 import Versioning
 
 extension RecordContainer {
+    /// Where a container keeps its database.
+    ///
+    /// ```swift
+    /// try RecordContainer(for: Note.self)                                         // .local
+    /// try RecordContainer(for: Note.self, storage: .inMemory)
+    /// try RecordContainer(for: Note.self, storage: .local(in: "group.com.example.notes"))
+    /// ```
+    public struct Storage: Hashable, Sendable {
+        /// The app group whose shared container holds the file, or `nil` for the app's own
+        /// Application Support folder.
+        let appGroup: String?
+        /// Whether the database lives only in memory, with no file.
+        let isInMemory: Bool
+
+        /// In memory, so it starts empty and is gone when the container is released, as for
+        /// previews and tests.
+        public static let inMemory = Storage(appGroup: nil, isInMemory: true)
+
+        /// In `default.records` in the app's Application Support folder, created if needed.
+        public static let local = Storage(appGroup: nil, isInMemory: false)
+
+        /// In `default.records` in the Application Support folder of `appGroup`'s shared
+        /// container, so an app and its extensions share one database. App groups exist only
+        /// on Apple platforms.
+        public static func local(in appGroup: String) -> Storage {
+            Storage(appGroup: appGroup, isInMemory: false)
+        }
+    }
+
+    /// A container with each of `types` registered, kept in `storage`.
+    ///
+    /// ```swift
+    /// let container = try RecordContainer(for: [Note.self, Tag.self])
+    /// let preview = try RecordContainer(for: [Note.self], storage: .inMemory)
+    /// ```
+    public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .local) throws(DatabaseError) {
+        if storage.isInMemory {
+            self.init()
+        } else {
+            try self.init(url: Self.storeURL(appGroup: storage.appGroup))
+        }
+        for type in types { register(type) }
+    }
+
+    /// A container with each of the given types registered, kept in `storage`.
+    ///
+    /// ```swift
+    /// let container = try RecordContainer(for: Note.self, Tag.self)
+    /// ```
+    ///
+    /// The first type is separate, so at least one type is always given.
+    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., storage: Storage = .local) throws(DatabaseError) {
+        try self.init(for: [type] + others, storage: storage)
+    }
+}
+
+extension RecordContainer {
     /// A record type the container can merge, decode and encode.
     typealias RecordType = any (Codable & Mergeable).Type
 
@@ -17,10 +74,9 @@ extension RecordContainer {
     /// stored first, so the next launch runs on.
     ///
     /// ```swift
-    /// let container = RecordContainer()
-    /// container.register(Note.self)
+    /// let container = RecordContainer(for: Note.self)
     /// ```
-    func register<Record: Codable & Mergeable>(_ type: Record.Type) {
+    private func register<Record: Codable & Mergeable>(_ type: Record.Type) {
         let name = Self.recordType(of: type)
         locked { registrations[name] = type }
         guard let schema = try? JSONSchema(for: type) else { return }
