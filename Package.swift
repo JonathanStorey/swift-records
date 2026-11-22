@@ -22,7 +22,17 @@ let package = Package(
     targets: [
         .target(
             name: "SwiftRecords",
-            dependencies: [.product(name: "Versioning", package: "swift-versioning")]
+            dependencies: [
+                .product(name: "Versioning", package: "swift-versioning"),
+                .target(name: "CSQLite", condition: .when(platforms: [.linux])),
+            ],
+            exclude: ["RecordContainer/README.md"]
+        ),
+        // Apple platforms import SQLite3 from the SDK. Linux links the system library.
+        .systemLibrary(
+            name: "CSQLite",
+            pkgConfig: "sqlite3",
+            providers: [.apt(["libsqlite3-dev"])]
         ),
         .testTarget(
             name: "SwiftRecordsTests",
