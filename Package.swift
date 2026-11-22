@@ -17,12 +17,22 @@ let package = Package(
     ],
     dependencies: [
         // Tracks main so each resolve picks up the newest swift-versioning. Package.resolved is ignored for the same reason.
-        .package(url: "https://github.com/JonathanStorey/swift-versioning", branch: "main"),
+        .package(url: "https://github.com/JonathanStorey/swift-versioning", branch: "claude/project-thread-5tqpds"),
     ],
     targets: [
         .target(
             name: "SwiftRecords",
-            dependencies: [.product(name: "Versioning", package: "swift-versioning")]
+            dependencies: [
+                .product(name: "Versioning", package: "swift-versioning"),
+                .target(name: "CSQLite", condition: .when(platforms: [.linux])),
+            ],
+            exclude: ["RecordContainer/README.md"]
+        ),
+        // Apple platforms import SQLite3 from the SDK. Linux links the system library.
+        .systemLibrary(
+            name: "CSQLite",
+            pkgConfig: "sqlite3",
+            providers: [.apt(["libsqlite3-dev"])]
         ),
         .testTarget(
             name: "SwiftRecordsTests",
