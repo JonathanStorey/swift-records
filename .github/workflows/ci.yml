@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.4
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y libsqlite3-dev
+      # A test process that dies can still exit 0, so the run must also report that it finished.
+      - run: |
+          set -o pipefail
+          swift test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -q "Test run with .* passed" "$RUNNER_TEMP/test.log"
+        shell: bash
+
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      # A test process that dies can still exit 0, so the run must also report that it finished.
+      - run: |
+          set -o pipefail
+          swift test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -q "Test run with .* passed" "$RUNNER_TEMP/test.log"
