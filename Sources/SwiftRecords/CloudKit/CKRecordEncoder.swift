@@ -24,7 +24,6 @@ import CoreLocation
 /// - Arrays and sets as lists, with each nested value in them as `Data` holding its JSON.
 /// - Anything else, such as a nested value, a dictionary, a list of lists, or a list
 ///   holding `nil`, as `Data` holding its JSON.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 struct CKRecordEncoder {
     func encode<T: Encodable>(_ value: T, to record: CKRecord) throws {
         let encoder = RecordEncoder(record: record)
@@ -43,7 +42,6 @@ struct CKRecordEncoder {
 // MARK: - Record
 
 /// Writes the top-level value's keyed container onto the record.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private final class RecordEncoder: Encoder {
     let record: CKRecord
     var written: Set<String> = []
@@ -85,7 +83,6 @@ private final class RecordEncoder: Encoder {
 
 /// The record's fields. With no encoder, it writes nothing, for a nested value that is
 /// stored as JSON instead.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private struct FieldContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
     let encoder: RecordEncoder?
     var codingPath: [any CodingKey] { [] }
@@ -131,7 +128,6 @@ private struct FieldContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
 
 /// Encodes one value of a record into its CloudKit value, noting when it has no CloudKit
 /// form and must be stored as JSON.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private final class FieldEncoder: Encoder, SingleValueEncodingContainer {
     /// The record the value belongs to, for the zone and parent of its references, or `nil`
     /// for a value that is stored as JSON.
@@ -190,7 +186,6 @@ private final class FieldEncoder: Encoder, SingleValueEncodingContainer {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension FieldEncoder {
     /// `value` as the CloudKit value that stores it, or `nil` when it has no value.
     static func box<T: Encodable>(_ value: T, owner: RecordEncoder?, codingPath: [any CodingKey]) throws -> Any? {
@@ -212,7 +207,6 @@ private extension FieldEncoder {
 
 /// A list, which CloudKit stores only when it holds no `nil` and no other list. Each
 /// element that has no CloudKit form of its own is stored as JSON.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private struct ListContainer: UnkeyedEncodingContainer {
     let encoder: FieldEncoder
     private(set) var elements: [Any] = []
@@ -268,7 +262,6 @@ private struct ListContainer: UnkeyedEncodingContainer {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension RecordReference {
     /// The reference in the zone of `owner`'s record, and, when it is the parent, set as
     /// that record's parent too.

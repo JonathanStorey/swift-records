@@ -76,7 +76,6 @@ extension RecordContainer {
 #if canImport(CloudKit)
 import CloudKit
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 extension RecordContainer {
     func send(id: UUID) throws(DatabaseError) -> CKRecord? {
         guard let key = rowID(id.uuidString) else { return nil }

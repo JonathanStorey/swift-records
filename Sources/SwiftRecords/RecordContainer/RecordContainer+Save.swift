@@ -26,6 +26,7 @@ extension RecordContainer {
             id INTEGER PRIMARY KEY CHECK (id = 0),
             data BLOB NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS record_type ON record (type, zone, owner);
         CREATE TABLE IF NOT EXISTS record_schema (
             name TEXT PRIMARY KEY NOT NULL,
             schema TEXT NOT NULL
@@ -241,6 +242,38 @@ extension RecordContainer {
             change(&row)
             try write(row, isNew: existing == nil)
         }
+    }
+
+    /// The saved value of every `T` in `zone` that `predicate` accepts, sorted by `order`.
+    ///
+    /// Each row's value is this device's version, `ours`, or else the server's, `base`. Rows
+    /// marked deleted are left out, and so is a row whose value does not decode as `T`, such
+    /// as one a newer version of the app wrote. Each value is decoded and tested as SQLite
+    /// reads its row, so only the matches are kept in memory. With no `order`, the values
+    /// keep no particular order.
+    ///
+    /// ```swift
+    /// let drafts = try container.fetch(Note.self, in: "Notes", predicate: #Predicate { $0.isDraft }, order: [SortDescriptor(\.title)])
+    /// ```
+    func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
+        var values: [T] = []
+        var failure: (any Error)?
+        try run("""
+            SELECT id, COALESCE(ours, base) FROM record
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0
+            """, Self.recordType(of: type), zone.name, zone.owner) { (statement) throws(DatabaseError) in
+            guard failure == nil,
+                  let name = statement.text(at: 0),
+                  let json = try? statement.json(at: 1),
+                  let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(type) else { return }
+            do {
+                if try predicate?.evaluate(value) ?? true { values.append(value) }
+            } catch {
+                failure = error
+            }
+        }
+        if let failure { throw failure }
+        return order.isEmpty ? values : values.sorted(using: order)
     }
 
     /// The connection's `PRAGMA data_version`, which changes only when another connection
