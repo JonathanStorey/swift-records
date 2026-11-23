@@ -168,3 +168,63 @@ private extension RecordContainer {
         #expect(row.error?.contains("not registered") == true)
     }
 }
+
+/// One record type as two versions of an app see it, and a type only the newer one has.
+private enum V1 {
+    struct Note: Codable, Identifiable, Mergeable {
+        var id: UUID
+        var title = ""
+    }
+}
+
+private enum V2 {
+    struct Note: Codable, Identifiable, Mergeable {
+        var id: UUID
+        var title = ""
+        var color: String?
+    }
+
+    struct Tag: Codable, Identifiable, Mergeable {
+        var id: UUID
+        var name = ""
+    }
+}
+
+@Suite struct RecordContainerSchemaChangeTests {
+    private let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records")
+
+    @Test func theSameSchemaKeepsTheEngineState() throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        try RecordContainer(for: [V1.Note.self], url: url).engineStateData = Data([1])
+        let relaunched = try RecordContainer(for: [V1.Note.self], url: url)
+        #expect(relaunched.engineStateData == Data([1]))
+    }
+
+    @Test func aChangedSchemaClearsTheEngineState() throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        try RecordContainer(for: [V1.Note.self], url: url).engineStateData = Data([1])
+        let updated = try RecordContainer(for: [V2.Note.self], url: url)
+        #expect(updated.engineStateData == nil)
+        let schema = try JSONSchema(for: V2.Note.self)
+        #expect(updated.storedSchema(named: "Note") == schema)
+    }
+
+    @Test func aNewTypeClearsTheEngineState() throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        try RecordContainer(for: [V1.Note.self], url: url).engineStateData = Data([1])
+        let updated = try RecordContainer(for: [V1.Note.self, V2.Tag.self], url: url)
+        #expect(updated.engineStateData == nil)
+    }
+
+    @Test func aClearedStateKeepsWaitingChanges() throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        let id = UUID()
+        let container = try RecordContainer(for: [V1.Note.self], url: url)
+        try container.save(our: V1.Note(id: id, title: "Unsent"), zone: "Notes")
+        container.engineStateData = Data([1])
+        let updated = try RecordContainer(for: [V2.Note.self], url: url)
+        #expect(updated.engineStateData == nil)
+        let pending = try updated.pendingRows().map(\.id)
+        #expect(pending == [id])
+    }
+}
