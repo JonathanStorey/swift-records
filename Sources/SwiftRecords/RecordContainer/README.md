@@ -10,7 +10,7 @@ A container is one SQLite connection with three tables.
 
 | Table | What it holds |
 | --- | --- |
-| `record` | One row per record. |
+| `record` | One row per record in each zone, keyed by `id`, `zone` and `owner`. |
 | `record_schema` | The schema each record type was last registered with. |
 | `engine_state` | One opaque blob of sync state, saved and restored by whoever drives the container. |
 
@@ -22,8 +22,10 @@ Every row is read into a `Row` value, a plain struct with one property per colum
 
 | Column | `Row` property | Meaning |
 | --- | --- | --- |
-| `id` | `id: UUID` | The record's name on the server and the table's primary key. |
+| `id` | `id: UUID` | The record's name on the server. With `zone` and `owner`, the table's primary key. |
 | `zone`, `owner` | `zone: Zone` | The zone the record lives in, with its owner. |
+
+A row's key is `RowID`, a typealias for `RecordID<Any>`: the record's name and its zone. The same record can be saved in more than one zone, and each copy is its own row with its own asset files. `Row.rowID` gives a row's key.
 | `type` | `type: String` | The record type, the Swift type's name, as in `"Note"`. |
 | `metadata` | `metadata: Data?` | The server's archived system fields, or `nil` before the server first confirms the record. |
 | `base` | `base: JSONRepresentation?` | What the server last confirmed, or `nil` for a record never uploaded. |
@@ -54,9 +56,9 @@ With every record type registered, `.conflict` never happens, because a register
 
 ### Saving locally
 
-`save(our:id:zone:)` encodes the value to JSON and writes it into `ours` in one `INSERT … ON CONFLICT DO UPDATE` statement. A new id adds a row. An existing id replaces `ours`, clears `isDeleted` and `error`, and leaves `base`, `theirs`, `metadata` and the zone as they were.
+`save(our:id:zone:)` encodes the value to JSON and writes it into `ours` in one `INSERT … ON CONFLICT DO UPDATE` statement. A new id or zone adds a row. An existing id in the same zone replaces `ours`, clears `isDeleted` and `error`, and leaves `base`, `theirs` and `metadata` as they were. Saving the same record to another zone adds a second row and leaves the first alone.
 
-The row's id comes from `recordID(for:type:)`. A `UUID` id is used as it is. Any other id, such as a slug, is hashed together with the record type into a stable UUID. Two devices that create the same id independently therefore write the same record, and the type is part of the hash because a record name must be unique in its zone across every type.
+The row's id comes from `recordID(for:type:)`. A `UUID` id is used as it is. Any other id, such as a slug, is hashed together with the record type into a stable UUID. Two devices that create the same id independently therefore write the same record, and the type is part of the hash because a record name must be unique in its zone across every type. The zone is not part of the hash, so a copy of a record in another zone keeps its name.
 
 Saving never merges. A local save is always on top of whatever the device already had, so it simply replaces `ours`.
 
@@ -322,7 +324,7 @@ Every function below is internal to the module unless marked otherwise.
 | `func locked<T, Failure>(_ body: () throws(Failure) -> T) throws(Failure) -> T` | Runs `body` under the container's recursive lock. |
 | `func transaction<T>(_ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, then sweeps assets. |
 | `func sweepAssets(of row: Row)` | Removes a written row's unused files, now or after the current transaction. |
-| `func sweepAssets(id: UUID)` | Removes a removed row's folder, now or after the current transaction. |
+| `func sweepAssets(id: RowID)` | Removes a removed row's folder, now or after the current transaction. |
 | `func execute(_ sql: String) throws(DatabaseError)` | Runs SQL that returns no rows. |
 | `func run(_ sql: String, _ values: Any?..., each body:)` (private) | Prepares, binds and steps a statement, handing each result row to `body`. |
 
@@ -341,10 +343,10 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func row(id: UUID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |
-| `func update(id: UUID, inserting new: Row?, _ change: (inout Row) -> Void) throws(DatabaseError)` | Reads, changes and writes a row under the lock, inserting `new` when there is none. |
+| `func row(id: RowID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |
+| `func update(id: RowID, inserting new: Row?, _ change: (inout Row) -> Void) throws(DatabaseError)` | Reads, changes and writes a row under the lock, inserting `new` when there is none. |
 | `func write(_ row: Row) throws(DatabaseError)` (private) | Writes every column with portable asset paths, then sweeps the row's assets. |
-| `func remove(id: UUID) throws(DatabaseError)` (private) | Deletes a row and sweeps its folder. |
+| `func remove(id: RowID) throws(DatabaseError)` (private) | Deletes a row and sweeps its folder. |
 | `mutating func Row.receive(_ theirs:merging:)` | Takes an incoming version as `base`, merging it into `ours` first when there is one. |
 | `mutating func Row.confirm(_ sent:)` | Takes a confirmed upload as `base`, keeping later local changes in `ours`. |
 | `var Row.status: Row.Status` | The computed sync status. |
@@ -358,9 +360,9 @@ Every function below is internal to the module unless marked otherwise.
 | `func save<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | Saves a local version into `ours`. |
 | `func save<Record: Identifiable>(our record: Record, zone: Zone) throws` | The same, identified by `id`. |
 | `func save(their json: JSONRepresentation, id: UUID, zone: Zone, type: String, metadata: Data?) throws(DatabaseError)` | Saves an incoming version, merging when needed. |
-| `func delete(id: UUID) throws(DatabaseError)` | Removes a never-uploaded row, or marks the row deleted. |
-| `func delete<Record, ID>(our record: Record, id: KeyPath<Record, ID>) throws` | The same, by a record's id. |
-| `func save(deleted id: UUID) throws(DatabaseError)` | Removes a row the server no longer has, unless unsent changes should recreate it. |
+| `func delete(id: RowID) throws(DatabaseError)` | Removes a never-uploaded row, or marks the row deleted. |
+| `func delete<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | The same, by a record's id. |
+| `func save(deleted id: RowID) throws(DatabaseError)` | Removes a row the server no longer has, unless unsent changes should recreate it. |
 | `func clear() throws(DatabaseError)` | Removes every row, the sync state and every asset. |
 | `func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError)` | Removes a zone's rows, or rebuilds them as new records. |
 | `var engineStateData: Data?` | The opaque sync state blob. Reading and writing never throw. |
@@ -380,11 +382,11 @@ Every function below is internal to the module unless marked otherwise.
 | --- | --- |
 | `func save(their record: CKRecord) throws(DatabaseError)` | Decodes and saves an incoming record, or only its system fields when it cannot be read. |
 | `func save(their records: some Sequence<CKRecord>) throws(DatabaseError)` | The same for a batch, in one transaction. |
-| `func send(id: UUID) throws(DatabaseError) -> CKRecord?` | Builds the upload with only changed fields, and keeps `sent`. |
+| `func send(id: RowID) throws(DatabaseError) -> CKRecord?` | Builds the upload with only changed fields, and keeps `sent`. |
 | `func save(sent record: CKRecord) throws(DatabaseError)` | Confirms an upload from `sent`. |
 | `func save(sent records: some Sequence<CKRecord>) throws(DatabaseError)` | The same for a batch, in one transaction. |
 | `func save(failed record: CKRecord, error: CKError) throws(DatabaseError)` | Merges, retries, recreates or records the error. |
-| `func send(deleted id: UUID) throws(DatabaseError) -> CKRecord.ID?` | The id to delete, when a delete is waiting. |
+| `func send(deleted id: RowID) throws(DatabaseError) -> CKRecord.ID?` | The id to delete, when a delete is waiting. |
 | `func save(deleted id: CKRecord.ID) throws(DatabaseError)` | The server no longer has a record. |
 | `func save(deleted ids: some Sequence<CKRecord.ID>) throws(DatabaseError)` | The same for a batch, in one transaction. |
 | `func save(failed id: CKRecord.ID, error: CKError) throws(DatabaseError)` | Handles a failed delete. |
@@ -395,10 +397,10 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func assetFolder(id: UUID) -> URL` | A row's asset folder. |
-| `func storingAssets(of record: Any, in json: JSONRepresentation, id: UUID) -> JSONRepresentation` | Finds a record's asset files and copies them into the row's folder. |
-| `func storingAssets(_ files: [String: URL], in json: JSONRepresentation, id: UUID) -> JSONRepresentation` | Copies files listed by field into the row's folder, reusing identical ones. |
+| `func assetFolder(id: RowID) -> URL` | A row's asset folder, inside a folder for its zone. |
+| `func storingAssets(of record: Any, in json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Finds a record's asset files and copies them into the row's folder. |
+| `func storingAssets(_ files: [String: URL], in json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Copies files listed by field into the row's folder, reusing identical ones. |
 | `func JSONRepresentation.assetFiles(of record: Any) -> [String: URL]` (private) | Each asset file by the JSON key that holds it. |
-| `func portable(_ json: JSONRepresentation, id: UUID) -> JSONRepresentation` | Rewrites the row's file URLs as relative names. |
-| `func resolved(_ json: JSONRepresentation, id: UUID) -> JSONRepresentation` | Turns relative names back into URLs. |
+| `func portable(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Rewrites the row's file URLs as relative names. |
+| `func resolved(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Turns relative names back into URLs. |
 | `var Mirror.properties: [(name: String, value: Any)]` | Each stored property, with a property wrapper under its own name. |

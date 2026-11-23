@@ -141,7 +141,7 @@ extension RecordContainer {
     ///   stays cleared. Only when a key it lacks stops it decoding, as a version saved before
     ///   a field was added, is each missing key read from the other version, so the older
     ///   shape still decodes and leaves that field unchanged.
-    func merged<Record: Codable & Mergeable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: UUID) throws -> JSONRepresentation {
+    func merged<Record: Codable & Mergeable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID) throws -> JSONRepresentation {
         let mine = ours.decoded(as: Record.self, filling: theirs)
         let other = theirs.decoded(as: Record.self, filling: ours)
         let original = base?.decoded(as: Record.self, filling: ours.filling(from: theirs))

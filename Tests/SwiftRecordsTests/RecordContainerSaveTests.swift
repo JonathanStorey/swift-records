@@ -72,12 +72,12 @@ private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: K
         try container.execute("UPDATE record SET base = '{\"title\":\"Base\"}', is_deleted = 1, error = 'Record too large'")
 
         note.title = "Second"
-        try container.save(our: note, zone: Zone("Elsewhere", owner: "someone"))
+        try container.save(our: note, zone: "Notes")
 
         let row = try #require(try container.row(id: note.id))
         #expect(row.ours?["title"] == "Second")
         #expect(row.base == ["title": "Base"])
-        #expect(row.zone == "Notes", "A record never moves zones.")
+        #expect(row.zone == "Notes")
         #expect(!row.isDeleted)
         #expect(row.error == nil)
     }

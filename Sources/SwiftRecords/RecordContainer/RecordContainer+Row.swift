@@ -29,6 +29,19 @@ extension RecordContainer {
     }
 }
 
+extension RecordContainer {
+    /// A row's key: the record's name and its zone, with the zone's owner. The same record
+    /// can be saved in more than one zone, and each copy is its own row.
+    typealias RowID = RecordID<Any>
+}
+
+extension RecordContainer.Row {
+    /// This row's key.
+    var rowID: RecordContainer.RowID {
+        RecordContainer.RowID(name: id, zone: zone)
+    }
+}
+
 extension RecordContainer.Row {
     enum Status: Equatable, Sendable {
         case synced
