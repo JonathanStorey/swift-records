@@ -39,8 +39,9 @@ let page = try RecordID(page, id: \.slug, zone: "Pages")   // a plain struct
 ```
 
 The name is the record's `UUID` id, or the type and any other id, as in
-`Page:intro`, the same name the record is saved under. Characters other than
-ASCII letters, digits and `-._~` are percent-encoded, as in `Page:caf%C3%A9`.
+`Page:intro`, the same name the record is saved under. An id with characters
+other than ASCII letters, digits, `-`, `_` and `.` is Base64URL-encoded after two
+colons, as in `Page::Y2Fmw6k` for `café`.
 
 A `Zone` is a zone as this device sees it, a name and an owner. A string
 literal is your own private zone, and `Zone.public` is the public database.

@@ -41,24 +41,39 @@ private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: K
         #expect(try RecordContainer.recordName(for: true, type: "Flag") == "Flag:true")
     }
 
-    @Test func everyCharacterOutsideASCIILettersDigitsAndDashDotUnderscoreTildeIsPercentEncoded() throws {
-        #expect(try RecordContainer.recordName(for: "café", type: "Page") == "Page:caf%C3%A9")
-        #expect(try RecordContainer.recordName(for: "a b/c:d%e", type: "Page") == "Page:a%20b%2Fc%3Ad%25e")
-        #expect(try RecordContainer.recordName(for: "A-z_0.9~", type: "Page") == "Page:A-z_0.9~")
-        let emoji = try RecordContainer.recordName(for: "👩🏽‍💻", type: "Page")
-        let isASCII = emoji.allSatisfy(\.isASCII)
-        #expect(isASCII, "CloudKit names must be ASCII.")
+    @Test func plainASCIIIsKeptAsItIs() throws {
+        #expect(try RecordContainer.recordName(for: "getting-started_2.0", type: "Page") == "Page:getting-started_2.0")
+        #expect(try RecordContainer.recordName(for: "", type: "Page") == "Page:")
+    }
+
+    @Test func anythingElseIsBase64URLAfterTwoColons() throws {
+        #expect(try RecordContainer.recordName(for: "café", type: "Page") == "Page::Y2Fmw6k")
+        #expect(try RecordContainer.recordName(for: "a b", type: "Page") == "Page::YSBi")
+        #expect(try RecordContainer.recordName(for: "50%", type: "Page") == "Page::NTAl")
+        for slug in ["👩🏽‍💻", "a/b?c=d&e", "?>?>", "~"] {
+            let name = try RecordContainer.recordName(for: slug, type: "Page")
+            let isSafe = name.unicodeScalars.allSatisfy { "A"..."Z" ~= $0 || "a"..."z" ~= $0 || "0"..."9" ~= $0 || "-_.:".unicodeScalars.contains($0) }
+            #expect(isSafe, "\(name) holds only letters, digits, -, _, . and :.")
+        }
+    }
+
+    @Test func aStructuredIDIsItsJSONInBase64URL() throws {
+        struct Key: Codable, Equatable { var year: Int }
+        let name = try RecordContainer.recordName(for: Key(year: 2026), type: "Report")
+        #expect(name.hasPrefix("Report::"))
+        #expect(RecordContainer.id(Key.self, fromRecordName: name) == Key(year: 2026))
     }
 
     @Test func theIDReadsBackFromItsName() throws {
         let uuid = UUID()
-        for slug in ["intro", "café", "a b/c:d%e", "👩🏽‍💻", ""] {
+        for slug in ["intro", "café", "a b/c:d%e", "👩🏽‍💻", "", "?>?>", "Page::Y2Fmw6k"] {
             #expect(RecordContainer.id(String.self, fromRecordName: try RecordContainer.recordName(for: slug, type: "Page")) == slug)
         }
         #expect(RecordContainer.id(Int.self, fromRecordName: try RecordContainer.recordName(for: 42, type: "Invoice")) == 42)
         #expect(RecordContainer.id(UUID.self, fromRecordName: try RecordContainer.recordName(for: uuid, type: "Note")) == uuid)
         #expect(RecordContainer.id(Int.self, fromRecordName: "Page:intro") == nil, "An id of another type does not decode.")
         #expect(RecordContainer.id(String.self, fromRecordName: "no-colon") == nil)
+        #expect(RecordContainer.id(String.self, fromRecordName: "Page::not base64!") == nil)
     }
 
     @Test func aNameUpToCloudKitsLimitIsKept() throws {
