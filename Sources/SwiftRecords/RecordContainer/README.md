@@ -299,11 +299,33 @@ An `@Encrypted` property is stored on the server's encrypted side. In the contai
 
 A record with an `@Encrypted` value cannot be saved to `Zone.public`, because the public database has no encrypted side. `save(our:)` asserts on this.
 
+## Change reporting
+
+Every write to the `record` table runs inside `transaction(author:_:)`. While a transaction is open, each write adds a `RecordTransaction.Change` to the private `transactionChanges` array through `log(_:)`:
+
+- `write(_:isNew:)` logs `inserted` for a new row, `updated` for an existing one, and `deleted` for a row marked deleted.
+- `remove(id:type:)` logs `deleted`.
+- The upsert in `save(our:)` checks `contains(_:)` first, to tell an insert from an update.
+- `clear()` and `clear(in:)` read each row's id and type before removing it.
+
+After `COMMIT`, `report(_:author:)` wraps the changes in one `RecordTransaction`, numbered from 1, and yields it to every `transactions()` stream. A rollback drops the array, so nothing is reported. A transaction with no changes reports nothing. Writes by the sync engine are authored `syncAuthor`.
+
+Nothing is stored, so each element describes this container's own transaction.
+
+### Other processes
+
+An app and its widget in an app group open the same file with separate connections. Two things keep that safe and visible:
+
+- `sqlite3_busy_timeout(connection, 5000)` makes a writer wait up to 5 seconds for another process's write instead of failing with `SQLITE_BUSY`.
+- After each commit that changed something, `postChange()` posts a Darwin notification named `SwiftRecords.<UUID of the file path>`. Every container on that file observes it with `notify_register_dispatch`. Darwin notifications carry no payload and also reach the process that posted them, so `receiveExternalChange()` checks `PRAGMA data_version`, which moves only when another connection commits. When it moved, every `transactions()` stream gets a `RecordTransaction` by `externalAuthor` (`"external"`) with empty `changes`, meaning any record may have changed.
+
+The notification exists only where the `notify` module does, so Linux skips it. `receiveExternalChange()` is internal, so tests on Linux call it directly.
+
 ## Concurrency
 
 The connection is opened with `SQLITE_OPEN_FULLMUTEX`, so SQLite serializes every call on it. That alone is not enough, because many operations read a row, change it in Swift, and write it back. A recursive lock (`locked(_:)`) wraps each such read-and-write, along with registration, so no other thread can slip in between.
 
-`transaction(_:)` takes the same lock and runs its body between `BEGIN IMMEDIATE` and `COMMIT`, rolling back if the body throws. Because the lock is recursive, the saves inside a transaction take it again without deadlocking. Batches of incoming records, confirmations and deletions each run as one transaction, so a batch lands whole or not at all.
+`transaction(author:_:)` takes the same lock and runs its body between `BEGIN IMMEDIATE` and `COMMIT`, rolling back if the body throws. A transaction inside another one joins it. Every write to the `record` table runs in one. Because the lock is recursive, the saves inside a transaction take it again without deadlocking. Batches of incoming records, confirmations and deletions each run as one transaction, so a batch lands whole or not at all.
 
 `favoring`, `registrations` and `assetsToSweep` are only touched under the lock.
 
@@ -322,7 +344,12 @@ Every function below is internal to the module unless marked otherwise.
 | `var favoring: KeepMerge<JSONRepresentation>` | The side kept at values the type's own merge cannot settle. |
 | `var assetsToSweep: Set<UUID>?` (private) | Rows whose asset cleanup waits for the current transaction, or `nil` outside one. |
 | `func locked<T, Failure>(_ body: () throws(Failure) -> T) throws(Failure) -> T` | Runs `body` under the container's recursive lock. |
-| `func transaction<T>(_ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, then sweeps assets. |
+| `func transaction<T>(author: String? = nil, _ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, or joins the one already open, reports its changes by `author`, then sweeps assets. |
+| `static let syncAuthor: String` | `"sync"`, the author of the sync engine's writes. |
+| `func transactions() -> AsyncStream<RecordTransaction>` (public) | A stream of every transaction committed from now on. |
+| `var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation]` | Each live stream, removed when it ends. |
+| `var transactionChanges: [RecordTransaction.Change]?` (private) | The open transaction's changes, or `nil` outside one. |
+| `func log(_ change: RecordTransaction.Change)` | Adds a change to the open transaction. |
 | `func sweepAssets(of row: Row)` | Removes a written row's unused files, now or after the current transaction. |
 | `func sweepAssets(id: RowID)` | Removes a removed row's folder, now or after the current transaction. |
 | `func execute(_ sql: String) throws(DatabaseError)` | Runs SQL that returns no rows. |

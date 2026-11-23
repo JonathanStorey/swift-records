@@ -50,11 +50,13 @@ extension RecordContainer {
         let id = RowID(name: try Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone)
         let json = try JSONRepresentation(record)
         let ours = try Self.text(portable(storingAssets(of: record, in: json, id: id), id: id))
-        try locked {
+        let type = Self.recordType(of: Record.self)
+        try transaction { () throws(DatabaseError) in
+            log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type))
             try run("""
                 INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
-                """, id.name.uuidString, zone.name, zone.owner, Self.recordType(of: Record.self), ours)
+                """, id.name.uuidString, zone.name, zone.owner, type, ours)
             if let row = try row(id: id) { sweepAssets(of: row) }
         }
     }
@@ -104,9 +106,9 @@ extension RecordContainer {
     /// any version waiting to merge, and any error are dropped. Saving the record again
     /// before the delete uploads undoes it.
     func delete(id: RowID) throws(DatabaseError) {
-        try locked { () throws(DatabaseError) in
+        try transaction { () throws(DatabaseError) in
             guard var row = try row(id: id) else { return }
-            guard row.metadata != nil || row.base != nil else { return try remove(id: id) }
+            guard row.metadata != nil || row.base != nil else { return try remove(id: id, type: row.type) }
             row.isDeleted = true
             row.ours = .none
             row.theirs = .none
@@ -121,9 +123,9 @@ extension RecordContainer {
     /// The row is removed, unless this device has unsent changes. Those win: the row forgets
     /// the server's version and keeps `ours`, so the next send creates the record again.
     func save(deleted id: RowID) throws(DatabaseError) {
-        try locked { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             guard let row = try row(id: id) else { return }
-            guard let ours = row.ours, !row.isDeleted else { return try remove(id: id) }
+            guard let ours = row.ours, !row.isDeleted else { return try remove(id: id, type: row.type) }
             try write(Row(id: id.name, zone: row.zone, type: row.type, ours: ours))
         }
     }
@@ -131,7 +133,11 @@ extension RecordContainer {
     /// Removes every row on this device, and the engine's state, sending nothing, as when the
     /// iCloud account signs out or changes. Unlike ``delete(id:)``, nothing is deleted on the server.
     func clear() throws(DatabaseError) {
-        try locked { () throws(DatabaseError) in
+        try transaction { () throws(DatabaseError) in
+            try run("SELECT id, zone, owner, type FROM record") { (statement) throws(DatabaseError) in
+                guard let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) else { return }
+                log(.deleted(RowID(name: name, zone: Zone(statement.text(at: 1) ?? "", owner: statement.text(at: 2) ?? "")), type: statement.text(at: 3) ?? ""))
+            }
             try run("DELETE FROM record")
             try run("DELETE FROM engine_state")
             try? FileManager.default.removeItem(at: assets)
@@ -147,14 +153,14 @@ extension RecordContainer {
     /// this device's changes or else the server's last version, becomes `ours`, and the rest
     /// is forgotten. A record waiting to upload its delete is removed.
     func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError) {
-        try locked { () throws(DatabaseError) in
-            var ids: [RowID] = []
-            try run("SELECT id FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
-                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append(RowID(name: name, zone: zone)) }
+        try transaction { () throws(DatabaseError) in
+            var ids: [(id: RowID, type: String)] = []
+            try run("SELECT id, type FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
+                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append((RowID(name: name, zone: zone), statement.text(at: 1) ?? "")) }
             }
-            for id in ids {
+            for (id, type) in ids {
                 guard resending, let row = try row(id: id), !row.isDeleted, let content = row.ours ?? row.base else {
-                    try remove(id: id)
+                    try remove(id: id, type: type)
                     continue
                 }
                 try write(Row(id: id.name, zone: row.zone, type: row.type, ours: content))
@@ -226,13 +232,30 @@ extension RecordContainer {
     }
 
     /// Changes the row for `id` by `change`, in one locked read and write. With no row for
-    /// `id`, changes `new` and adds it, or does nothing when `new` is `nil`.
+    /// `id`, changes `new` and adds it, or does nothing when `new` is `nil`. Only the sync
+    /// engine's work changes a row this way, so the change is logged with ``syncAuthor``.
     func update(id: RowID, inserting new: Row? = nil, _ change: (inout Row) -> Void) throws(DatabaseError) {
-        try locked { () throws(DatabaseError) in
-            guard var row = try row(id: id) ?? new else { return }
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
+            let existing = try row(id: id)
+            guard var row = existing ?? new else { return }
             change(&row)
-            try write(row)
+            try write(row, isNew: existing == nil)
         }
+    }
+
+    /// The connection's `PRAGMA data_version`, which changes only when another connection
+    /// commits to the file, or 0 when it cannot be read.
+    func currentDataVersion() -> Int64 {
+        var version: Int64 = 0
+        try? run("PRAGMA data_version") { (statement) throws(DatabaseError) in version = sqlite3_column_int64(statement, 0) }
+        return version
+    }
+
+    /// Whether the container has a row for `id`.
+    func contains(_ id: RowID) throws(DatabaseError) -> Bool {
+        var found = false
+        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner) { _ in found = true }
+        return found
     }
 
     /// The row for `id`, or `nil` when the container has none.
@@ -269,14 +292,17 @@ private extension RecordContainer {
         }
     }
 
-    /// Removes the row for `id`.
-    func remove(id: RowID) throws(DatabaseError) {
+    /// Removes the row for `id`, a record of the record type `type`.
+    func remove(id: RowID, type: String) throws(DatabaseError) {
+        log(.deleted(id, type: type))
         try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
 
-    /// Writes every column of `row`, replacing any row with the same id.
-    func write(_ row: Row) throws(DatabaseError) {
+    /// Writes every column of `row`, replacing any row with the same id, which `isNew` says
+    /// there is none of. A row marked deleted is logged as deleted.
+    func write(_ row: Row, isNew: Bool = false) throws(DatabaseError) {
+        log(row.isDeleted ? .deleted(row.rowID, type: row.type) : isNew ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type))
         let text = { (json: JSONRepresentation?) throws(DatabaseError) -> String? in
             try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.rowID)) }
         }
