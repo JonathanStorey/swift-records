@@ -97,12 +97,9 @@ extension KeyedEncodingContainer {
 }
 
 extension RecordID {
-    /// The id a stored reference points at. Throws when its record name is not a UUID or
-    /// its zone is unknown.
+    /// The id a stored reference points at. Throws when its zone is unknown.
     init(_ reference: RecordReference, in container: any SingleValueDecodingContainer) throws {
-        guard let name = UUID(uuidString: reference.recordName) else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Record name \"\(reference.recordName)\" is not a UUID.")
-        }
+        let name = reference.recordName
         guard let zone = reference.zone else {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "The reference to \"\(reference.recordName)\" has no zone.")
         }
@@ -112,7 +109,7 @@ extension RecordID {
     /// This id as a stored reference.
     func reference(action: RecordReference.Action = .none, isParent: Bool = false) -> RecordReference {
         isParent
-            ? RecordReference(parent: name.uuidString, zone: zone.name, owner: zone.owner)
-            : RecordReference(recordName: name.uuidString, zone: zone.name, owner: zone.owner, action: action)
+            ? RecordReference(parent: name, zone: zone.name, owner: zone.owner)
+            : RecordReference(recordName: name, zone: zone.name, owner: zone.owner, action: action)
     }
 }

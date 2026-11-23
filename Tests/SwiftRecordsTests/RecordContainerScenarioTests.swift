@@ -274,8 +274,8 @@ private func temporaryFolder() -> URL {
 
         let container = try RecordContainer(url: url)
         let pending = try container.pendingRows()
-        #expect(Set(pending.map { $0.id }) == [id, deleted.id])
-        #expect(pending.first { $0.id == deleted.id }?.isDeleted == true)
+        #expect(Set(pending.map { $0.id }) == [id.uuidString, deleted.id.uuidString])
+        #expect(pending.first { $0.id == deleted.id.uuidString }?.isDeleted == true)
         #expect(container.engineStateData == Data([7]))
     }
 
@@ -425,9 +425,9 @@ private func temporaryFolder() -> URL {
     }
 
     @Test func idsWithAnyTextHashTheSameEverywhere() throws {
-        let first = try RecordContainer.recordID(for: "Café 👩🏽‍💻", type: "Page")
-        let second = try RecordContainer.recordID(for: "Café 👩🏽‍💻", type: "Page")
+        let first = try RecordContainer.recordName(for: "Café 👩🏽‍💻", type: "Page")
+        let second = try RecordContainer.recordName(for: "Café 👩🏽‍💻", type: "Page")
         #expect(first == second)
-        #expect(try RecordContainer.recordID(for: "Cafe", type: "Page") != first)
+        #expect(try RecordContainer.recordName(for: "Cafe", type: "Page") != first)
     }
 }

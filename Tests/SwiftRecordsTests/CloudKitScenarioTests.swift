@@ -163,9 +163,13 @@ private final class Server {
     }
 
     /// The stored record `id` decoded as `type`.
-    func value<T: Decodable>(_ type: T.Type, id: UUID, zone: Zone = "Drafts") throws -> T? {
-        guard let record = records[CKRecord.ID(recordName: id.uuidString, zoneID: zone.zoneID)]?.record else { return nil }
+    func value<T: Decodable>(_ type: T.Type, id: String, zone: Zone = "Drafts") throws -> T? {
+        guard let record = records[CKRecord.ID(recordName: id, zoneID: zone.zoneID)]?.record else { return nil }
         return try CKRecordDecoder().decode(type, from: record)
+    }
+
+    func value<T: Decodable>(_ type: T.Type, id: UUID, zone: Zone = "Drafts") throws -> T? {
+        try value(type, id: id.uuidString, zone: zone)
     }
 }
 
@@ -219,14 +223,14 @@ private final class Device {
     func send() throws {
         let pending = try container.pendingChanges()
         for recordID in pending.saves {
-            let id = RecordContainer.RowID(name: UUID(uuidString: recordID.recordName)!, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
+            let id = RecordContainer.RowID(name: recordID.recordName, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
             let isNew = try container.row(id: id)?.metadata == nil
             guard let record = try container.send(id: id) else { continue }
             lastSent[recordID] = record
             try upload(record, isNew: isNew)
         }
         for recordID in pending.deletes {
-            let id = RecordContainer.RowID(name: UUID(uuidString: recordID.recordName)!, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
+            let id = RecordContainer.RowID(name: recordID.recordName, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
             guard let deleted = try container.send(deleted: id) else { continue }
             if server.records[deleted] == nil {
                 try container.save(failed: deleted, error: CKError(.unknownItem))
@@ -268,9 +272,13 @@ private final class Device {
     }
 
     /// The record's newest value on this device, read as `type`.
-    func value<T: Decodable>(_ type: T.Type, id: UUID) throws -> T? {
+    func value<T: Decodable>(_ type: T.Type, id: String) throws -> T? {
         guard let row = try container.row(id: id), !row.isDeleted, let json = row.ours ?? row.base else { return nil }
         return try json.decode(type)
+    }
+
+    func value<T: Decodable>(_ type: T.Type, id: UUID) throws -> T? {
+        try value(type, id: id.uuidString)
     }
 
     func save<T: Encodable & Identifiable>(_ record: T, zone: Zone = "Drafts") throws where T.ID: Encodable {
@@ -751,7 +759,7 @@ private final class Device {
         try mine.sync()
         try yours.save(Draft(id: UUID(), title: "Unsent"))
         try yours.fetch()
-        let page = try RecordContainer.recordID(for: "intro", type: "Page")
+        let page = try RecordContainer.recordName(for: "intro", type: "Page")
         #expect(try yours.container.row(id: page) == nil, "The older app skips a type it does not have.")
 
         let yoursUpdated = yours.relaunched(registering: [Draft.self, Page.self])
@@ -824,7 +832,7 @@ private final class Device {
         try yours.sync()
         try mine.sync()
 
-        let id = try RecordContainer.recordID(for: "intro", type: "Page")
+        let id = try RecordContainer.recordName(for: "intro", type: "Page")
         #expect(server.records.count == 1)
         let stored = try #require(try server.value(Page.self, id: id))
         #expect(try mine.value(Page.self, id: id) == stored)

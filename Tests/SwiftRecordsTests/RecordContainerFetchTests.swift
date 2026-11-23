@@ -134,7 +134,7 @@ private struct Note: Codable, Identifiable, Mergeable {
     }
 
     @Test func fetchesRelationshipsByKeyPathAndRecord() throws {
-        let note = UUID(), tag = UUID(), other = UUID()
+        let note = UUID().uuidString, tag = UUID().uuidString, other = UUID().uuidString
         try container.save(our: Relationship(keyPath: "Note.tags", from: note, to: tag), zone: notes)
         try container.save(our: Relationship(keyPath: "Note.tags", from: other, to: tag), zone: notes)
         try container.save(our: Relationship(keyPath: "Note.links", from: note, to: other), zone: notes)

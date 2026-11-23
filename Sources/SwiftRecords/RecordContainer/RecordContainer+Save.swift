@@ -35,7 +35,7 @@ extension RecordContainer {
 
     /// Saves `record` as this device's version: `ours`, waiting to upload.
     ///
-    /// The row's id comes from the value at `id`, by ``recordID(for:type:)``, and `zone`,
+    /// The row's id comes from the value at `id`, by ``recordName(for:type:)``, and `zone`,
     /// so the same record saved to another zone is another row. A new id adds a row. An
     /// existing one replaces `ours`, clears `isDeleted` and `error`, and keeps
     /// `base`, `theirs`, `metadata` and the zone, in one statement. Each `@Asset` file is
@@ -48,7 +48,7 @@ extension RecordContainer {
     func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
         assert(zone != .public || !Mirror(reflecting: record).properties.contains { $0.value is any EncryptedValue },
                "The public database cannot store @Encrypted values, so \(Record.self) cannot be saved to Zone.public.")
-        let id = RowID(name: try Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone)
+        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone)
         let json = try JSONRepresentation(record)
         let ours = try Self.text(portable(storingAssets(of: record, in: json, id: id), id: id))
         let type = Self.recordType(of: Record.self)
@@ -57,7 +57,7 @@ extension RecordContainer {
             try run("""
                 INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
-                """, id.name.uuidString, zone.name, zone.owner, type, ours)
+                """, id.name, zone.name, zone.owner, type, ours)
             if let row = try row(id: id) { sweepAssets(of: row) }
         }
     }
@@ -73,7 +73,7 @@ extension RecordContainer {
     /// changes waiting, `json` merges into `ours` first, by the registered type's own merge.
     /// See ``Row/receive(_:merging:)``. When `type` is not registered, a merge cannot run, so
     /// `json` waits in `theirs` with the reason in `error`.
-    func save(their json: JSONRepresentation, id: UUID, zone: Zone, type: String, metadata: Data?) throws(DatabaseError) {
+    func save(their json: JSONRepresentation, id: String, zone: Zone, type: String, metadata: Data?) throws(DatabaseError) {
         // Looked up before the row is locked, since the lookup takes the same lock.
         let registered = Result { try registeredType(named: type) }
         let rowID = RowID(name: id, zone: zone)
@@ -92,7 +92,7 @@ extension RecordContainer {
     /// try container.delete(our: page, id: \.slug, zone: "Pages")
     /// ```
     func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
-        try delete(id: RowID(name: Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone))
+        try delete(id: RowID(name: Self.recordName(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone))
     }
 
     /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
@@ -136,7 +136,7 @@ extension RecordContainer {
     func clear() throws(DatabaseError) {
         try transaction { () throws(DatabaseError) in
             try run("SELECT id, zone, owner, type FROM record") { (statement) throws(DatabaseError) in
-                guard let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) else { return }
+                guard let name = statement.text(at: 0) else { return }
                 log(.deleted(RowID(name: name, zone: Zone(statement.text(at: 1) ?? "", owner: statement.text(at: 2) ?? "")), type: statement.text(at: 3) ?? ""))
             }
             try run("DELETE FROM record")
@@ -157,7 +157,7 @@ extension RecordContainer {
         try transaction { () throws(DatabaseError) in
             var ids: [(id: RowID, type: String)] = []
             try run("SELECT id, type FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
-                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append((RowID(name: name, zone: zone), statement.text(at: 1) ?? "")) }
+                if let name = statement.text(at: 0) { ids.append((RowID(name: name, zone: zone), statement.text(at: 1) ?? "")) }
             }
             for (id, type) in ids {
                 guard resending, let row = try row(id: id), !row.isDeleted, let content = row.ours ?? row.base else {
@@ -220,13 +220,13 @@ extension RecordContainer {
     }
 
     /// The id, zone and kind of every row waiting to upload: a save, or, with `isDeleted`, a delete.
-    func pendingRows() throws(DatabaseError) -> [(id: UUID, zone: Zone, isDeleted: Bool)] {
-        var rows: [(id: UUID, zone: Zone, isDeleted: Bool)] = []
+    func pendingRows() throws(DatabaseError) -> [(id: String, zone: Zone, isDeleted: Bool)] {
+        var rows: [(id: String, zone: Zone, isDeleted: Bool)] = []
         try run("""
             SELECT id, zone, owner, is_deleted FROM record
             WHERE theirs IS NULL AND error IS NULL AND (ours IS NOT NULL OR is_deleted = 1)
             """) { (statement) throws(DatabaseError) in
-            guard let id = statement.text(at: 0).flatMap(UUID.init(uuidString:)) else { return }
+            guard let id = statement.text(at: 0) else { return }
             rows.append((id, Zone(statement.text(at: 1) ?? "", owner: statement.text(at: 2) ?? ""), sqlite3_column_int(statement, 3) != 0))
         }
         return rows
@@ -263,7 +263,7 @@ extension RecordContainer {
             WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0
             """, Self.recordType(of: type), zone.name, zone.owner) { (statement) throws(DatabaseError) in
             guard failure == nil,
-                  let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)),
+                  let name = statement.text(at: 0),
                   let json = try? statement.json(at: 1),
                   let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(type) else { return }
             do {
@@ -287,7 +287,7 @@ extension RecordContainer {
     /// Whether the container has a row for `id`.
     func contains(_ id: RowID) throws(DatabaseError) -> Bool {
         var found = false
-        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner) { _ in found = true }
+        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner) { _ in found = true }
         return found
     }
 
@@ -297,7 +297,7 @@ extension RecordContainer {
         try run("""
             SELECT type, metadata, base, ours, theirs, sent, is_deleted, error FROM record
             WHERE id = ? AND zone = ? AND owner = ?
-            """, id.name.uuidString, id.zone.name, id.zone.owner) { (statement) throws(DatabaseError) in
+            """, id.name, id.zone.name, id.zone.owner) { (statement) throws(DatabaseError) in
             row = Row(
                 id: id.name,
                 zone: id.zone,
@@ -328,7 +328,7 @@ private extension RecordContainer {
     /// Removes the row for `id`, a record of the record type `type`.
     func remove(id: RowID, type: String) throws(DatabaseError) {
         log(.deleted(id, type: type))
-        try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner)
+        try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
 
@@ -342,7 +342,7 @@ private extension RecordContainer {
         try run("""
             INSERT OR REPLACE INTO record (id, zone, owner, type, metadata, base, ours, theirs, sent, is_deleted, error)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, row.id.uuidString, row.zone.name, row.zone.owner, row.type, row.metadata,
+            """, row.id, row.zone.name, row.zone.owner, row.type, row.metadata,
             try text(row.base), try text(row.ours), try text(row.theirs), try text(row.sent),
             row.isDeleted, row.error)
         sweepAssets(of: row)
