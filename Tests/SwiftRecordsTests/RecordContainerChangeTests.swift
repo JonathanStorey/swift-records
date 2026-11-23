@@ -2,11 +2,6 @@ import Foundation
 import Testing
 @testable import SwiftRecords
 import Versioning
-#if canImport(SQLite3)
-import SQLite3
-#else
-import CSQLite
-#endif
 
 private struct Note: Codable, Identifiable, Mergeable {
     var id = UUID()
@@ -14,65 +9,71 @@ private struct Note: Codable, Identifiable, Mergeable {
 }
 
 private extension RecordContainer {
-    /// The `kind` of every row in the change log, oldest first.
-    var loggedKinds: [String] {
-        var statement: OpaquePointer?
-        sqlite3_prepare_v2(connection, "SELECT kind FROM record_change ORDER BY sequence", -1, &statement, nil)
-        defer { sqlite3_finalize(statement) }
-        var kinds: [String] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            kinds.append(String(cString: sqlite3_column_text(statement, 0)))
-        }
-        return kinds
-    }
-
     func save(their note: Note, zone: Zone = "Notes") throws(DatabaseError) {
         try save(their: try! JSONRepresentation(note), id: note.id, zone: zone, type: "Note", metadata: Data([1]))
     }
 }
 
-/// The change log: every committed change to a row, reported once per transaction.
+/// ``RecordContainer/transactions()``: every committed transaction, reported once, with its changes.
 @Suite struct RecordContainerChangeTests {
     private let note = Note(title: "First")
     private let notes = Zone("Notes")
-    private var id: RecordContainer.RowID { RecordContainer.RowID(name: note.id, zone: notes) }
+    private var id: RecordID<Any> { RecordID(name: note.id, zone: notes) }
 
     @Test func aSaveIsReportedOnceItCommits() async throws {
         let container = RecordContainer.inMemory(Note.self)
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
+        let before = Date()
         try container.save(our: note, zone: notes)
 
-        let change = try #require(await changes.next())
-        #expect(change.author == nil)
-        #expect(change.ids == [id])
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.id == 1)
+        #expect(transaction.author == nil)
+        #expect(transaction.changes == [.inserted(id, type: "Note")])
+        #expect(transaction.timestamp >= before && transaction.timestamp <= Date())
     }
 
-    @Test func eachWriteIsLoggedWithItsKind() throws {
+    @Test func eachWriteIsReportedWithItsKind() async throws {
         let container = RecordContainer.inMemory(Note.self)
+        var transactions = container.transactions().makeAsyncIterator()
         try container.save(their: note)
         try container.save(our: note, zone: notes)
         try container.delete(our: note, zone: notes)
         try container.save(deleted: id)
 
-        #expect(container.loggedKinds == ["insert", "update", "delete", "delete"],
+        var changes: [RecordTransaction.Change] = []
+        for _ in 1...4 { changes += await transactions.next()?.changes ?? [] }
+        #expect(changes == [.inserted(id, type: "Note"), .updated(id, type: "Note"), .deleted(id, type: "Note"), .deleted(id, type: "Note")],
                 "Marking a row deleted and removing it are both deletes.")
+    }
+
+    @Test func aNewRecordSavedAndDeletedBeforeSyncingIsInsertedThenDeleted() async throws {
+        let container = RecordContainer.inMemory(Note.self)
+        var transactions = container.transactions().makeAsyncIterator()
+        try container.save(our: note, zone: notes)
+        try container.delete(our: note, zone: notes)
+
+        let saved = await transactions.next(), deleted = await transactions.next()
+        #expect(saved?.changes == [.inserted(id, type: "Note")])
+        #expect(deleted?.changes == [.deleted(id, type: "Note")])
+        #expect(deleted?.id == 2)
     }
 
     @Test func theSyncEnginesWritesAreAuthoredSync() async throws {
         let container = RecordContainer.inMemory(Note.self)
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.save(their: note)
         try container.save(deleted: id)
 
-        let saved = await changes.next(), deleted = await changes.next()
+        let saved = await transactions.next(), deleted = await transactions.next()
         #expect(saved?.author == RecordContainer.syncAuthor)
         #expect(deleted?.author == RecordContainer.syncAuthor)
     }
 
-    @Test func aTransactionIsOneChangeWithItsAuthor() async throws {
+    @Test func aTransactionIsOneElementWithItsAuthor() async throws {
         let container = RecordContainer.inMemory(Note.self)
         let other = Note(title: "Second")
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.transaction(author: "context") { () throws(DatabaseError) in
             do {
                 try container.save(our: note, zone: notes)
@@ -82,50 +83,60 @@ private extension RecordContainer {
             }
         }
 
-        let change = try #require(await changes.next())
-        #expect(change.author == "context")
-        #expect(change.ids == [id, RecordContainer.RowID(name: other.id, zone: notes)])
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.author == "context")
+        #expect(transaction.changes == [.inserted(id, type: "Note"), .inserted(RecordID(name: other.id, zone: notes), type: "Note")])
     }
 
     @Test func aNestedTransactionJoinsTheOuterOne() async throws {
         let container = RecordContainer.inMemory(Note.self)
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.transaction(author: "context") { () throws(DatabaseError) in
             try container.save(their: note)
         }
 
-        let change = try #require(await changes.next())
-        #expect(change.author == "context", "The outer transaction's author stands.")
-        #expect(change.ids == [id])
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.author == "context", "The outer transaction's author stands.")
+        #expect(transaction.changes == [.inserted(id, type: "Note")])
     }
 
-    @Test func aRollbackLogsAndReportsNothing() async throws {
+    @Test func aRollbackReportsNothing() async throws {
         let container = RecordContainer.inMemory(Note.self)
         let later = Note(title: "Later")
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         #expect(throws: DatabaseError.self) {
             try container.transaction { () throws(DatabaseError) in
                 try container.save(their: note)
                 throw DatabaseError(code: 1, description: "Stopped")
             }
         }
-        #expect(container.loggedKinds.isEmpty)
         try container.save(our: later, zone: notes)
 
-        let change = try #require(await changes.next())
-        #expect(change.ids == [RecordContainer.RowID(name: later.id, zone: notes)], "Only the committed save is reported.")
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.id == 1)
+        #expect(transaction.changes == [.inserted(RecordID(name: later.id, zone: notes), type: "Note")], "Only the committed save is reported.")
     }
 
-    @Test func clearReportsEveryRowAsOneChange() async throws {
+    @Test func aWriteThatChangesNothingReportsNothing() async throws {
+        let container = RecordContainer.inMemory(Note.self)
+        var transactions = container.transactions().makeAsyncIterator()
+        try container.delete(our: note, zone: notes)
+        try container.save(our: note, zone: notes)
+
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.changes == [.inserted(id, type: "Note")], "Deleting a record the container lacks is not a change.")
+    }
+
+    @Test func clearReportsEveryRowAsOneTransaction() async throws {
         let container = RecordContainer.inMemory(Note.self)
         let other = Note(title: "Second")
         try container.save(our: note, zone: notes)
         try container.save(our: other, zone: "Other")
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.clear()
 
-        let change = try #require(await changes.next())
-        #expect(change.ids == [id, RecordContainer.RowID(name: other.id, zone: "Other")])
+        let transaction = try #require(await transactions.next())
+        #expect(Set(transaction.changes) == [.deleted(id, type: "Note"), .deleted(RecordID(name: other.id, zone: "Other"), type: "Note")])
     }
 
     @Test func clearingAZoneReportsOnlyItsRows() async throws {
@@ -133,142 +144,54 @@ private extension RecordContainer {
         let shared = Zone("Notes", owner: "_friend")
         try container.save(our: note, zone: notes)
         try container.save(our: note, zone: shared)
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.clear(in: shared)
 
-        let change = try #require(await changes.next())
-        #expect(change.ids == [RecordContainer.RowID(name: note.id, zone: shared)])
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.changes == [.deleted(RecordID(name: note.id, zone: shared), type: "Note")])
     }
 
-    @Test func theSameRecordInTwoZonesIsTwoIDs() async throws {
+    @Test func clearingAZoneToResendReportsUpdates() async throws {
+        let container = RecordContainer.inMemory(Note.self)
+        try container.save(their: note)
+        var transactions = container.transactions().makeAsyncIterator()
+        try container.clear(in: notes, resending: true)
+
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.changes == [.updated(id, type: "Note")])
+    }
+
+    @Test func theSameRecordInTwoZonesIsTwoChanges() async throws {
         let container = RecordContainer.inMemory(Note.self)
         let shared = Zone("Notes", owner: "_friend")
-        var changes = container.changes().makeAsyncIterator()
+        var transactions = container.transactions().makeAsyncIterator()
         try container.transaction { () throws(DatabaseError) in
             try container.save(their: note)
             try container.save(their: note, zone: shared)
         }
 
-        let change = try #require(await changes.next())
-        #expect(change.ids == [id, RecordContainer.RowID(name: note.id, zone: shared)])
+        let transaction = try #require(await transactions.next())
+        #expect(transaction.changes.map(\.id) == [id, RecordID(name: note.id, zone: shared)])
     }
 
-    @Test func everyListenerHearsEachChange() async throws {
+    @Test func everyListenerHearsEachTransaction() async throws {
         let container = RecordContainer.inMemory(Note.self)
-        var first = container.changes().makeAsyncIterator()
-        var second = container.changes().makeAsyncIterator()
+        var first = container.transactions().makeAsyncIterator()
+        var second = container.transactions().makeAsyncIterator()
         try container.save(our: note, zone: notes)
 
         let heard = (await first.next(), await second.next())
-        #expect(heard.0?.ids == [id])
-        #expect(heard.1?.ids == [id])
+        #expect(heard.0?.changes == [.inserted(id, type: "Note")])
+        #expect(heard.1 == heard.0)
     }
 
     @Test func aCancelledListenerIsDropped() async throws {
         let container = RecordContainer.inMemory(Note.self)
-        let stream = container.changes()
+        let stream = container.transactions()
         let listening = Task { for await _ in stream {} }
         listening.cancel()
         await listening.value
 
         #expect(container.locked { container.listeners.isEmpty })
-    }
-
-    @Test func anotherConnectionsCommitIsReportedAtTheNextCommit() async throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let mine = try RecordContainer(url: url), theirs = try RecordContainer(url: url)
-        let other = Note(title: "Second")
-        var changes = mine.changes().makeAsyncIterator()
-        try theirs.transaction(author: "widget") { () throws(DatabaseError) in
-            try theirs.save(their: note)
-        }
-        try mine.save(our: other, zone: notes)
-
-        let first = await changes.next(), second = await changes.next()
-        #expect(first?.author == "widget")
-        #expect(first?.ids == [id])
-        #expect(second?.ids == [RecordContainer.RowID(name: other.id, zone: notes)])
-    }
-
-    @Test func changesPurgedBeforeTheyWereReadReportEverything() async throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let mine = try RecordContainer(url: url), theirs = try RecordContainer(url: url)
-        var changes = mine.changes().makeAsyncIterator()
-        try theirs.save(our: note, zone: notes)
-        try theirs.purgeChanges(before: Date(timeIntervalSinceNow: 60))
-        try mine.save(our: Note(title: "Second"), zone: notes)
-
-        let change = try #require(await changes.next())
-        #expect(change.ids == nil, "Any row may have changed.")
-    }
-
-    @Test func purgingKeepsTheLastHour() throws {
-        let container = RecordContainer.inMemory(Note.self)
-        try container.save(our: note, zone: notes)
-        try container.purgeChanges()
-        #expect(container.loggedKinds == ["insert"])
-
-        try container.purgeChanges(before: Date(timeIntervalSinceNow: 60))
-        #expect(container.loggedKinds.isEmpty)
-    }
-}
-
-/// The public change history: ``RecordContainer/transactions(after:)`` and
-/// ``RecordContainer/deleteTransactions(through:)``.
-@Suite struct RecordTransactionTests {
-    private let note = Note(title: "First")
-    private let notes = Zone("Notes")
-    private var id: RecordID<Any> { RecordID(name: note.id, zone: notes) }
-
-    @Test func eachTransactionListsItsChangesInOrder() throws {
-        let container = RecordContainer.inMemory(Note.self)
-        let other = Note(title: "Second")
-        let otherID = RecordID<Any>(name: other.id, zone: notes)
-        let before = Date(timeIntervalSinceNow: -1)
-        try container.save(their: note)
-        try container.transaction(author: "context") { () throws(DatabaseError) in
-            do {
-                try container.save(our: note, zone: notes)
-                try container.save(our: other, zone: notes)
-            } catch {
-                throw DatabaseError(code: 1, description: "\(error)")
-            }
-        }
-        try container.delete(our: note, zone: notes)
-
-        let transactions = try container.transactions()
-        #expect(transactions.map(\.author) == [RecordContainer.syncAuthor, "context", nil])
-        #expect(transactions.map(\.changes) == [
-            [.inserted(id, type: "Note")],
-            [.updated(id, type: "Note"), .inserted(otherID, type: "Note")],
-            [.deleted(id, type: "Note")],
-        ])
-        #expect(transactions.map(\.id) == transactions.map(\.id).sorted())
-        #expect(transactions.allSatisfy { $0.timestamp > before && $0.timestamp <= Date() })
-    }
-
-    @Test func afterSkipsWhatWasRead() throws {
-        let container = RecordContainer.inMemory(Note.self)
-        try container.save(our: note, zone: notes)
-        let read = try container.transactions()
-        try container.delete(our: note, zone: notes)
-
-        let unread = try container.transactions(after: read.last?.id)
-        #expect(unread.map(\.changes) == [[.deleted(id, type: "Note")]])
-        let none = try container.transactions(after: unread.last?.id)
-        #expect(none.isEmpty)
-    }
-
-    @Test func deletingThroughATransactionKeepsLaterOnes() throws {
-        let container = RecordContainer.inMemory(Note.self)
-        try container.save(our: note, zone: notes)
-        let read = try container.transactions()
-        try container.delete(our: note, zone: notes)
-        try container.deleteTransactions(through: #require(read.last?.id))
-
-        let kept = try container.transactions()
-        #expect(kept.map(\.changes) == [[.deleted(id, type: "Note")]])
     }
 }

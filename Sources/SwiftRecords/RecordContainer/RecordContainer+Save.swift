@@ -29,31 +29,8 @@ extension RecordContainer {
         CREATE TABLE IF NOT EXISTS record_schema (
             name TEXT PRIMARY KEY NOT NULL,
             schema TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS record_change (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-            txn INTEGER,
-            id TEXT NOT NULL,
-            zone TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            type TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            timestamp REAL NOT NULL DEFAULT ((julianday('now') - 2440587.5) * 86400.0),
-            author TEXT
-        );
-        CREATE TRIGGER IF NOT EXISTS record_insert BEFORE INSERT ON record BEGIN
-            INSERT INTO record_change (id, zone, owner, type, kind) VALUES (NEW.id, NEW.zone, NEW.owner, NEW.type,
-                CASE WHEN NEW.is_deleted THEN 'delete'
-                     WHEN EXISTS (SELECT 1 FROM record WHERE id = NEW.id AND zone = NEW.zone AND owner = NEW.owner) THEN 'update'
-                     ELSE 'insert' END);
-        END;
-        CREATE TRIGGER IF NOT EXISTS record_delete AFTER DELETE ON record BEGIN
-            INSERT INTO record_change (id, zone, owner, type, kind) VALUES (OLD.id, OLD.zone, OLD.owner, OLD.type, 'delete');
-        END
+        )
         """
-
-    /// How long a `record_change` row is kept, in seconds, for other connections to read.
-    static let changeLifetime: TimeInterval = 3600
 
     /// Saves `record` as this device's version: `ours`, waiting to upload.
     ///
@@ -75,6 +52,7 @@ extension RecordContainer {
         let ours = try Self.text(portable(storingAssets(of: record, in: json, id: id), id: id))
         let type = Self.recordType(of: Record.self)
         try transaction { () throws(DatabaseError) in
+            log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type))
             try run("""
                 INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
@@ -130,7 +108,7 @@ extension RecordContainer {
     func delete(id: RowID) throws(DatabaseError) {
         try transaction { () throws(DatabaseError) in
             guard var row = try row(id: id) else { return }
-            guard row.metadata != nil || row.base != nil else { return try remove(id: id) }
+            guard row.metadata != nil || row.base != nil else { return try remove(id: id, type: row.type) }
             row.isDeleted = true
             row.ours = .none
             row.theirs = .none
@@ -147,7 +125,7 @@ extension RecordContainer {
     func save(deleted id: RowID) throws(DatabaseError) {
         try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             guard let row = try row(id: id) else { return }
-            guard let ours = row.ours, !row.isDeleted else { return try remove(id: id) }
+            guard let ours = row.ours, !row.isDeleted else { return try remove(id: id, type: row.type) }
             try write(Row(id: id.name, zone: row.zone, type: row.type, ours: ours))
         }
     }
@@ -156,6 +134,10 @@ extension RecordContainer {
     /// iCloud account signs out or changes. Unlike ``delete(id:)``, nothing is deleted on the server.
     func clear() throws(DatabaseError) {
         try transaction { () throws(DatabaseError) in
+            try run("SELECT id, zone, owner, type FROM record") { (statement) throws(DatabaseError) in
+                guard let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) else { return }
+                log(.deleted(RowID(name: name, zone: Zone(statement.text(at: 1) ?? "", owner: statement.text(at: 2) ?? "")), type: statement.text(at: 3) ?? ""))
+            }
             try run("DELETE FROM record")
             try run("DELETE FROM engine_state")
             try? FileManager.default.removeItem(at: assets)
@@ -172,13 +154,13 @@ extension RecordContainer {
     /// is forgotten. A record waiting to upload its delete is removed.
     func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError) {
         try transaction { () throws(DatabaseError) in
-            var ids: [RowID] = []
-            try run("SELECT id FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
-                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append(RowID(name: name, zone: zone)) }
+            var ids: [(id: RowID, type: String)] = []
+            try run("SELECT id, type FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
+                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append((RowID(name: name, zone: zone), statement.text(at: 1) ?? "")) }
             }
-            for id in ids {
+            for (id, type) in ids {
                 guard resending, let row = try row(id: id), !row.isDeleted, let content = row.ours ?? row.base else {
-                    try remove(id: id)
+                    try remove(id: id, type: type)
                     continue
                 }
                 try write(Row(id: id.name, zone: row.zone, type: row.type, ours: content))
@@ -254,77 +236,18 @@ extension RecordContainer {
     /// engine's work changes a row this way, so the change is logged with ``syncAuthor``.
     func update(id: RowID, inserting new: Row? = nil, _ change: (inout Row) -> Void) throws(DatabaseError) {
         try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
-            guard var row = try row(id: id) ?? new else { return }
+            let existing = try row(id: id)
+            guard var row = existing ?? new else { return }
             change(&row)
-            try write(row)
+            try write(row, isNew: existing == nil)
         }
     }
 
-    /// The `sequence` of the newest `record_change` row ever logged, or 0 when none was.
-    func latestChange() throws(DatabaseError) -> Int64 {
-        var sequence: Int64 = 0
-        try run("SELECT seq FROM sqlite_sequence WHERE name = 'record_change'") { (statement) throws(DatabaseError) in
-            sequence = sqlite3_column_int64(statement, 0)
-        }
-        return sequence
-    }
-
-    /// The changes logged after `sequence`, one per transaction in commit order, and the
-    /// `sequence` of the newest. When rows after `sequence` were purged before they were
-    /// read, the changes are one with `nil` ids, since any row may have changed.
-    func loggedChanges(after sequence: Int64) throws(DatabaseError) -> (last: Int64, changes: [Change]) {
-        let last = try latestChange()
-        guard last > sequence else { return (sequence, []) }
-        var first: Int64?
-        try run("SELECT MIN(sequence) FROM record_change") { (statement) throws(DatabaseError) in
-            if sqlite3_column_type(statement, 0) != SQLITE_NULL { first = sqlite3_column_int64(statement, 0) }
-        }
-        guard let first, first <= sequence + 1 else { return (last, [(author: nil, ids: nil)]) }
-        let changes = try loggedTransactions(after: sequence).filter { $0.id <= last }.map { transaction in
-            (author: transaction.author, ids: Set(transaction.changes.map(\.id)))
-        }
-        return (last, changes)
-    }
-
-    /// Stamps every `record_change` row this transaction logged with `author`, and with the
-    /// newest row's `sequence` as the transaction's `txn`. Runs just before `COMMIT`.
-    func stampChanges(author: String?) throws(DatabaseError) {
-        try run("""
-            UPDATE record_change SET author = ?, txn = (SELECT seq FROM sqlite_sequence WHERE name = 'record_change')
-            WHERE txn IS NULL
-            """, author)
-    }
-
-    /// Removes the `record_change` rows logged before `date`, an hour ago unless given.
-    func purgeChanges(before date: Date = Date(timeIntervalSinceNow: -changeLifetime)) throws(DatabaseError) {
-        try run("DELETE FROM record_change WHERE timestamp < ?", date.timeIntervalSince1970)
-    }
-
-    /// The `record_change` rows logged after `sequence`, grouped into their transactions,
-    /// oldest first.
-    func loggedTransactions(after sequence: Int64) throws(DatabaseError) -> [RecordTransaction] {
-        var transactions: [RecordTransaction] = []
-        var current: (id: Int64, author: String?, timestamp: Date, changes: [RecordTransaction.Change])?
-        try run("""
-            SELECT COALESCE(txn, sequence), author, timestamp, id, zone, owner, type, kind FROM record_change
-            WHERE sequence > ? ORDER BY sequence
-            """, sequence) { (statement) throws(DatabaseError) in
-            guard let name = statement.text(at: 3).flatMap(UUID.init(uuidString:)) else { return }
-            let txn = sqlite3_column_int64(statement, 0)
-            if current?.id != txn {
-                if let current { transactions.append(RecordTransaction(id: current.id, author: current.author, timestamp: current.timestamp, changes: current.changes)) }
-                current = (txn, statement.text(at: 1), Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)), [])
-            }
-            let id = RowID(name: name, zone: Zone(statement.text(at: 4) ?? "", owner: statement.text(at: 5) ?? ""))
-            let type = statement.text(at: 6) ?? ""
-            switch statement.text(at: 7) {
-            case "insert": current?.changes.append(.inserted(id, type: type))
-            case "update": current?.changes.append(.updated(id, type: type))
-            default: current?.changes.append(.deleted(id, type: type))
-            }
-        }
-        if let current { transactions.append(RecordTransaction(id: current.id, author: current.author, timestamp: current.timestamp, changes: current.changes)) }
-        return transactions
+    /// Whether the container has a row for `id`.
+    func contains(_ id: RowID) throws(DatabaseError) -> Bool {
+        var found = false
+        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner) { _ in found = true }
+        return found
     }
 
     /// The row for `id`, or `nil` when the container has none.
@@ -351,33 +274,6 @@ extension RecordContainer {
     }
 }
 
-extension RecordContainer {
-    /// The transactions committed after the one `id`, or every one kept when `id` is `nil`,
-    /// oldest first, from this app and anything else sharing its database, such as a widget.
-    ///
-    /// Transactions are kept for an hour, so one older than that may be gone. Keep the last
-    /// `id` you read and pass it next time.
-    ///
-    /// ```swift
-    /// let recent = try container.transactions(after: lastSeen)
-    /// lastSeen = recent.last?.id ?? lastSeen
-    /// ```
-    public func transactions(after id: RecordTransaction.ID? = nil) throws(DatabaseError) -> [RecordTransaction] {
-        try loggedTransactions(after: id ?? 0)
-    }
-
-    /// Removes the transaction `id` and every one before it, as once they are read.
-    ///
-    /// ```swift
-    /// .onChange(of: scenePhase) { _, phase in
-    ///     if phase == .background, let last { try? container.deleteTransactions(through: last) }
-    /// }
-    /// ```
-    public func deleteTransactions(through id: RecordTransaction.ID) throws(DatabaseError) {
-        try run("DELETE FROM record_change WHERE COALESCE(txn, sequence) <= ?", id)
-    }
-}
-
 private extension RecordContainer {
     /// `json` as the text the table stores.
     static func text(_ json: JSONRepresentation) throws(DatabaseError) -> String {
@@ -388,14 +284,17 @@ private extension RecordContainer {
         }
     }
 
-    /// Removes the row for `id`.
-    func remove(id: RowID) throws(DatabaseError) {
+    /// Removes the row for `id`, a record of the record type `type`.
+    func remove(id: RowID, type: String) throws(DatabaseError) {
+        log(.deleted(id, type: type))
         try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
 
-    /// Writes every column of `row`, replacing any row with the same id.
-    func write(_ row: Row) throws(DatabaseError) {
+    /// Writes every column of `row`, replacing any row with the same id, which `isNew` says
+    /// there is none of. A row marked deleted is logged as deleted.
+    func write(_ row: Row, isNew: Bool = false) throws(DatabaseError) {
+        log(row.isDeleted ? .deleted(row.rowID, type: row.type) : isNew ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type))
         let text = { (json: JSONRepresentation?) throws(DatabaseError) -> String? in
             try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.rowID)) }
         }
@@ -423,8 +322,6 @@ private extension RecordContainer {
             case let text as String: sqlite3_bind_text(statement, index, text, -1, transient)
             case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
             case let flag as Bool: sqlite3_bind_int(statement, index, flag ? 1 : 0)
-            case let number as Int64: sqlite3_bind_int64(statement, index, number)
-            case let number as Double: sqlite3_bind_double(statement, index, number)
             default: sqlite3_bind_null(statement, index)
             }
         }

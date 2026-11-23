@@ -49,11 +49,13 @@ public final class RecordContainer: @unchecked Sendable {
     /// `nil` outside a transaction. Read and written while locked, only by `transaction(_:)`
     /// and `sweepAssets`.
     private var assetsToSweep: Set<RowID>?
-    /// Each live ``changes()`` stream, by a key its termination removes. Read and written while locked.
-    var listeners: [UUID: AsyncStream<Change>.Continuation] = [:]
-    /// The `sequence` of the last `record_change` row reported to ``changes()``. Read and
-    /// written while locked.
-    private var reportedChange: Int64 = 0
+    /// The changes the open transaction made, or `nil` outside one. Read and written while
+    /// locked, only by `transaction(author:_:)` and `log(_:)`.
+    private var transactionChanges: [RecordTransaction.Change]?
+    /// The id of the last ``RecordTransaction`` reported. Read and written while locked.
+    private var transactionCount: Int64 = 0
+    /// Each live ``transactions()`` stream, by a key its termination removes. Read and written while locked.
+    var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation] = [:]
 
     /// An empty container held in memory, with no record types registered.
     convenience init() {
@@ -86,8 +88,6 @@ public final class RecordContainer: @unchecked Sendable {
         // WAL lets a read run beside a write and makes each commit cheaper.
         try execute("PRAGMA journal_mode = WAL")
         try execute(Self.createTable)
-        try purgeChanges()
-        reportedChange = try latestChange()
     }
 
     deinit {
@@ -111,10 +111,6 @@ extension DatabaseError {
 }
 
 extension RecordContainer {
-    /// The changes one transaction committed: who made them, and the rows they changed, or
-    /// `nil` when any row may have changed.
-    typealias Change = (author: String?, ids: Set<RowID>?)
-
     /// The author of the changes the sync engine saves.
     static let syncAuthor = "sync"
 
@@ -152,10 +148,10 @@ extension RecordContainer {
     /// The result of `body`, run as one SQLite transaction: every write in it commits
     /// together, or, when it throws, none does.
     ///
-    /// Each change it makes to the `record` table is logged in `record_change`, stamped with
-    /// `author` just before it commits, and reported to every ``changes()`` stream once it has.
-    /// A rollback removes the log rows with the rest. Inside another transaction, `body`
-    /// joins it, and the outer transaction's `author` stands.
+    /// Every write to the `record` table runs in one. Once it commits, the changes it made
+    /// go to every ``transactions()`` stream as one ``RecordTransaction`` by `author`. A
+    /// rollback drops them. Inside another transaction, `body` joins it, and the outer
+    /// transaction's `author` stands.
     ///
     /// Asset files no longer used are removed only once it ends, so a rolled-back row
     /// still finds its files, and files copied in for rows that never landed are removed.
@@ -163,7 +159,9 @@ extension RecordContainer {
         try locked { () throws(DatabaseError) -> T in
             guard sqlite3_get_autocommit(connection) != 0 else { return try body() }
             assetsToSweep = []
+            transactionChanges = []
             defer {
+                transactionChanges = nil
                 let ids = assetsToSweep ?? []
                 assetsToSweep = nil
                 for id in ids {
@@ -176,10 +174,8 @@ extension RecordContainer {
             try execute("BEGIN IMMEDIATE")
             do throws(DatabaseError) {
                 let result = try body()
-                try stampChanges(author: author)
-                try purgeChanges()
                 try execute("COMMIT")
-                reportChanges()
+                report(transactionChanges ?? [], author: author)
                 return result
             } catch {
                 try? execute("ROLLBACK")
@@ -188,20 +184,18 @@ extension RecordContainer {
         }
     }
 
-    /// A stream of every committed change to the container's records, one element per
-    /// transaction, including those another connection to the same file committed. It
-    /// ends when the task reading it is cancelled.
+    /// A stream of every transaction this container commits from now on, one element per
+    /// transaction, in commit order. It ends when the task reading it is cancelled.
     ///
-    /// An element's `ids` is `nil` when changes were purged before this connection read
-    /// them, so any record may have changed.
+    /// Another process sharing the database, such as a widget, does not appear here.
     ///
     /// ```swift
-    /// for await change in container.changes() where change.author != "context" {
-    ///     reload(change.ids)
+    /// for await transaction in container.transactions() where transaction.author != "sync" {
+    ///     print(transaction.changes.map(\.id))
     /// }
     /// ```
-    func changes() -> AsyncStream<Change> {
-        let (stream, continuation) = AsyncStream<Change>.makeStream()
+    public func transactions() -> AsyncStream<RecordTransaction> {
+        let (stream, continuation) = AsyncStream<RecordTransaction>.makeStream()
         let key = UUID()
         continuation.onTermination = { [weak self] _ in
             self?.locked { self?.listeners[key] = nil }
@@ -210,15 +204,18 @@ extension RecordContainer {
         return stream
     }
 
-    /// Hands each `record_change` row logged since the last report to every ``changes()``
-    /// stream. Runs while locked, after a commit. A failed read reports nothing, and its
-    /// rows wait for the next commit.
-    private func reportChanges() {
-        guard let (last, changes) = try? loggedChanges(after: reportedChange) else { return }
-        reportedChange = last
-        for change in changes {
-            for listener in listeners.values { listener.yield(change) }
-        }
+    /// Adds `change` to the open transaction's changes. Runs while locked, inside a transaction.
+    func log(_ change: RecordTransaction.Change) {
+        transactionChanges?.append(change)
+    }
+
+    /// Hands `changes`, which a transaction by `author` just committed, to every
+    /// ``transactions()`` stream as one ``RecordTransaction``. Runs while locked.
+    private func report(_ changes: [RecordTransaction.Change], author: String?) {
+        guard !changes.isEmpty else { return }
+        transactionCount += 1
+        let transaction = RecordTransaction(id: transactionCount, author: author, timestamp: Date(), changes: changes)
+        for listener in listeners.values { listener.yield(transaction) }
     }
 
     /// Removes each file in the folder of `row` that none of its `base`, `ours`, `theirs`

@@ -1,14 +1,16 @@
 import Foundation
 
-/// The changes one save committed to a ``RecordContainer``, as its change history keeps them.
+/// The changes one transaction committed to a ``RecordContainer``, as
+/// ``RecordContainer/transactions()`` reports them.
 ///
 /// ```swift
-/// for transaction in try container.transactions(after: lastSeen) where transaction.author == "sync" {
+/// for await transaction in container.transactions() where transaction.author == "sync" {
 ///     showEditedElsewhere(transaction.changes.map(\.id))
 /// }
 /// ```
 public struct RecordTransaction: Identifiable, Hashable, Sendable {
-    /// The transaction's place in the history: a later transaction has a larger id.
+    /// The transaction's place among those this container committed, counting from 1, so a
+    /// later transaction has a larger id.
     public let id: Int64
     /// Who made the changes: `"sync"` for the sync engine, or the name the writer gave, or
     /// `nil` when it gave none.

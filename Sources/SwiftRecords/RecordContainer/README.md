@@ -299,24 +299,18 @@ An `@Encrypted` property is stored on the server's encrypted side. In the contai
 
 A record with an `@Encrypted` value cannot be saved to `Zone.public`, because the public database has no encrypted side. `save(our:)` asserts on this.
 
-## Change history
+## Change reporting
 
-Every change to the `record` table is logged in `record_change`, the way Core Data's persistent history tracking logs changes, so a context, a widget or another process can learn what changed.
+Every write to the `record` table runs inside `transaction(author:_:)`. While a transaction is open, each write adds a `RecordTransaction.Change` to the private `transactionChanges` array through `log(_:)`:
 
-| Column | Filled by | Meaning |
-| --- | --- | --- |
-| `sequence INTEGER PRIMARY KEY AUTOINCREMENT` | SQLite | Order of the change, never reused. |
-| `txn INTEGER` | `stampChanges(author:)` | The newest `sequence` in the change's transaction, which is the transaction's id. |
-| `id`, `zone`, `owner`, `type` | trigger | The row that changed. |
-| `kind TEXT` | trigger | `insert`, `update` or `delete`. Marking a row deleted is a `delete`. |
-| `timestamp REAL` | column default | Seconds since 1970. |
-| `author TEXT` | `stampChanges(author:)` | `"sync"`, the writer's name, or `NULL`. |
+- `write(_:isNew:)` logs `inserted` for a new row, `updated` for an existing one, and `deleted` for a row marked deleted.
+- `remove(id:type:)` logs `deleted`.
+- The upsert in `save(our:)` checks `contains(_:)` first, to tell an insert from an update.
+- `clear()` and `clear(in:)` read each row's id and type before removing it.
 
-Two triggers fill it. `record_insert` runs `BEFORE INSERT` and tells an insert from an update by whether the row exists, which covers both `INSERT OR REPLACE` and the upsert in `save(our:)`. `record_delete` runs `AFTER DELETE`. Nothing writes the table with a plain `UPDATE`, which no trigger would see, and `REPLACE` does not fire the delete trigger because recursive triggers are off.
+After `COMMIT`, `report(_:author:)` wraps the changes in one `RecordTransaction`, numbered from 1, and yields it to every `transactions()` stream. A rollback drops the array, so nothing is reported. A transaction with no changes reports nothing. Writes by the sync engine are authored `syncAuthor`.
 
-Every write to `record` runs in `transaction(author:_:)`. Just before `COMMIT`, it stamps the transaction's rows with `author` and `txn` and removes rows older than an hour (`changeLifetime`). A rollback removes the log rows with everything else. After the commit, `reportChanges()` reads every row since the last report, including rows another connection to the file committed, and yields one `Change` per transaction to each `changes()` stream. If rows were purged before this connection read them, it yields one `Change` with `nil` ids, meaning any row may have changed.
-
-The public `transactions(after:)` returns the same rows as `RecordTransaction` values, and `deleteTransactions(through:)` removes them once read.
+Nothing is stored, so only this container's own transactions are reported. Another process sharing the file, such as a widget, will signal its writes separately, so the context can refetch.
 
 ## Concurrency
 
@@ -341,14 +335,12 @@ Every function below is internal to the module unless marked otherwise.
 | `var favoring: KeepMerge<JSONRepresentation>` | The side kept at values the type's own merge cannot settle. |
 | `var assetsToSweep: Set<UUID>?` (private) | Rows whose asset cleanup waits for the current transaction, or `nil` outside one. |
 | `func locked<T, Failure>(_ body: () throws(Failure) -> T) throws(Failure) -> T` | Runs `body` under the container's recursive lock. |
-| `func transaction<T>(author: String? = nil, _ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, or joins the one already open, stamps its changes with `author`, reports them, then sweeps assets. |
-| `typealias Change = (author: String?, ids: Set<RowID>?)` | One transaction's changed rows, or `nil` ids when any row may have changed. |
+| `func transaction<T>(author: String? = nil, _ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, or joins the one already open, reports its changes by `author`, then sweeps assets. |
 | `static let syncAuthor: String` | `"sync"`, the author of the sync engine's writes. |
-| `func changes() -> AsyncStream<Change>` | A stream of every committed transaction. |
-| `var listeners: [UUID: AsyncStream<Change>.Continuation]` | Each live stream, removed when it ends. |
-| `var reportedChange: Int64` (private) | The last `record_change` row reported. |
-| `func transactions(after id: RecordTransaction.ID? = nil) throws(DatabaseError) -> [RecordTransaction]` (public) | The kept transactions after `id`. |
-| `func deleteTransactions(through id: RecordTransaction.ID) throws(DatabaseError)` (public) | Removes `id` and every transaction before it. |
+| `func transactions() -> AsyncStream<RecordTransaction>` (public) | A stream of every transaction committed from now on. |
+| `var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation]` | Each live stream, removed when it ends. |
+| `var transactionChanges: [RecordTransaction.Change]?` (private) | The open transaction's changes, or `nil` outside one. |
+| `func log(_ change: RecordTransaction.Change)` | Adds a change to the open transaction. |
 | `func sweepAssets(of row: Row)` | Removes a written row's unused files, now or after the current transaction. |
 | `func sweepAssets(id: RowID)` | Removes a removed row's folder, now or after the current transaction. |
 | `func execute(_ sql: String) throws(DatabaseError)` | Runs SQL that returns no rows. |
