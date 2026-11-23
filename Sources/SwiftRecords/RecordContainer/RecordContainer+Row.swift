@@ -64,10 +64,10 @@ extension RecordContainer.Row {
     /// Takes `theirs`, the server's newest version, as this row's `base`.
     ///
     /// With no local changes, there is nothing to merge. With local changes, `theirs`
-    /// merges into `ours` by `merge`, the record type's own merge, and a merge that matches
-    /// `theirs` leaves nothing to upload. On a conflict, or a version the type cannot read,
-    /// `theirs` waits, `error` says why, and `ours` and `base` are unchanged, so nothing
-    /// uploads until it is settled.
+    /// merges into `ours` by `merge`, and a merge that matches `theirs` leaves nothing to
+    /// upload. The container's merge never throws a conflict, so `merge` throws only when it
+    /// cannot run, as for a record type this app has not registered. Then `theirs` waits,
+    /// `error` says why, and `ours` and `base` are unchanged, so nothing uploads until it can.
     mutating func receive(_ theirs: JSONRepresentation, merging merge: (_ ours: JSONRepresentation, _ theirs: JSONRepresentation, _ base: JSONRepresentation?) throws -> JSONRepresentation) {
         guard let ours else {
             base = theirs
@@ -83,9 +83,6 @@ extension RecordContainer.Row {
             base = theirs
             self.theirs = nil
             error = nil
-        } catch let conflict as MergeConflict {
-            self.theirs = theirs
-            error = "Both sides changed " + conflict.paths.map(\.description).joined(separator: ", ")
         } catch {
             self.theirs = theirs
             self.error = String(describing: error)
