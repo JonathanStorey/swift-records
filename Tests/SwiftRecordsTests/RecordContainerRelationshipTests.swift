@@ -136,6 +136,37 @@ private struct Book: Codable, Identifiable, Mergeable {
         #expect(transaction.changes.map(\.id.name) == [note.id.uuidString])
     }
 
+    @Test func aRelationshipChangeReportsTheRecordOnEachSide() async throws {
+        let note = Note(title: "Hello", tags: [swift.id])
+        let relationship = Relationship(between: ("Note.tags", note.id.uuidString), and: ("Tag.notes", swift.id.uuidString))
+        var transactions = container.transactions().makeAsyncIterator()
+        try container.save(our: note, zone: notes)
+        let added = try #require(await transactions.next())
+        #expect(added.changes == [
+            .inserted(RecordContainer.RowID(name: note.id.uuidString, zone: notes), type: "Note"),
+            .inserted(RecordContainer.RowID(name: relationship.id, zone: notes), type: "Relationship"),
+            .updated(RecordContainer.RowID(name: swift.id.uuidString, zone: notes), type: "Tag"),
+        ], "The tag's list changed, though its row did not. The note is listed once.")
+
+        try container.save(our: Note(id: note.id, title: "Hello"), zone: notes)
+        let removed = try #require(await transactions.next())
+        #expect(removed.changes.map(\.id.name) == [note.id.uuidString, relationship.id, swift.id.uuidString])
+        #expect(removed.changes.dropFirst().first == .deleted(RecordContainer.RowID(name: relationship.id, zone: notes), type: "Relationship"))
+    }
+
+    @Test func aRecordChangedInTheSameTransactionKeepsItsOwnChange() async throws {
+        let note = Note(title: "Hello")
+        try container.save(our: note, zone: notes)
+        var transactions = container.transactions().makeAsyncIterator()
+        try container.delete(our: note, zone: notes)
+        try container.save(our: Tag(id: swift.id, name: "Swift", notes: [note.id]), zone: notes)
+        _ = try #require(await transactions.next())
+        let tagged = try #require(await transactions.next())
+        #expect(tagged.changes.first == .inserted(RecordContainer.RowID(name: swift.id.uuidString, zone: notes), type: "Tag"))
+        #expect(tagged.changes.last == .updated(RecordContainer.RowID(name: note.id.uuidString, zone: notes), type: "Note"), "The other side is reported even when its row is gone.")
+        #expect(tagged.changes.count == 3)
+    }
+
     @Test func emptyingAListDeletesItsRelationships() throws {
         let note = Note(title: "Hello", tags: [swift.id])
         try container.save(our: note, zone: notes)

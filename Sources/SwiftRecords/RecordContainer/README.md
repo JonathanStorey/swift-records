@@ -350,6 +350,8 @@ Every write to the `record` table runs inside `transaction(author:_:)`. While a 
 
 After `COMMIT`, `report(_:author:)` wraps the changes in one `RecordTransaction`, numbered from 1, and yields it to every `transactions()` stream. A rollback drops the array, so nothing is reported. A transaction with no changes reports nothing. Writes by the sync engine are authored `syncAuthor`.
 
+A `Relationship` row also changes what each of its records fetches, since `fetch` fills their relationship lists from it. So `log(_:relating:)` decodes a changed relationship and adds an `.updated` change for the record on each side to the private `relatedChanges` array. Those follow the transaction's own changes, and only for records it did not already change, so a note saved with a new tag reports the note as inserted, the relationship as inserted, and the tag as updated.
+
 Nothing is stored, so each element describes this container's own transaction.
 
 ### Other processes
@@ -389,7 +391,8 @@ Every function below is internal to the module unless marked otherwise.
 | `func transactions() -> AsyncStream<RecordTransaction>` (public) | A stream of every transaction committed from now on. |
 | `var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation]` | Each live stream, removed when it ends. |
 | `var transactionChanges: [RecordTransaction.Change]?` (private) | The open transaction's changes, or `nil` outside one. |
-| `func log(_ change: RecordTransaction.Change)` | Adds a change to the open transaction. |
+| `func log(_ change: RecordTransaction.Change, relating json: JSONRepresentation? = nil)` | Adds a change to the open transaction, and, for a `Relationship`, an update of the record on each side. |
+| `var relatedChanges: [RecordTransaction.Change]?` (private) | The records on either side of the relationships the open transaction changed. |
 | `func sweepAssets(of row: Row)` | Removes a written row's unused files, now or after the current transaction. |
 | `func sweepAssets(id: RowID)` | Removes a removed row's folder, now or after the current transaction. |
 | `func execute(_ sql: String) throws(DatabaseError)` | Runs SQL that returns no rows. |

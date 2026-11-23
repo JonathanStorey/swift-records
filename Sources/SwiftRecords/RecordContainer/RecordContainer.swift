@@ -55,6 +55,9 @@ public final class RecordContainer: @unchecked Sendable {
     /// The changes the open transaction made, or `nil` outside one. Read and written while
     /// locked, only by `transaction(author:_:)` and `log(_:)`.
     private var transactionChanges: [RecordTransaction.Change]?
+    /// The records on either side of a ``Relationship`` the open transaction changed, or `nil`
+    /// outside one. Read and written while locked, only by `transaction(author:_:)` and `log(_:relating:)`.
+    private var relatedChanges: [RecordTransaction.Change]?
     /// The id of the last ``RecordTransaction`` reported. Read and written while locked.
     private var transactionCount: Int64 = 0
     /// The connection's `PRAGMA data_version` when another process's commit was last
@@ -190,8 +193,10 @@ extension RecordContainer {
             guard sqlite3_get_autocommit(connection) != 0 else { return try body() }
             assetsToSweep = []
             transactionChanges = []
+            relatedChanges = []
             defer {
                 transactionChanges = nil
+                relatedChanges = nil
                 let ids = assetsToSweep ?? []
                 assetsToSweep = nil
                 for id in ids {
@@ -206,7 +211,8 @@ extension RecordContainer {
                 let result = try body()
                 try execute("COMMIT")
                 if let changes = transactionChanges, !changes.isEmpty {
-                    report(changes, author: author)
+                    var listed = Set(changes.map(\.id))
+                    report(changes + (relatedChanges ?? []).filter { listed.insert($0.id).inserted }, author: author)
                     postChange()
                 }
                 return result
@@ -238,8 +244,16 @@ extension RecordContainer {
     }
 
     /// Adds `change` to the open transaction's changes. Runs while locked, inside a transaction.
-    func log(_ change: RecordTransaction.Change) {
+    ///
+    /// A change to a ``Relationship`` also changes the relationship list of the record on
+    /// each side, so with the relationship's JSON as `json`, both records are reported as
+    /// updated too, after the transaction's own changes and only when it did not change them.
+    func log(_ change: RecordTransaction.Change, relating json: JSONRepresentation? = nil) {
         transactionChanges?.append(change)
+        guard let relationship = try? json?.decode(Relationship.self), relationship.isWellFormed else { return }
+        for (keyPath, name) in zip(relationship.keyPaths, relationship.references) {
+            relatedChanges?.append(.updated(RowID(name: name, zone: change.id.zone), type: String(keyPath.prefix { $0 != "." })))
+        }
     }
 
     /// Hands `changes`, which a transaction by `author` just committed, to every

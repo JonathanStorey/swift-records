@@ -354,7 +354,8 @@ private extension RecordContainer {
 
     /// Removes the row for `id`, a record of the record type `type`.
     func remove(id: RowID, type: String) throws(DatabaseError) {
-        log(.deleted(id, type: type))
+        let relationship = type == Self.recordType(of: Relationship.self) ? try row(id: id).flatMap { $0.ours ?? $0.base } : nil
+        log(.deleted(id, type: type), relating: relationship)
         try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
@@ -362,7 +363,8 @@ private extension RecordContainer {
     /// Writes every column of `row`, replacing any row with the same id, which `isNew` says
     /// there is none of. A row marked deleted is logged as deleted.
     func write(_ row: Row, isNew: Bool = false) throws(DatabaseError) {
-        log(row.isDeleted ? .deleted(row.rowID, type: row.type) : isNew ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type))
+        let relationship = row.type == Self.recordType(of: Relationship.self) ? row.ours ?? row.base ?? row.theirs : nil
+        log(row.isDeleted ? .deleted(row.rowID, type: row.type) : isNew ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type), relating: relationship)
         let text = { (json: JSONRepresentation?) throws(DatabaseError) -> String? in
             try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.rowID)) }
         }
@@ -437,7 +439,8 @@ private extension RecordContainer {
     /// Writes `ours` as the row `id`'s version, adding the row when it is new, in one
     /// statement, and logs the change.
     func write(ours: String, id: RowID, type: String) throws(DatabaseError) {
-        log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type))
+        let relationship = type == Self.recordType(of: Relationship.self) ? try? JSONDecoder().decode(JSONRepresentation.self, from: Data(ours.utf8)) : nil
+        log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type), relating: relationship)
         try run("""
             INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
