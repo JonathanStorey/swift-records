@@ -24,7 +24,6 @@ import CoreLocation
 ///   holding its JSON.
 ///
 /// A missing field decodes as `nil`, so `@Timestamp` and optionals read as `nil`.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 struct CKRecordDecoder {
     func decode<T: Decodable>(_ type: T.Type, from record: CKRecord) throws -> T {
         try FieldDecoder(value: record, record: record, codingPath: []).decode(type)
@@ -34,7 +33,6 @@ struct CKRecordDecoder {
 // MARK: - Values
 
 /// Decodes one value of a record, or, at the top, the record itself.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private struct FieldDecoder: Decoder, SingleValueDecodingContainer {
     let value: Any
     let record: CKRecord
@@ -93,7 +91,6 @@ private struct FieldDecoder: Decoder, SingleValueDecodingContainer {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension FieldDecoder {
     func mismatch(_ type: Any.Type) -> DecodingError {
         .typeMismatch(type, .init(codingPath: codingPath, debugDescription: "Expected \(type), but the record holds \(Swift.type(of: value))."))
@@ -128,7 +125,6 @@ private extension FieldDecoder {
 // MARK: - Containers
 
 /// The record's fields, plain and encrypted.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private struct FieldContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let record: CKRecord
     let codingPath: [any CodingKey]
@@ -176,7 +172,6 @@ private struct FieldContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension FieldContainer {
     func value(for key: Key) -> Any? {
         let name = key.stringValue
@@ -193,7 +188,6 @@ private extension FieldContainer {
 }
 
 /// A list field. CloudKit lists never hold `nil`.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private struct ListContainer: UnkeyedDecodingContainer {
     let elements: [Any]
     let record: CKRecord

@@ -79,19 +79,16 @@ private let folderID = UUID(uuidString: "00000000-0000-0000-0000-0000000000F1")!
 
 private let zoneID = CKRecordZone.ID(zoneName: "Notes", ownerName: CKCurrentUserDefaultName)
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func record(_ values: [String: CKRecordValue] = [:], type: String = "Sample", name: String = id.uuidString) -> CKRecord {
     let record = CKRecord(recordType: type, recordID: CKRecord.ID(recordName: name, zoneID: zoneID))
     for (key, value) in values { record[key] = value }
     return record
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func folderReference(_ action: CKRecord.ReferenceAction = .none) -> CKRecord.Reference {
     CKRecord.Reference(recordID: CKRecord.ID(recordName: folderID.uuidString, zoneID: zoneID), action: action)
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func fullSample() throws -> CKRecord {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try Data([9]).write(to: file)
@@ -118,7 +115,6 @@ private func fullSample() throws -> CKRecord {
 }
 
 @Suite struct CKRecordDecoderTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func decodesEachFieldType() throws {
         let sample = try fullSample()
         let decoded = try CKRecordDecoder().decode(Sample.self, from: sample)
@@ -147,7 +143,6 @@ private func fullSample() throws -> CKRecord {
         #expect(decoded.updated == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func readsTheActionAndMarksTheParent() throws {
         let linked = record(["folder": folderReference(.deleteSelf)])
         let plain = try CKRecordDecoder().decode(Linked.self, from: linked).folder
@@ -160,12 +155,10 @@ private func fullSample() throws -> CKRecord {
         #expect(try CKRecordDecoder().decode(Linked.self, from: linked).folder.isParent)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func throwsForAMissingField() {
         #expect(throws: DecodingError.self) { try CKRecordDecoder().decode(Count.self, from: record()) }
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func throwsForAValueOfAnotherType() {
         for value in ["three" as NSString, 1.5 as NSNumber] as [CKRecordValue] {
             #expect(throws: DecodingError.self) { try CKRecordDecoder().decode(Count.self, from: record(["count": value])) }
@@ -179,7 +172,6 @@ private func json(_ value: some Encodable) -> Data {
 }
 
 @Suite struct CKRecordEncoderTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func roundTripsEachFieldTypeAndClearsTheRest() throws {
         let sample = try CKRecordDecoder().decode(Sample.self, from: fullSample())
         let encoded = record(["stale": "x" as NSString])
@@ -196,7 +188,6 @@ private func json(_ value: some Encodable) -> Data {
         #expect(!encoded.allKeys().contains("updated"))
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func storesNestedValuesAsJSON() throws {
         let shapes = Shapes(id: id, sizes: [Size(width: 1, height: 2)], counts: ["a": 1], maybe: ["b", nil], grid: [[1], [2, 3]], pin: 4)
         let encoded = record(type: "Shapes")
@@ -211,7 +202,6 @@ private func json(_ value: some Encodable) -> Data {
         #expect(try CKRecordDecoder().decode(Shapes.self, from: encoded) == shapes)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func setsAndClearsTheParent() throws {
         let source = record(["id": id.uuidString as NSString, "folder": folderReference()])
         source.parent = folderReference()
@@ -229,7 +219,6 @@ private func json(_ value: some Encodable) -> Data {
 }
 
 @Suite struct RecordContainerCloudKitTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func savesARecordNamedByAHashOfItsID() throws {
         let page = Page(slug: "intro", title: "Hello")
         let container = RecordContainer.inMemory(Page.self)
@@ -240,7 +229,6 @@ private func json(_ value: some Encodable) -> Data {
         #expect(row.base == (try? JSONRepresentation(page)))
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func savesTheDecodedRecordAsBase() throws {
         let container = RecordContainer.inMemory(Note.self)
         try container.save(their: record(["id": id.uuidString as NSString, "title": "Hello" as NSString], type: "Note"))
@@ -254,14 +242,12 @@ private func json(_ value: some Encodable) -> Data {
         #expect(row.status == .synced, "\(row)")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func skipsARecordNotNamedByAUUID() throws {
         let container = RecordContainer.inMemory(Note.self)
         try container.save(their: record(["title": "Hello" as NSString], type: "Note", name: "not-a-uuid"))
         #expect(try container.row(id: id) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func skipsANewRecordItCannotRead() throws {
         for (registered, type) in [(true, "Note"), (false, "Other")] {
             let container = registered ? RecordContainer.inMemory(Note.self) : RecordContainer()
@@ -270,7 +256,6 @@ private func json(_ value: some Encodable) -> Data {
         }
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aVersionItCannotReadKeepsTheRowsContent() throws {
         let container = RecordContainer.inMemory(Note.self)
         try container.save(their: record(["id": id.uuidString as NSString, "title": "Hello" as NSString], type: "Note"))
@@ -285,19 +270,16 @@ private func json(_ value: some Encodable) -> Data {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func noteRecord(_ title: String) -> CKRecord {
     record(["id": id.uuidString as NSString, "title": title as NSString], type: "Note")
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private func noteContainer() -> RecordContainer {
     let container = RecordContainer.inMemory(Note.self)
     return container
 }
 
 @Suite struct RecordContainerUploadTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsNothingWithoutLocalChanges() throws {
         let container = noteContainer()
         #expect(try container.send(id: id) == nil)
@@ -305,7 +287,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.send(id: id) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsANewRecordInItsZone() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -317,7 +298,6 @@ private func noteContainer() -> RecordContainer {
         #expect(sent["id"] as? String == id.uuidString)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsAnEditOnTheServersRecord() throws {
         let container = noteContainer()
         let server = noteRecord("Hello")
@@ -329,7 +309,6 @@ private func noteContainer() -> RecordContainer {
         #expect(sent["title"] as? String == "Edited")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aSavedUploadIsSynced() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -341,7 +320,6 @@ private func noteContainer() -> RecordContainer {
         #expect(row.metadata != nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anEditDuringTheUploadStaysWaiting() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -353,7 +331,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.send(id: id)?["title"] as? String == "Draft, longer")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRejectedUploadKeepsItsErrorUntilSavedAgain() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -366,7 +343,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.send(id: id) != nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordThatCannotBeEncodedIsMarked() throws {
         let container = RecordContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -374,7 +350,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id)?.error?.contains("could not send") == true)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aFailureWorthRetryingChangesNothing() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -384,7 +359,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id) == before)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordTheServerLostIsCreatedAgain() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -397,7 +371,6 @@ private func noteContainer() -> RecordContainer {
         #expect(row.status == .waitingToUpload)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aNewerServerVersionMergesIn() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -413,7 +386,6 @@ private func noteContainer() -> RecordContainer {
 }
 
 @Suite struct RecordContainerDeleteUploadTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsADeleteOnlyWhenOneIsWaiting() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -424,7 +396,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.send(id: id) == nil)
     }
 
-    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func aZoneDeletedByAnEncryptedDataResetIsSentAgain() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -435,7 +406,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aConfirmedDeleteRemovesTheRow() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -444,7 +414,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aDeleteOfAMissingRecordCountsAsDone() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -453,7 +422,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRejectedDeleteKeepsItsErrorAndARetryableOneChangesNothing() throws {
         let container = noteContainer()
         try container.save(their: noteRecord("Hello"))
@@ -472,7 +440,6 @@ private func noteContainer() -> RecordContainer {
 }
 
 @Suite struct RecordContainerBatchCloudKitTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func savesManyRecordsAtOnce() throws {
         let container = noteContainer()
         let other = UUID()
@@ -485,7 +452,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: other) == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func confirmsManyUploadsAtOnce() throws {
         let container = noteContainer()
         try container.save(our: Note(id: id, title: "Draft"), zone: "Notes")
@@ -493,7 +459,6 @@ private func noteContainer() -> RecordContainer {
         #expect(try container.row(id: id)?.status == .synced)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func listsPendingSavesAndDeletes() throws {
         let container = noteContainer()
         let other = UUID()
@@ -506,7 +471,6 @@ private func noteContainer() -> RecordContainer {
         #expect(pending.deletes == [CKRecord.ID(recordName: other.uuidString, zoneID: zoneID)])
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func skipsAShare() throws {
         let container = noteContainer()
         let share = CKShare(rootRecord: noteRecord("Hello"))
@@ -525,7 +489,6 @@ private struct Attachment: Codable, Mergeable {
 }
 
 @Suite struct RecordContainerAssetCloudKitTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func keepsADownloadedAssetAfterTheEngineRemovesItsFile() throws {
         let container = RecordContainer.inMemory(Attachment.self)
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -541,7 +504,6 @@ private struct Attachment: Codable, Mergeable {
         #expect(try Data(contentsOf: stored) == Data([7]))
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsTheStoredFile() throws {
         let container = RecordContainer.inMemory(Attachment.self)
         try container.save(our: Attachment(id: id, file: Data([8])), id: \.id, zone: "Notes")
@@ -570,7 +532,6 @@ private struct Locked: Codable, Identifiable, Mergeable {
 }
 
 @Suite struct RecordContainerChangedFieldTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     private func synced() throws -> RecordContainer {
         let container = RecordContainer.inMemory(Memo.self)
         let server = record(["id": id.uuidString as NSString, "title": "Hello" as NSString, "subtitle": "Draft" as NSString], type: "Memo")
@@ -579,7 +540,6 @@ private struct Locked: Codable, Identifiable, Mergeable {
         return container
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func sendsOnlyTheChangedFields() throws {
         let container = try synced()
         try container.save(our: Memo(id: id, title: "Edited", subtitle: "Draft", pin: 4), zone: "Notes")
@@ -589,7 +549,6 @@ private struct Locked: Codable, Identifiable, Mergeable {
         #expect(sent["title"] as? String == "Edited")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func clearsAnOptionalSetToNil() throws {
         let container = try synced()
         try container.save(our: Memo(id: id, title: "Hello", subtitle: nil, pin: nil), zone: "Notes")
@@ -600,7 +559,6 @@ private struct Locked: Codable, Identifiable, Mergeable {
         #expect(sent.encryptedValues["pin"] == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func clearsAnEncryptedValueUnderACustomKeyOnTheEncryptedSide() throws {
         let container = RecordContainer.inMemory(Locked.self)
         let server = record(["id": id.uuidString as NSString], type: "Locked")
@@ -613,7 +571,6 @@ private struct Locked: Codable, Identifiable, Mergeable {
         #expect(sent.encryptedValues["pin_code"] == nil)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aNewRecordSendsEveryField() throws {
         let container = RecordContainer.inMemory(Memo.self)
         try container.save(our: Memo(id: id, title: "New", subtitle: "Sub"), zone: "Notes")

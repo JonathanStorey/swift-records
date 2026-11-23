@@ -95,20 +95,11 @@ extension Location {
     /// The location as a `CLLocation`, for CoreLocation and MapKit.
     public var clLocation: CLLocation {
         let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, watchOS 6.2, *) {
-            return CLLocation(coordinate: coordinate, altitude: altitude, horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy, course: course, courseAccuracy: courseAccuracy, speed: speed, speedAccuracy: speedAccuracy, timestamp: timestamp)
-        }
-        return CLLocation(coordinate: coordinate, altitude: altitude, horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy, course: course, speed: speed, timestamp: timestamp)
+        return CLLocation(coordinate: coordinate, altitude: altitude, horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy, course: course, courseAccuracy: courseAccuracy, speed: speed, speedAccuracy: speedAccuracy, timestamp: timestamp)
     }
 
     /// The values of a `CLLocation`.
     public init(_ location: CLLocation) {
-        var courseAccuracy = -1.0
-        var speedAccuracy = -1.0
-        if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, watchOS 6.2, *) {
-            courseAccuracy = location.courseAccuracy
-            speedAccuracy = location.speedAccuracy
-        }
         self.init(
             latitude: location.coordinate.latitude,
             longitude: location.coordinate.longitude,
@@ -116,9 +107,9 @@ extension Location {
             horizontalAccuracy: location.horizontalAccuracy,
             verticalAccuracy: location.verticalAccuracy,
             course: location.course,
-            courseAccuracy: courseAccuracy,
+            courseAccuracy: location.courseAccuracy,
             speed: location.speed,
-            speedAccuracy: speedAccuracy,
+            speedAccuracy: location.speedAccuracy,
             timestamp: location.timestamp
         )
     }

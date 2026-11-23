@@ -2,7 +2,6 @@ import Versioning
 #if canImport(CloudKit)
 import CloudKit
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 extension RecordContainer {
     /// Saves the server's version of `record`, decoded as its registered type, with its
     /// system fields as `metadata`.
@@ -183,7 +182,6 @@ extension RecordContainer {
     ///     try container.save(deleted: deletion.zoneID, reason: deletion.reason)
     /// }
     /// ```
-    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     func save(deleted zoneID: CKRecordZone.ID, reason: CKDatabase.DatabaseChange.Deletion.Reason) throws(DatabaseError) {
         try clear(in: zoneID.zone, resending: reason == .encryptedDataReset)
     }
@@ -207,7 +205,6 @@ extension RecordContainer {
     }
 }
 
-@available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
 extension RecordContainer {
     /// The sync engine's state, saved on every `stateUpdate` and read when the engine starts,
     /// or `nil` when none is saved, so the engine fetches everything.
@@ -226,7 +223,6 @@ extension RecordContainer {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension RecordContainer {
     /// The JSON of `record` decoded as its registered type.
     func json(of record: CKRecord) throws -> JSONRepresentation {
@@ -234,7 +230,6 @@ private extension RecordContainer {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension CKRecordDecoder {
     /// The JSON of `record` decoded as `type`, generic so a registered metatype opens here.
     func json<T: Codable>(_ type: T.Type, from record: CKRecord) throws -> JSONRepresentation {
@@ -242,7 +237,6 @@ private extension CKRecordDecoder {
     }
 }
 
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private extension CKRecordEncoder {
     /// Encodes `json`, decoded as `type`, into `record`, generic so a registered metatype opens here.
     ///

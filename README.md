@@ -264,7 +264,7 @@ reported. On Linux, install SQLite's headers first
 ## Requirements
 
 - Swift 6.0 or later
-- macOS 10.15, iOS 13, tvOS 13, watchOS 6, visionOS 1, or Linux with `libsqlite3-dev`
+- macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1, or Linux with `libsqlite3-dev`
 - The `main` branch of swift-versioning, which resolves to its newest commit
 
 ## Testing

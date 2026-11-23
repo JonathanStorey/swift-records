@@ -255,7 +255,6 @@ extension RecordContainer {
     /// ```swift
     /// let drafts = try container.fetch(Note.self, in: "Notes", predicate: #Predicate { $0.isDraft }, order: [SortDescriptor(\.title)])
     /// ```
-    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
         var values: [T] = []
         var failure: (any Error)?

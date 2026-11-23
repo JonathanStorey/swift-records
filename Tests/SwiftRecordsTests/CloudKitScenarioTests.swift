@@ -117,7 +117,6 @@ private enum Incompatible {
 
 /// The server: each record with the version it was last saved at, and a tombstone for
 /// each deleted one.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private final class Server {
     var records: [CKRecord.ID: (record: CKRecord, version: Int)] = [:]
     var tombstones: [CKRecord.ID: Int] = [:]
@@ -171,7 +170,6 @@ private final class Server {
 }
 
 /// A device: its container, and what it last heard from the server.
-@available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
 private final class Device {
     let container: RecordContainer
     let server: Server
@@ -289,7 +287,6 @@ private final class Device {
     private let id = UUID()
     private let folder = RecordID<Folder>(name: UUID(), zone: "Drafts")
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordMadeOnOneDeviceArrivesWhole() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -305,7 +302,6 @@ private final class Device {
         #expect(try yours.container.row(id: id)?.status == .synced)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anEditUploadsOnlyItsFieldAndIsConfirmed() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -327,7 +323,6 @@ private final class Device {
         #expect(try yours.value(id: id)?.attachment == Data([1]))
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func editsToDifferentFieldsOnTwoDevicesConverge() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -348,7 +343,6 @@ private final class Device {
         #expect(try yours.container.row(id: id)?.status == .synced)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func editsToTheSameFieldConvergeOnTheLastDeviceToMerge() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -366,7 +360,6 @@ private final class Device {
         #expect(try yours.value(id: id)?.title == "Yours")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func clearedOptionalsReachTheOtherDevice() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -384,7 +377,6 @@ private final class Device {
         #expect(arrived.secret == "secret")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func encryptedValuesTravelEncrypted() throws {
         let server = Server()
         let mine = Device(server)
@@ -397,7 +389,6 @@ private final class Device {
         #expect(stored["title"] as? String == "Untitled")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aDeleteReachesTheOtherDevice() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -413,7 +404,6 @@ private final class Device {
         #expect(yours.assetFiles(id: id).isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anEditOutlivesADeleteFromAnotherDevice() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -431,7 +421,6 @@ private final class Device {
         #expect(try server.value(Draft.self, id: id)?.body == "", "The record is created again with every field.")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anEditDuringAnUploadIsSentNext() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -450,7 +439,6 @@ private final class Device {
         #expect(try mine.container.row(id: id)?.status == .synced)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aChangeRevertedDuringAnUploadIsSentBack() throws {
         let server = Server()
         let mine = Device(server)
@@ -465,7 +453,6 @@ private final class Device {
         #expect(try server.value(Draft.self, id: id)?.title == "Untitled")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordTheServerLostIsCreatedAgainWhole() throws {
         let server = Server()
         let mine = Device(server)
@@ -478,7 +465,6 @@ private final class Device {
         #expect(try server.value(Draft.self, id: id) == Draft(id: id, title: "Edited", body: "Body"))
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRejectedUploadWaitsUntilSavedAgain() throws {
         let server = Server()
         let mine = Device(server)
@@ -492,7 +478,6 @@ private final class Device {
         #expect(try server.value(Draft.self, id: id)?.title == "Again")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func manyRecordsSyncInOneBatch() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -505,7 +490,6 @@ private final class Device {
         }
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anAccountChangeStartsOverFromTheServer() throws {
         let server = Server()
         let mine = Device(server)
@@ -525,7 +509,6 @@ private final class Device {
 @Suite struct CloudKitAssetScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aReplacedAssetReachesTheOtherDeviceAndOldFilesGo() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -541,7 +524,6 @@ private final class Device {
         #expect(yours.assetFiles(id: id).count == 1)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRemovedAssetIsClearedOnTheOtherDevice() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -556,7 +538,6 @@ private final class Device {
         #expect(yours.assetFiles(id: id).isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func drawingsOnTwoDevicesMerge() throws {
         let server = Server()
         let mine = Device(server, registering: [Sketch.self]), yours = Device(server, registering: [Sketch.self])
@@ -578,7 +559,6 @@ private final class Device {
 @Suite struct CloudKitSchemaScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anOlderAppLeavesFieldsItDoesNotKnow() throws {
         let server = Server()
         let newer = Device(server, registering: [Newer.Draft.self]), older = Device(server, registering: [Older.Draft.self])
@@ -595,7 +575,6 @@ private final class Device {
         #expect(draft.color == "red")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordThisAppCannotReadIsSkippedAndDoesNotStopUploads() throws {
         let server = Server()
         let mine = Device(server), other = Device(server, registering: [Incompatible.Draft.self])
@@ -623,7 +602,6 @@ private final class Device {
 @Suite struct CloudKitZoneScenarioTests {
     private let id = UUID()
 
-    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func anEncryptedDataResetSendsEverythingAgain() throws {
         let server = Server()
         let mine = Device(server)
@@ -638,7 +616,6 @@ private final class Device {
         #expect(try mine.container.row(id: id)?.status == .synced)
     }
 
-    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func aDeletedZoneIsCleared() throws {
         let server = Server()
         let mine = Device(server)
@@ -649,7 +626,6 @@ private final class Device {
         #expect(mine.assetFiles(id: id).isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func thePublicDatabaseWorksWithoutAnEngine() throws {
         #expect(Zone.public.zoneID == CKRecordZone.default().zoneID)
         let server = Server()
@@ -675,7 +651,6 @@ private final class Device {
 @Suite struct CloudKitInstallScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aFreshInstallReceivesEverythingAndSendsNothingBack() throws {
         let server = Server()
         let mine = Device(server)
@@ -696,7 +671,6 @@ private final class Device {
         #expect(server.clock == clock, "A fresh install uploads nothing it only received.")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aReinstallStartsFromTheServerWithoutTheUnsentEdit() throws {
         let server = Server()
         let mine = Device(server)
@@ -712,7 +686,6 @@ private final class Device {
         #expect(try server.value(Draft.self, id: id)?.title == "Synced")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordSentBeforeTheAppQuitIsNotDuplicated() throws {
         let server = Server()
         let mine = Device.onDisk(server)
@@ -731,7 +704,6 @@ private final class Device {
         #expect(try relaunched.container.pendingChanges().saves.isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func anAppUpdateReadsOldRowsAndSyncsItsNewField() throws {
         let server = Server()
         let mine = Device.onDisk(server, registering: [Older.Draft.self])
@@ -754,7 +726,6 @@ private final class Device {
         #expect(try yoursUpdated.value(Newer.Draft.self, id: id)?.title == "Old")
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aDeviceThatUpdatesLaterFetchesTheFieldItMissed() throws {
         let server = Server()
         let mine = Device.onDisk(server, registering: [Newer.Draft.self])
@@ -771,7 +742,6 @@ private final class Device {
         #expect(try yoursUpdated.container.pendingRows().isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aDeviceThatUpdatesLaterFetchesARecordTypeItDidNotHave() throws {
         let server = Server()
         let mine = Device.onDisk(server, registering: [Draft.self, Page.self])
@@ -796,7 +766,6 @@ private final class Device {
 @Suite struct CloudKitDevicesScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func threeDevicesConvergeInEveryOrder() throws {
         let expected = Draft(id: id, title: "A", body: "B", tags: ["a", "c"], views: Views(rawValue: 7))
         for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
@@ -817,7 +786,6 @@ private final class Device {
         }
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aDeviceOfflineAcrossLaunchesLosesNothing() throws {
         let server = Server()
         var mine = Device.onDisk(server)
@@ -847,7 +815,6 @@ private final class Device {
         #expect(try mine.container.pendingChanges().saves.isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func aRecordCreatedOnTwoDevicesBecomesOne() throws {
         let server = Server()
         let mine = Device(server, registering: [Page.self]), yours = Device(server, registering: [Page.self])
@@ -870,7 +837,6 @@ private final class Device {
 @Suite struct CloudKitTwoZoneScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func theSameRecordInTwoZonesSyncsAsTwoRecords() throws {
         let server = Server()
         let mine = Device(server), yours = Device(server)
@@ -897,7 +863,6 @@ private final class Device {
 @Suite struct CloudKitDeliveryScenarioTests {
     private let id = UUID()
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     /// The sync engine delivers each record's current version in order, so the container
     /// relies on that order and only has to shrug off a version delivered again.
     @Test func aChangeDeliveredTwiceChangesNothing() throws {
@@ -916,7 +881,6 @@ private final class Device {
         #expect(try yours.container.pendingChanges().saves.isEmpty)
     }
 
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test func failuresWorthRetryingKeepTheChangeUntilItIsConfirmedOnce() throws {
         let server = Server()
         let mine = Device(server)
@@ -943,7 +907,6 @@ private final class Device {
 }
 
 @Suite struct CloudKitRandomScenarioTests {
-    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
     @Test(arguments: [1, 2, 3] as [UInt64])
     func randomActivityConverges(seed: UInt64) throws {
         var random = SeededGenerator(state: seed)
