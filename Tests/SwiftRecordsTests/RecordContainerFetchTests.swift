@@ -35,6 +35,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         for record in records { try container.save(our: record, zone: notes) }
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func returnsEveryValueOfTheTypeInTheZone() throws {
         let first = Note(title: "First"), second = Note(title: "Second")
         try save(first, second)
@@ -45,6 +46,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(Set(titles) == ["First", "Second"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func aSharedZoneWithTheSameNameIsAnotherZone() throws {
         try save(Note(title: "Mine"))
         try container.save(our: Note(title: "Theirs"), zone: Zone("Notes", owner: "_friend"))
@@ -53,6 +55,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.fetch(Note.self, in: Zone("Notes", owner: "_friend")).map(\.title) == ["Theirs"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func prefersOursOverTheServersVersion() throws {
         var note = Note(title: "Server")
         try container.save(their: JSONRepresentation(note), id: note.id, zone: notes, type: "Note", metadata: Data([1]))
@@ -63,6 +66,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.fetch(Note.self, in: notes).map(\.title) == ["Mine"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func leavesOutDeletedRows() throws {
         let kept = Note(title: "Kept"), deleted = Note(title: "Deleted")
         try save(kept)
@@ -73,6 +77,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.fetch(Note.self, in: notes).map(\.title) == ["Kept"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func skipsARowThatDoesNotDecode() throws {
         try save(Note(title: "Readable"))
         let id = UUID()
@@ -81,6 +86,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.fetch(Note.self, in: notes).map(\.title) == ["Readable"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByATopLevelValue() throws {
         try save(Note(title: "Low", rank: 1), Note(title: "High", rank: 9))
         let minimum = 5
@@ -89,6 +95,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["High"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByANestedOptionalValue() throws {
         try save(Note(title: "Paris", address: Address(city: "Paris")), Note(title: "Rome", address: Address(city: "Rome", zip: "00100")), Note(title: "Nowhere"))
         let city = "Rome"
@@ -99,6 +106,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(withZip.map(\.title) == ["Rome"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByAnArray() throws {
         try save(Note(title: "Tagged", tags: ["swift", "data"]), Note(title: "Plain"))
         let tag = "swift"
@@ -107,6 +115,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["Tagged"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByAValueInsideAnArrayOfStructs() throws {
         try save(Note(title: "Tour", stops: [Address(city: "Paris"), Address(city: "Rome")]), Note(title: "Home", stops: [Address(city: "Paris")]))
 
@@ -116,6 +125,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["Tour"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByAReference() throws {
         let folder = RecordID<Folder>(name: UUID(), zone: notes)
         try save(Note(title: "Filed", folder: folder), Note(title: "Loose"))
@@ -125,6 +135,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["Filed"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersByReferences() throws {
         let folder = RecordID<Folder>(name: UUID(), zone: notes)
         try save(Note(title: "Linked", related: [RecordID(name: UUID(), zone: notes), folder]), Note(title: "Unlinked"))
@@ -133,6 +144,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["Linked"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func fetchesRelationshipsByKeyPathAndRecord() throws {
         let note = UUID(), tag = UUID(), other = UUID()
         try container.save(our: Relationship(keyPath: "Note.tags", from: note, to: tag), zone: notes)
@@ -146,6 +158,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(links.map { $0.target(from: note) } == [tag])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func readsTheContainersCopyOfAnAsset() throws {
         try save(Note(title: "Photo", picture: Data([1, 2, 3])))
 
@@ -153,6 +166,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(fetched.picture == Data([1, 2, 3]))
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func sortsByEachDescriptorInTurn() throws {
         try save(Note(title: "B", rank: 1), Note(title: "A", rank: 2), Note(title: "C", rank: 1))
 
@@ -160,6 +174,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(byRank.map(\.title) == ["A", "B", "C"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func filtersThenSorts() throws {
         try save(Note(title: "B", rank: 3), Note(title: "A", rank: 2), Note(title: "C", rank: 0))
 
@@ -167,6 +182,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["A", "B"])
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func aPredicateThatThrowsThrows() throws {
         try save(Note(title: "Nowhere"))
 
@@ -175,6 +191,7 @@ private struct Note: Codable, Identifiable, Mergeable {
         }
     }
 
+    @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
     @Test func anEmptyZoneReturnsNothing() throws {
         #expect(try container.fetch(Note.self, in: notes).isEmpty)
     }
