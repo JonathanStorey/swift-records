@@ -141,7 +141,7 @@ A merge runs only when an incoming server version meets a row that has local cha
 Both run the same function, `merged(_:with:from:as:id:favoring:)`, so there is one merge in the container and not two that can drift apart. It returns the merged JSON and the paths where the type's own merge conflicted, and performs the merge in four steps.
 
 1. Decode `ours`, `theirs` and `base` as the registered Swift type.
-2. Merge the decoded values with the type's own merge, through `settled(_:with:from:favoring:)`.
+2. Merge the decoded values with the type's own merge, through the static overload `merged(_:with:from:favoring:)`, which takes the decoded values themselves. It needs nothing from the container, so it is static.
 3. Encode the result back to JSON.
 4. Copy any asset file the merge produced into the row's folder.
 
@@ -191,7 +191,7 @@ The default merge encodes the three versions to JSON and merges them under the t
 
 ### Every merge settles
 
-If the type's own merge throws a conflict, `settled(_:with:from:favoring:)` runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
+If the type's own merge throws a conflict, the static `merged(_:with:from:favoring:)` runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
 
 | `favoring` | At each conflicting value |
 | --- | --- |
@@ -206,7 +206,7 @@ The favored side wins only at the exact paths that conflict. If one device chang
 
 ### Who sees the conflicts
 
-`settled` returns the paths that conflicted alongside the settled value, and `merged` passes them up. What happens to them depends on the caller.
+The static `merged` returns the paths that conflicted alongside the settled value, and the JSON `merged` passes them up. What happens to them depends on the caller.
 
 | Caller | Side passed | Conflict paths |
 | --- | --- | --- |
@@ -466,7 +466,7 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> (value: JSONRepresentation, conflicts: [JSONRepresentation.Path])` | The one merge: decodes, merges, re-encodes, stores assets, and returns the conflict paths. |
-| `func settled<Record>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path])` (private) | The type's own merge, then the favoring strategy on conflict, with the paths that conflicted. |
+| `static func merged<Record>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path])` (private) | The overload for decoded values: the type's own merge, then the favoring strategy on conflict, with the paths that conflicted. |
 | `func JSONRepresentation.decoded<T>(as:filling:) -> T?` (private) | Decodes as it is, or with missing keys filled from the other version. |
 | `func JSONRepresentation.filling(from:) -> JSONRepresentation` (private) | Adds each top-level key this object lacks from another. |
 

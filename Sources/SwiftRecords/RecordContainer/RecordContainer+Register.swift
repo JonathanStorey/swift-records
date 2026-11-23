@@ -190,14 +190,14 @@ extension RecordContainer {
         let mine = ours.decoded(as: Record.self, filling: theirs)
         let other = theirs.decoded(as: Record.self, filling: ours)
         let original = base?.decoded(as: Record.self, filling: ours.filling(from: theirs))
-        let merged: (value: Record, conflicts: [JSONRepresentation.Path])
+        let result: (value: Record, conflicts: [JSONRepresentation.Path])
         switch (mine, other) {
-        case let (mine?, other?): merged = try settled(mine, with: other, from: original, favoring: side)
-        case let (nil, other?): merged = (other, [])
+        case let (mine?, other?): result = try Self.merged(mine, with: other, from: original, favoring: side)
+        case let (nil, other?): result = (other, [])
         case (_?, nil): return (ours, [])
         case (nil, nil): return (theirs, [])
         }
-        return (storingAssets(of: merged.value, in: try JSONRepresentation(merged.value), id: id), merged.conflicts)
+        return (storingAssets(of: result.value, in: try JSONRepresentation(result.value), id: id), result.conflicts)
     }
 }
 
@@ -205,7 +205,7 @@ private extension RecordContainer {
     /// `ours` merged with `theirs` by the type's own merge, and, where that conflicts, again
     /// with ``DefaultMergeStrategy`` keeping `favoring` at each conflicting value, which still
     /// merges each `Mergeable` property by its own merge, with the paths that conflicted.
-    func settled<Record: Codable & Mergeable>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path]) {
+    static func merged<Record: Codable & Mergeable>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path]) {
         do {
             if let base { return (try ours.merging(with: theirs, from: base), []) }
             return (try ours.merging(with: theirs), [])
