@@ -112,6 +112,18 @@ private extension RecordContainer {
         #expect(row.ours == json(Note(id: id, title: "Theirs", body: "Ours")))
     }
 
+    @Test func theMergeKeepsTheSideGivenOnlyWhereItConflicts() throws {
+        let container = RecordContainer.registered()
+        let base = json(Note(id: id)), ours = json(Note(id: id, title: "Ours"))
+        let theirs = json(Note(id: id, title: "Theirs", body: "Theirs"))
+        let rowID = RecordContainer.RowID(name: id.uuidString, zone: "Notes")
+
+        let kept = try container.merged(ours, with: theirs, from: base, as: Note.self, id: rowID, favoring: .ours)
+        #expect(kept == json(Note(id: id, title: "Ours", body: "Theirs")), "The other side's body still merges.")
+        let taken = try container.merged(ours, with: theirs, from: base, as: Note.self, id: rowID, favoring: .theirs)
+        #expect(taken == json(Note(id: id, title: "Theirs", body: "Theirs")))
+    }
+
     @Test func registeringStoresTheTypesSchema() throws {
         let container = RecordContainer.registered()
         let schema = try JSONSchema(for: Note.self)
