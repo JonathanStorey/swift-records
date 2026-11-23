@@ -7,17 +7,18 @@ extension RecordContainer {
     /// Saves the server's version of `record`, decoded as its registered type, with its
     /// system fields as `metadata`.
     ///
-    /// The record's name, a UUID from ``recordID(for:type:)``, is the row's id, and its zone and
+    /// The record's name, from ``recordName(for:type:)``, is the row's id, and its zone and
     /// owner come from the record's zone. The decoded value merges into the row as ``save(their:id:zone:type:metadata:)``
     /// describes. A record whose type is not registered, or that the type cannot decode, was
     /// written by a version of the app this device does not know, and its values are dropped:
     /// an existing row keeps its content and takes only the record's system fields, so its next
-    /// upload is sent against the server's newest version, and a new record is skipped. A record whose
-    /// name is not a UUID was not saved by this package and is skipped, as is a `CKShare`.
+    /// upload is sent against the server's newest version, and a new record is skipped. A `CKShare`
+    /// is skipped.
     /// Each asset's file is copied into the container, since the sync engine removes it.
     /// Throws only when the database fails.
     func save(their record: CKRecord) throws(DatabaseError) {
-        guard !(record is CKShare), let id = record.recordID.rowID else { return }
+        guard !(record is CKShare) else { return }
+        let id = record.recordID.rowID
         let json: JSONRepresentation
         do {
             json = try self.json(of: record)
@@ -67,7 +68,7 @@ extension RecordContainer {
     func pendingChanges() throws(DatabaseError) -> (saves: [CKRecord.ID], deletes: [CKRecord.ID]) {
         var pending: (saves: [CKRecord.ID], deletes: [CKRecord.ID]) = ([], [])
         for row in try pendingRows() {
-            let recordID = CKRecord.ID(recordName: row.id.uuidString, zoneID: row.zone.zoneID)
+            let recordID = CKRecord.ID(recordName: row.id, zoneID: row.zone.zoneID)
             if row.isDeleted { pending.deletes.append(recordID) } else { pending.saves.append(recordID) }
         }
         return pending
@@ -93,7 +94,7 @@ extension RecordContainer {
         guard let row = try row(id: id), let ours = row.ours, row.status == .waitingToUpload, !row.isDeleted else { return nil }
         let record = row.metadata.flatMap(CKRecord.init(systemFields:)) ?? CKRecord(
             recordType: row.type,
-            recordID: CKRecord.ID(recordName: id.name.uuidString, zoneID: id.zone.zoneID)
+            recordID: CKRecord.ID(recordName: id.name, zoneID: id.zone.zoneID)
         )
         do {
             try CKRecordEncoder().encode(ours, as: registeredType(named: row.type), to: record, changedFrom: row.base)
@@ -114,7 +115,7 @@ extension RecordContainer {
     /// A row with no `sent` cannot tell, so it forgets its `base` and its next send uploads
     /// every field. Throws only when the database fails.
     func save(sent record: CKRecord) throws(DatabaseError) {
-        guard let id = record.recordID.rowID else { return }
+        let id = record.recordID.rowID
         try update(id: id) { row in
             row.metadata = record.systemFields
             if let sent = row.sent {
@@ -141,7 +142,7 @@ extension RecordContainer {
         if error.code == .serverRecordChanged, let server = error.serverRecord {
             return try save(their: server)
         }
-        guard let id = record.recordID.rowID else { return }
+        let id = record.recordID.rowID
         switch error.code {
         case .unknownItem:
             try update(id: id) { row in
@@ -164,13 +165,13 @@ extension RecordContainer {
     /// ```
     func send(deleted id: RowID) throws(DatabaseError) -> CKRecord.ID? {
         guard let row = try row(id: id), row.isDeleted, row.status == .waitingToUpload else { return nil }
-        return CKRecord.ID(recordName: id.name.uuidString, zoneID: id.zone.zoneID)
+        return CKRecord.ID(recordName: id.name, zoneID: id.zone.zoneID)
     }
 
     /// Saves that the server no longer has the record `id`, because it confirmed this
     /// device's delete or another device deleted it, as `save(deleted:)` for a row id describes.
     func save(deleted id: CKRecord.ID) throws(DatabaseError) {
-        guard let rowID = id.rowID else { return }
+        let rowID = id.rowID
         try save(deleted: rowID)
     }
 
@@ -195,7 +196,7 @@ extension RecordContainer {
     /// - Any other error is saved in `error`, and the delete waits until the record is deleted
     ///   or saved again.
     func save(failed id: CKRecord.ID, error: CKError) throws(DatabaseError) {
-        guard let rowID = id.rowID else { return }
+        let rowID = id.rowID
         switch error.code {
         case .unknownItem:
             try save(deleted: rowID)
@@ -303,10 +304,9 @@ private extension CKRecordZone.ID {
 }
 
 private extension CKRecord.ID {
-    /// The row's key: the record's name as a UUID, in its zone, or `nil` for a record this
-    /// package did not name.
-    var rowID: RecordContainer.RowID? {
-        UUID(uuidString: recordName).map { RecordContainer.RowID(name: $0, zone: zone) }
+    /// The row's key: the record's name, in its zone.
+    var rowID: RecordContainer.RowID {
+        RecordContainer.RowID(name: recordName, zone: zone)
     }
 
     /// The record's zone, with its owner.

@@ -4,7 +4,7 @@ import Testing
 import Versioning
 
 @Suite struct RecordContainerRowTests {
-    private let row = RecordContainer.Row(id: UUID(), zone: "Notes", type: "Note", base: ["title": "Base"])
+    private let row = RecordContainer.Row(id: UUID().uuidString, zone: "Notes", type: "Note", base: ["title": "Base"])
 
     @Test func aRowWithNothingWaitingIsSynced() {
         #expect(row.status == .synced)
@@ -50,7 +50,7 @@ import Versioning
     }
 
     @Test func changesSavedDuringAnUploadStayWaitingWithoutAConflict() {
-        var new = RecordContainer.Row(id: UUID(), zone: "Notes", type: "Note", ours: ["title": "Typed later"])
+        var new = RecordContainer.Row(id: UUID().uuidString, zone: "Notes", type: "Note", ours: ["title": "Typed later"])
         new.confirm(["title": "Typed first"])
         #expect(new.base == ["title": "Typed first"])
         #expect(new.ours == ["title": "Typed later"])

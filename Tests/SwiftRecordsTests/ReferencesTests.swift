@@ -135,8 +135,9 @@ private struct Match: Codable, Hashable {
         #expect(References<Post>(links, from: id(note) as RecordID<Label>).wrappedValue == [id(b), id(a)])
     }
 
-    @Test func rejectsARecordNameThatIsNotAUUID() {
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Note.self, from: Data(#"{"tags":[{"recordName":"42","zone":"Z","action":"none"}]}"#.utf8)) }
+    @Test func readsAnyRecordName() throws {
+        let note = try JSONDecoder().decode(Note.self, from: Data(#"{"tags":[{"recordName":"Tag:swift","zone":"Z","action":"none"}]}"#.utf8))
+        #expect(note.tags == [RecordID(name: "Tag:swift", zone: "Z")])
     }
 
     @Test func rejectsAReferenceWithNoZone() {

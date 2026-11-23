@@ -22,7 +22,7 @@ Every row is read into a `Row` value, a plain struct with one property per colum
 
 | Column | `Row` property | Meaning |
 | --- | --- | --- |
-| `id` | `id: UUID` | The record's name on the server. With `zone` and `owner`, the table's primary key. |
+| `id` | `id: String` | The record's name on the server. With `zone` and `owner`, the table's primary key. |
 | `zone`, `owner` | `zone: Zone` | The zone the record lives in, with its owner. |
 
 A row's key is `RowID`, a typealias for `RecordID<Any>`: the record's name and its zone. The same record can be saved in more than one zone, and each copy is its own row with its own asset files. `Row.rowID` gives a row's key.
@@ -58,7 +58,9 @@ With every record type registered, `.conflict` never happens, because a register
 
 `save(our:id:zone:)` encodes the value to JSON and writes it into `ours` in one `INSERT … ON CONFLICT DO UPDATE` statement. A new id or zone adds a row. An existing id in the same zone replaces `ours`, clears `isDeleted` and `error`, and leaves `base`, `theirs` and `metadata` as they were. Saving the same record to another zone adds a second row and leaves the first alone.
 
-The row's id comes from `recordID(for:type:)`. A `UUID` id is used as it is. Any other id, such as a slug, is hashed together with the record type into a stable UUID. Two devices that create the same id independently therefore write the same record, and the type is part of the hash because a record name must be unique in its zone across every type. The zone is not part of the hash, so a copy of a record in another zone keeps its name.
+The row's id comes from `recordName(for:type:)`. A `UUID` id is used as it is, as its `uuidString`. Any other id becomes the record type and the id's text, a `String` id as it is and any other id as its JSON. Text of only ASCII letters, digits, `-`, `_` and `.` follows one colon, as in `Page:intro` or `Invoice:42`, so the name reads as the id. Any other text is Base64URL-encoded without padding after two colons, as in `Page::Y2Fmw6k` for `café`. Neither form contains a character that needs escaping in a URL or a Dashboard search, and both stay within CloudKit's ASCII. Two devices that create the same id independently therefore write the same record, and the type is part of the name because a record name must be unique in its zone across every type. The zone is not part of the name, so a copy of a record in another zone keeps its name.
+
+Because the name is the id, `id(_:fromRecordName:)` reads it back, which lets a reference that CloudKit stores as a bare record name return the target's own id. A name longer than CloudKit's 255 characters throws an `EncodingError`, so the save throws and nothing is written. A shortened or hashed name could not be read back as the id.
 
 Saving never merges. A local save is always on top of whatever the device already had, so it simply replaces `ours`.
 
@@ -94,7 +96,7 @@ A row with no `sent`, which can happen if the confirmation arrives for an upload
 
 The type lookup happens before the row's lock is taken, since the lookup takes the same lock.
 
-`save(their: CKRecord)` is the entry point for a server record. It decodes the record as its registered type into JSON, copies each asset file into the container, and hands the JSON to the function above. A record whose name is not a UUID was not written by this package, and a share record is not a record at all, so both are skipped.
+`save(their: CKRecord)` is the entry point for a server record. It decodes the record as its registered type into JSON, copies each asset file into the container, and hands the JSON to the function above. A share record is not a record at all, so it is skipped.
 
 The container trusts the sync engine's order. CKSyncEngine handles events one at a time and always delivers a record's current server version, so `save(their:)` does not compare versions. The same version delivered twice changes nothing, but an older version delivered after a newer one would replace it.
 
@@ -362,7 +364,8 @@ Every function below is internal to the module unless marked otherwise.
 | `func register<Record: Codable & Mergeable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
 | `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name. `Relationship` is registered by default. |
 | `static func recordType(of type: Any.Type) -> String` | The record type name, the Swift type's name. |
-| `static func recordID(for id: any Encodable, type: String) throws -> UUID` | A `UUID` id as it is, or a stable hash of the type and any other id. |
+| `static func recordName(for id: any Encodable, type: String) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
+| `static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID?` | The id a record name was made from. |
 | `func storedSchema(named name: String) -> JSONSchema?` | The schema a record type was last registered with. |
 | `func store(_ schema: JSONSchema, named name: String)` | Saves a record type's schema. |
 
@@ -377,7 +380,7 @@ Every function below is internal to the module unless marked otherwise.
 | `mutating func Row.receive(_ theirs:merging:)` | Takes an incoming version as `base`, merging it into `ours` first when there is one. |
 | `mutating func Row.confirm(_ sent:)` | Takes a confirmed upload as `base`, keeping later local changes in `ours`. |
 | `var Row.status: Row.Status` | The computed sync status. |
-| `func pendingRows() throws(DatabaseError) -> [(id: UUID, zone: Zone, isDeleted: Bool)]` | Every row waiting to upload a save or a delete. |
+| `func pendingRows() throws(DatabaseError) -> [(id: String, zone: Zone, isDeleted: Bool)]` | Every row waiting to upload a save or a delete. |
 | `func zones() throws(DatabaseError) -> Set<Zone>` | Every zone that holds a row. |
 
 ### Saving, deleting and clearing
@@ -386,7 +389,7 @@ Every function below is internal to the module unless marked otherwise.
 | --- | --- |
 | `func save<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | Saves a local version into `ours`. |
 | `func save<Record: Identifiable>(our record: Record, zone: Zone) throws` | The same, identified by `id`. |
-| `func save(their json: JSONRepresentation, id: UUID, zone: Zone, type: String, metadata: Data?) throws(DatabaseError)` | Saves an incoming version, merging when needed. |
+| `func save(their json: JSONRepresentation, id: String, zone: Zone, type: String, metadata: Data?) throws(DatabaseError)` | Saves an incoming version, merging when needed. |
 | `func delete(id: RowID) throws(DatabaseError)` | Removes a never-uploaded row, or marks the row deleted. |
 | `func delete<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | The same, by a record's id. |
 | `func save(deleted id: RowID) throws(DatabaseError)` | Removes a row the server no longer has, unless unsent changes should recreate it. |

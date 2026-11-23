@@ -115,16 +115,48 @@ extension RecordContainer {
     }
 
     /// The row's id and the record's name for the id `id` of a record of type `type`: a
-    /// `UUID` id itself, or, for any other id, a stable hash of the record type and the
-    /// id's JSON, as in `"Page|\"intro\""`.
+    /// `UUID` id as it is, or, for any other id, the type and the id's text, a `String` id as
+    /// it is and any other id as its JSON:
+    ///
+    /// - Text of only ASCII letters, digits, `-`, `_` and `.` follows one colon, as in
+    ///   `"Page:intro"` or `"Invoice:42"`, so the name reads as the id.
+    /// - Any other text is Base64URL-encoded without padding after two colons, as in
+    ///   `"Page::Y2Fmw6k"` for `"café"`, which keeps the name to CloudKit's ASCII, with no
+    ///   character that needs escaping in a URL.
     ///
     /// The same id always names the same record, so two devices that create it apart
-    /// save one record. The type is part of the hash because a record name is unique in
-    /// its zone across every type. A `UUID` id is kept as it is so a reference to the
-    /// record can be read back as the id.
-    static func recordID(for id: any Encodable, type: String) throws -> UUID {
-        if let id = id as? UUID { return id }
-        return UUID(stableHashOf: type + "|" + (try JSONRepresentation(id)).description)
+    /// save one record. The type is part of the name because a record name is unique in
+    /// its zone across every type. ``id(_:fromRecordName:)`` reads the id back.
+    ///
+    /// Throws an `EncodingError` when the name would be longer than CloudKit's 255
+    /// characters, since a shortened name could not be read back as the id.
+    static func recordName(for id: any Encodable, type: String) throws -> String {
+        if let id = id as? UUID { return id.uuidString }
+        let text = try (id as? String) ?? JSONRepresentation(id).description
+        let name = text.unicodeScalars.allSatisfy(Unicode.Scalar.isPlainRecordName)
+            ? type + ":" + text
+            : type + "::" + Data(text.utf8).base64URLEncoded
+        guard name.utf8.count <= 255 else {
+            throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id."))
+        }
+        return name
+    }
+
+    /// The id that ``recordName(for:type:)`` made `name` from, or `nil` when `name` is not
+    /// one it made, or its id does not decode as `ID`.
+    static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID? {
+        if ID.self == UUID.self { return UUID(uuidString: name) as? ID }
+        guard let colon = name.firstIndex(of: ":") else { return nil }
+        let rest = name[name.index(after: colon)...]
+        let text: String
+        if rest.first == ":" {
+            guard let data = Data(base64URLEncoded: String(rest.dropFirst())) else { return nil }
+            text = String(decoding: data, as: UTF8.self)
+        } else {
+            text = String(rest)
+        }
+        if ID.self == String.self { return text as? ID }
+        return try? JSONDecoder().decode(ID.self, from: Data(text.utf8))
     }
 }
 
@@ -190,5 +222,30 @@ private extension JSONRepresentation {
         let keys = Set(pairs.map { $0.key })
         pairs += others.filter { !keys.contains($0.key) }
         return .object(pairs)
+    }
+}
+
+private extension Unicode.Scalar {
+    /// Whether a record name keeps this character as it is: an ASCII letter or digit, `-`,
+    /// `_` or `.`.
+    static func isPlainRecordName(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar {
+        case "A"..."Z", "a"..."z", "0"..."9", "-", "_", ".": true
+        default: false
+        }
+    }
+}
+
+private extension Data {
+    /// These bytes in Base64URL, `-` and `_` in place of `+` and `/`, with no `=` padding.
+    var base64URLEncoded: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    /// The bytes of the Base64URL text `text`, with or without padding.
+    init?(base64URLEncoded text: String) {
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        self.init(base64Encoded: base64)
     }
 }

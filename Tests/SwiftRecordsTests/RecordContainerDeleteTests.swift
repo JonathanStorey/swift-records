@@ -46,8 +46,8 @@ private extension RecordContainer {
 
         try container.clear(in: "Notes", resending: true)
 
-        #expect(try container.row(id: synced.id) == RecordContainer.Row(id: synced.id, zone: "Notes", type: "Note", ours: JSONRepresentation(synced)))
-        #expect(try container.row(id: edited.id) == RecordContainer.Row(id: edited.id, zone: "Notes", type: "Note", ours: JSONRepresentation(edited)))
+        #expect(try container.row(id: synced.id) == RecordContainer.Row(id: synced.id.uuidString, zone: "Notes", type: "Note", ours: JSONRepresentation(synced)))
+        #expect(try container.row(id: edited.id) == RecordContainer.Row(id: edited.id.uuidString, zone: "Notes", type: "Note", ours: JSONRepresentation(edited)))
         #expect(try container.row(id: deleted.id) == nil)
         #expect(try container.row(id: elsewhere.id)?.status == .synced)
         #expect(try container.row(id: synced.id)?.status == .waitingToUpload)
@@ -129,7 +129,7 @@ private extension RecordContainer {
 
         let row = try #require(try container.row(id: note.id))
         let ours = try JSONRepresentation(edited)
-        #expect(row == RecordContainer.Row(id: note.id, zone: "Notes", type: "Note", ours: ours))
+        #expect(row == RecordContainer.Row(id: note.id.uuidString, zone: "Notes", type: "Note", ours: ours))
         #expect(row.status == .waitingToUpload)
     }
 
@@ -141,7 +141,7 @@ private extension RecordContainer {
 
         try container.save(our: Page(slug: "intro"), id: \.slug, zone: "Notes")
         try container.delete(our: Page(slug: "intro", title: "Changed"), id: \.slug)
-        #expect(try container.row(id: RecordContainer.recordID(for: "intro", type: "Page")) == nil)
+        #expect(try container.row(id: RecordContainer.recordName(for: "intro", type: "Page")) == nil)
     }
 }
 

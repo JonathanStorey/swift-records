@@ -10,7 +10,7 @@ extension RecordContainer {
     func assetFolder(id: RowID) -> URL {
         assets
             .appendingPathComponent(UUID(stableHashOf: id.zone.owner + "|" + id.zone.name).uuidString, isDirectory: true)
-            .appendingPathComponent(id.name.uuidString, isDirectory: true)
+            .appendingPathComponent(id.name, isDirectory: true)
     }
 
     /// `json` with the file at each of `files`, by field, copied into the row's folder under
