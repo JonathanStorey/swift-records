@@ -168,7 +168,7 @@ extension RecordContainer {
 }
 
 extension RecordContainer {
-    /// `ours` merged with `theirs`, from `base` when there is one, by ``SettlingMerge``, with
+    /// `ours` merged with `theirs`, from `base` when there is one, by ``RecordMergeStrategy``, with
     /// any file the merge wrote, as a merged `@Asset`, copied into the row `id`'s folder.
     ///
     /// Every merge in the container runs here, and none throws a conflict:
@@ -187,32 +187,13 @@ extension RecordContainer {
         let merged: Record
         switch (mine, other) {
         case let (mine?, other?):
-            let strategy = SettlingMerge<Record>(favoring: side)
+            let strategy = RecordMergeStrategy<Record>(favoring: side)
             merged = if let original { try mine.merging(with: other, from: original, using: strategy) } else { try mine.merging(with: other, using: strategy) }
         case let (nil, other?): merged = other
         case (_?, nil): return ours
         case (nil, nil): return theirs
         }
         return storingAssets(of: merged, in: try JSONRepresentation(merged), id: id)
-    }
-}
-
-/// The type's own merge, and, where that conflicts, ``DefaultMergeStrategy`` keeping
-/// `favoring` at each conflicting value, which still merges each `Mergeable` property by its
-/// own merge. Running the type's merge first keeps a hand-written one, as `Relationship` has.
-private struct SettlingMerge<Value: Codable & Mergeable>: MergeStrategy {
-    let fallback: DefaultMergeStrategy<Value>
-
-    init(favoring side: KeepMerge<JSONRepresentation>) {
-        fallback = DefaultMergeStrategy(favoring: side == .ours ? .ours : .theirs)
-    }
-
-    func merge(base: Value, ours: Value, theirs: Value) throws(MergeConflict) -> Value {
-        do { return try ours.merging(with: theirs, from: base) } catch { return try fallback.merge(base: base, ours: ours, theirs: theirs) }
-    }
-
-    func merge(ours: Value, theirs: Value) throws(MergeConflict) -> Value {
-        do { return try ours.merging(with: theirs) } catch { return try fallback.merge(ours: ours, theirs: theirs) }
     }
 }
 

@@ -141,7 +141,7 @@ A merge runs only when an incoming server version meets a row that has local cha
 Both run the same function, `merged(_:with:from:as:id:favoring:)`, so there is one merge in the container and not two that can drift apart. Nothing in it throws a conflict. It performs the merge in four steps.
 
 1. Decode `ours`, `theirs` and `base` as the registered Swift type.
-2. Merge the decoded values with `SettlingMerge`, a private `MergeStrategy` described below.
+2. Merge the decoded values with `RecordMergeStrategy`, described below.
 3. Encode the result back to JSON.
 4. Copy any asset file the merge produced into the row's folder.
 
@@ -191,7 +191,7 @@ The default merge encodes the three versions to JSON and merges them under the t
 
 ### Every merge settles
 
-`SettlingMerge` is a private struct conforming to `MergeStrategy`. It runs the type's own merge first, so a hand-written merge such as `Relationship`'s is kept. If that throws a conflict, it runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
+`RecordMergeStrategy`, in its own file, is the one `MergeStrategy` the container uses for every record. It runs the type's own merge first, so a hand-written merge such as `Relationship`'s is kept. If that throws a conflict, it runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
 
 | `favoring` | At each conflicting value |
 | --- | --- |
@@ -456,8 +456,8 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation` | The one merge: decodes, merges by `SettlingMerge`, re-encodes and stores assets. |
-| `struct SettlingMerge<Value: Codable & Mergeable>: MergeStrategy` (private), `init(favoring side: KeepMerge<JSONRepresentation>)` | The type's own merge, then `DefaultMergeStrategy(favoring:)` where that conflicts. |
+| `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation` | The one merge: decodes, merges by `RecordMergeStrategy`, re-encodes and stores assets. |
+| `struct RecordMergeStrategy<Value: Codable & Mergeable>: MergeStrategy`, `init(favoring side: KeepMerge<JSONRepresentation>)` | The type's own merge, then `DefaultMergeStrategy(favoring:)` where that conflicts. |
 | `func JSONRepresentation.decoded<T>(as:filling:) -> T?` (private) | Decodes as it is, or with missing keys filled from the other version. |
 | `func JSONRepresentation.filling(from:) -> JSONRepresentation` (private) | Adds each top-level key this object lacks from another. |
 
