@@ -215,13 +215,11 @@ extension PredicateExpressions.NotEqual: SQLCondition {
 }
 
 extension PredicateExpressions.Comparison: SQLCondition {
+    /// Matched by equality, not a `switch`, since Apple's Foundation may add operators, which
+    /// are left to Swift.
     fileprivate func filter(_ schema: PredicateSchema) -> SQLFilter? {
-        let operation = switch op {
-        case .lessThan: "<"
-        case .lessThanOrEqual: "<="
-        case .greaterThan: ">"
-        case .greaterThanOrEqual: ">="
-        }
+        let operations: [(PredicateExpressions.ComparisonOperator, String)] = [(.lessThan, "<"), (.lessThanOrEqual, "<="), (.greaterThan, ">"), (.greaterThanOrEqual, ">=")]
+        guard let operation = operations.first(where: { $0.0 == op })?.1 else { return nil }
         return schema.compare(lhs, operation, rhs)
     }
 }
