@@ -299,6 +299,14 @@ An `@Encrypted` property is stored on the server's encrypted side. In the contai
 
 A record with an `@Encrypted` value cannot be saved to `Zone.public`, because the public database has no encrypted side. `save(our:)` asserts on this.
 
+## Fetching
+
+`fetch(_:in:predicate:order:)` reads every row of one type in one zone. The `record_type` index on `(type, zone, owner)` finds them without scanning the table. Each row's value is `ours`, or else `base`, and rows marked deleted are left out.
+
+SQLite cannot evaluate a Swift `#Predicate`, so the rest happens in Swift as SQLite steps through the rows. Each value has its asset paths resolved, is decoded as `T`, and is kept only if the predicate accepts it. A row that does not decode, such as one a newer version of the app wrote, is skipped. A predicate that throws, such as a force unwrap of `nil`, stops the fetch and throws. Only matches stay in memory, and they are sorted by `order` at the end.
+
+The same function finds `Relationship` rows, for example `#Predicate { $0.keyPath == "Note.tags" && $0.references.contains(id) }`.
+
 ## Change reporting
 
 Every write to the `record` table runs inside `transaction(author:_:)`. While a transaction is open, each write adds a `RecordTransaction.Change` to the private `transactionChanges` array through `log(_:)`:
@@ -370,6 +378,7 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
+| `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The saved values of one type in one zone, filtered and sorted. |
 | `func row(id: RowID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |
 | `func update(id: RowID, inserting new: Row?, _ change: (inout Row) -> Void) throws(DatabaseError)` | Reads, changes and writes a row under the lock, inserting `new` when there is none. |
 | `func write(_ row: Row) throws(DatabaseError)` (private) | Writes every column with portable asset paths, then sweeps the row's assets. |
