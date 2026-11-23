@@ -36,8 +36,8 @@ private struct Sample: Codable, Identifiable {
     @Encrypted var secret: String = ""
     var home: Location
     @Asset var file: Data? = nil
-    @Reference var folder: RecordID<Folder>? = nil
-    @References var related: [RecordID<Folder>] = []
+    @Reference<Folder> var folder: Folder.ID? = nil
+    @References<Folder> var related: [Folder.ID] = []
     @Timestamp var updated: Date? = nil
 }
 
@@ -61,7 +61,7 @@ private struct Shapes: Codable, Equatable {
 
 private struct Parented: Codable {
     var id: UUID
-    @Reference(isParent: true) var folder: RecordID<Folder>? = nil
+    @Reference<Folder>(isParent: true) var folder: Folder.ID? = nil
 }
 
 private struct Note: Codable, Identifiable, Mergeable {
@@ -137,9 +137,9 @@ private func fullSample() throws -> CKRecord {
         #expect(decoded.home == Location(home))
         #expect(decoded.$file == (sample.object(forKey: "file") as? CKAsset)?.fileURL)
         #expect(decoded.file == Data([9]))
-        let folder = RecordID<Folder>(name: folderID, zone: "Notes")
-        #expect(decoded.folder == folder)
-        #expect(decoded.related == [folder])
+        #expect(decoded.folder == folderID)
+        #expect(decoded.$folder.zone == Zone("Notes", owner: CKCurrentUserDefaultName))
+        #expect(decoded.related == [folderID])
         #expect(decoded.updated == nil)
     }
 

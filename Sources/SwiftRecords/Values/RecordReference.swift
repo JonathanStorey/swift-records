@@ -6,7 +6,7 @@ import Versioning
 /// CloudKit requires a reference to point into the zone of the record
 /// that holds it, so a record encoder writes only the name and a record
 /// decoder fills in the zone and owner from the record it reads. JSON
-/// keeps them, so a reference read from it is a whole ``RecordID``.
+/// keeps them, and the container fills them in when it saves a record.
 public struct RecordReference: Codable, Hashable, Sendable {
     /// What CloudKit does to the record holding the reference when the
     /// target record is deleted. The cases match `CKRecord.ReferenceAction`.
@@ -69,13 +69,5 @@ extension RecordReference {
         try container.encodeIfPresent(owner, forKey: .owner)
         try container.encode(action, forKey: .action)
         if isParent { try container.encode(true, forKey: .isParent) }
-    }
-}
-
-// The schema placeholder gives each reference a unique record name, so a key
-// path to a reference list can be traced back to its coding key.
-extension RecordReference: JSONSchema.Markable {
-    public mutating func mark(_ marker: UUID) {
-        recordName = marker.uuidString
     }
 }

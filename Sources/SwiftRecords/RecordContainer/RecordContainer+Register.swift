@@ -145,7 +145,8 @@ extension RecordContainer {
     /// The id that ``recordName(for:type:)`` made `name` from, or `nil` when `name` is not
     /// one it made, or its id does not decode as `ID`.
     static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID? {
-        if ID.self == UUID.self { return UUID(uuidString: name) as? ID }
+        // CloudKit names are case-sensitive, so only the uppercase name reads back as the UUID.
+        if ID.self == UUID.self { return UUID(uuidString: name).flatMap { $0.uuidString == name ? $0 : nil } as? ID }
         guard let colon = name.firstIndex(of: ":") else { return nil }
         let rest = name[name.index(after: colon)...]
         let text: String

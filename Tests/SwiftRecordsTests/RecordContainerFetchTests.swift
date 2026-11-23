@@ -20,8 +20,8 @@ private struct Note: Codable, Identifiable, Mergeable {
     var tags: [String] = []
     var address: Address? = nil
     var stops: [Address] = []
-    @Reference var folder: RecordID<Folder>? = nil
-    @References var related: [RecordID<Folder>] = []
+    @Reference<Folder> var folder: Folder.ID? = nil
+    @References<Folder> var related: [Folder.ID] = []
     @Asset var picture: Data? = nil
 }
 
@@ -117,17 +117,17 @@ private struct Note: Codable, Identifiable, Mergeable {
     }
 
     @Test func filtersByAReference() throws {
-        let folder = RecordID<Folder>(name: UUID(), zone: notes)
+        let folder = UUID()
         try save(Note(title: "Filed", folder: folder), Note(title: "Loose"))
-        let wanted: RecordID<Folder>? = folder
+        let wanted: UUID? = folder
 
         let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.folder == wanted }).map(\.title)
         #expect(titles == ["Filed"])
     }
 
     @Test func filtersByReferences() throws {
-        let folder = RecordID<Folder>(name: UUID(), zone: notes)
-        try save(Note(title: "Linked", related: [RecordID(name: UUID(), zone: notes), folder]), Note(title: "Unlinked"))
+        let folder = UUID()
+        try save(Note(title: "Linked", related: [UUID(), folder]), Note(title: "Unlinked"))
 
         let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.related.contains(folder) }).map(\.title)
         #expect(titles == ["Linked"])

@@ -3,26 +3,28 @@ import Testing
 @testable import SwiftRecords
 import Versioning
 
-/// A plain struct, so a reference needs nothing from its target.
-private struct Folder: Codable {
-    var slug: String
+/// Identified by a `String`, so its record name is its type and its id.
+private struct Folder: Codable, Identifiable {
+    var id: String
+}
+
+/// Identified by an `Int`.
+private struct Shelf: Codable, Identifiable {
+    var id: Int
 }
 
 private struct Note: Codable, Hashable, Identifiable {
     var id: UUID
-    @Reference var folder: RecordID<Folder>? = nil
+    @Reference<Folder> var folder: Folder.ID? = nil
 }
 
 private struct Child: Codable, Hashable {
-    @Reference(action: .deleteSelf) var folder: RecordID<Folder>? = nil
-
-    /// The wrapper's storage is private, so only this file can read it.
-    var folderAction: RecordReference.Action { _folder.action }
-    var folderIsParentForTesting: Bool { _folder.isParent }
+    @Reference<Folder>(action: .deleteSelf) var folder: Folder.ID? = nil
+    @Reference<Note> var note: Note.ID? = nil
+    @Reference<Shelf> var shelf: Shelf.ID? = nil
 }
 
 @Suite struct ReferenceTests {
-    private let folderID = RecordID<Folder>(name: UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F")!, zone: "Z")
     private let noteID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     private func json(_ value: some Encodable) throws -> String {
@@ -31,13 +33,28 @@ private struct Child: Codable, Hashable {
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
-    @Test func holdsTheID() {
-        #expect(Note(id: noteID, folder: folderID).folder == folderID)
+    private func decode<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
+        try JSONDecoder().decode(type, from: Data(text.utf8))
+    }
+
+    @Test func holdsTheTargetsOwnID() {
+        let note = Note(id: noteID, folder: "inbox")
+        #expect(note.folder == "inbox")
+        #expect(note.$folder.zone == nil, "A reference built in code is placed when its record is saved.")
         #expect(Note(id: noteID).folder == nil)
     }
 
-    @Test func encodesARecordReference() throws {
-        #expect(try json(Note(id: noteID, folder: folderID)) == #"{"folder":{"action":"none","owner":"__defaultOwner__","recordName":"E621E1F8-C36C-495A-93FC-0C247A3E6E5F","zone":"Z"},"id":"00000000-0000-0000-0000-000000000001"}"#)
+    @Test func encodesARecordReferenceNamedLikeTheTarget() throws {
+        #expect(try json(Note(id: noteID, folder: "inbox")) == #"{"folder":{"action":"none","recordName":"Folder:inbox"},"id":"00000000-0000-0000-0000-000000000001"}"#)
+    }
+
+    @Test func namesEachKindOfIDAsTheContainerDoes() throws {
+        let child = Child(folder: "café", note: noteID, shelf: 42)
+        let encoded = try JSONRepresentation(child)
+        #expect(encoded["folder"]?["recordName"] == "Folder::Y2Fmw6k")
+        #expect(encoded["note"]?["recordName"] == "00000000-0000-0000-0000-000000000001")
+        #expect(encoded["shelf"]?["recordName"] == "Shelf:42")
+        #expect(try encoded.decode(Child.self) == child)
     }
 
     @Test func leavesOutNil() throws {
@@ -47,52 +64,51 @@ private struct Child: Codable, Hashable {
 
     @Test func decodesMissingAndNullAsNil() throws {
         for text in [#"{"id":"00000000-0000-0000-0000-000000000001"}"#, #"{"id":"00000000-0000-0000-0000-000000000001","folder":null}"#] {
-            #expect(try JSONDecoder().decode(Note.self, from: Data(text.utf8)).folder == nil)
+            #expect(try decode(Note.self, text).folder == nil)
         }
     }
 
     @Test func roundTrips() throws {
-        let note = Note(id: noteID, folder: folderID)
+        let note = Note(id: noteID, folder: "inbox")
         #expect(try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(note)) == note)
         #expect(try JSONRepresentation(note).decode(Note.self) == note)
     }
 
-    @Test func readsAnyRecordNameAsItIs() throws {
-        for name in ["e621e1f8-c36c-495a-93fc-0c247a3e6e5f", "Folder:inbox", "42"] {
-            let text = #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"\#(name)","zone":"Z","action":"none"}}"#
-            #expect(try JSONDecoder().decode(Note.self, from: Data(text.utf8)).folder == RecordID(name: name, zone: "Z"),
-                    "CloudKit names are case-sensitive, so a lowercase UUID names another record.")
+    @Test func readsTheIDAndZoneBack() throws {
+        let note = try decode(Note.self, #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"Folder:inbox","zone":"Z","owner":"_8a2f","action":"none"}}"#)
+        #expect(note.folder == "inbox")
+        #expect(note.$folder.zone == Zone("Z", owner: "_8a2f"))
+        #expect(try decode(Note.self, json(note)) == note, "The zone is encoded.")
+    }
+
+    @Test func theZoneIsPartOfTheReference() throws {
+        let placed = try decode(Note.self, #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"Folder:inbox","zone":"Z","action":"none"}}"#)
+        #expect(placed != Note(id: noteID, folder: "inbox"))
+        #expect(placed.folder == Note(id: noteID, folder: "inbox").folder)
+    }
+
+    @Test func rejectsANameThatIsNotTheTargetsID() {
+        for name in ["E621E1F8-C36C-495A-93FC-0C247A3E6E5F", "inbox"] {
+            #expect(throws: DecodingError.self, "A String id's name starts with its type.") {
+                try decode(Note.self, #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"\#(name)","action":"none"}}"#)
+            }
+        }
+        #expect(throws: DecodingError.self, "CloudKit names are case-sensitive, so a lowercase UUID names another record.") {
+            try decode(Child.self, #"{"note":{"recordName":"00000000-0000-0000-0000-00000000000a","action":"none"}}"#)
         }
     }
 
     @Test func keepsTheAction() throws {
-        let child = Child(folder: folderID)
-        #expect(child.folderAction == .deleteSelf)
-        #expect(try json(child) == #"{"folder":{"action":"deleteSelf","owner":"__defaultOwner__","recordName":"E621E1F8-C36C-495A-93FC-0C247A3E6E5F","zone":"Z"}}"#)
+        let child = Child(folder: "inbox")
+        #expect(child.$folder.action == .deleteSelf)
+        #expect(try json(child) == #"{"folder":{"action":"deleteSelf","recordName":"Folder:inbox"}}"#)
         let decoded = try JSONDecoder().decode(Child.self, from: JSONEncoder().encode(child))
         #expect(decoded == child)
-        #expect(decoded.folderAction == .deleteSelf)
-    }
-
-    @Test func pointsAtAnyTargetByItsRecordID() throws {
-        let id = try RecordID(Folder(slug: "inbox"), id: \.slug, zone: "Z")
-        #expect(id == RecordID(name: "Folder:inbox", zone: "Z"))
-        #expect(Note(id: noteID, folder: id).folder?.name == id.name)
-    }
-
-    @Test func keepsTheZoneAndOwner() throws {
-        let shared = RecordID<Folder>(name: folderID.name, zone: Zone("Shared", owner: "_8a2f"))
-        let decoded = try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(Note(id: noteID, folder: shared)))
-        #expect(decoded.folder == shared)
-    }
-
-    @Test func rejectsAReferenceWithNoZone() {
-        let text = #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"E621E1F8-C36C-495A-93FC-0C247A3E6E5F","action":"none"}}"#
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Note.self, from: Data(text.utf8)) }
+        #expect(decoded.$folder.action == .deleteSelf)
     }
 
     @Test func aNilReferenceDecodesWithNone() throws {
-        #expect(try JSONDecoder().decode(Child.self, from: Data("{}".utf8)).folderAction == .none)
+        #expect(try decode(Child.self, "{}").$folder.action == .none)
     }
 
     @Test func recordReferenceIsCodable() throws {
@@ -104,15 +120,10 @@ private struct Child: Codable, Hashable {
 }
 
 private struct Page: Codable, Hashable {
-    @Reference(isParent: true) var folder: RecordID<Folder>? = nil
-
-    /// The wrapper's storage is private, so only this file can read it.
-    var folderIsParent: Bool { _folder.isParent }
+    @Reference<Folder>(isParent: true) var folder: Folder.ID? = nil
 }
 
 @Suite struct ParentReferenceTests {
-    private let folder = RecordID<Folder>(name: UUID(uuidString: "00000000-0000-0000-0000-00000000000F")!, zone: "Z")
-
     private func json(_ value: some Encodable) throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -120,7 +131,7 @@ private struct Page: Codable, Hashable {
     }
 
     @Test func encodesAParentReferenceWithNoAction() throws {
-        #expect(try json(Page(folder: folder)) == #"{"folder":{"action":"none","isParent":true,"owner":"__defaultOwner__","recordName":"00000000-0000-0000-0000-00000000000F","zone":"Z"}}"#)
+        #expect(try json(Page(folder: "inbox")) == #"{"folder":{"action":"none","isParent":true,"recordName":"Folder:inbox"}}"#)
     }
 
     @Test func leavesOutNilAndDecodesMissingAsNil() throws {
@@ -129,22 +140,17 @@ private struct Page: Codable, Hashable {
     }
 
     @Test func theFlagSurvivesDecodingAndMerging() throws {
-        let model = Page(folder: folder)
+        let model = Page(folder: "inbox")
         let decoded = try JSONDecoder().decode(Page.self, from: JSONEncoder().encode(model))
         #expect(decoded == model)
-        #expect(decoded.folderIsParent)
-        #expect(try JSONRepresentation(model).decode(Page.self).folderIsParent)
-        #expect(try DefaultMergeStrategy<Page>().merge(base: Page(), ours: model, theirs: Page()).folderIsParent)
+        #expect(decoded.$folder.isParent)
+        #expect(try JSONRepresentation(model).decode(Page.self).$folder.isParent)
+        #expect(try DefaultMergeStrategy<Page>().merge(base: Page(), ours: model, theirs: Page()).$folder.isParent)
     }
 
     @Test func aParentIsNotAPlainReference() throws {
-        #expect(!Child(folder: folder).folderIsParentForTesting)
+        #expect(!Child(folder: "inbox").$folder.isParent)
         #expect(RecordReference(parent: "A") != RecordReference(recordName: "A"))
         #expect(try JSONDecoder().decode(RecordReference.self, from: Data(#"{"action":"none","recordName":"A"}"#.utf8)).isParent == false)
-    }
-
-    @Test func readsAParentByAnyRecordName() throws {
-        let page = try JSONDecoder().decode(Page.self, from: Data(#"{"folder":{"recordName":"Folder:inbox","zone":"Z","action":"none","isParent":true}}"#.utf8))
-        #expect(page.folder == RecordID(name: "Folder:inbox", zone: "Z"))
     }
 }

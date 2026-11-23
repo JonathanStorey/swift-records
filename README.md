@@ -30,8 +30,7 @@ Linux included. The CloudKit encoder, decoder and sync live in
 ### Record IDs
 
 `RecordID<Record>` is where a record lives: its name, its zone, and the
-zone's owner. It is everything needed to find the record again, so a
-reference stores it and a view can be handed one.
+zone's owner. It is everything needed to find the record again.
 
 ```swift
 let folder = try RecordID(folder, zone: "Notes")          // an Identifiable folder
@@ -56,28 +55,34 @@ let board = Zone.public          // public
 
 ### References
 
-`@Reference` holds a read-only link to another record as its `RecordID`,
-ready for CloudKit's `CKRecord.Reference`. The target can be any type,
-identified however it is saved.
+`@Reference` holds a read-only link to another record in the same zone, as the
+target's own id, ready for CloudKit's `CKRecord.Reference`. The target is any
+`Identifiable` type whose id is `Codable`.
 
 ```swift
 struct Note: Codable, Identifiable {
     var id: UUID
-    @Reference(action: .deleteSelf) var folder: RecordID<Folder>? = nil
+    @Reference<Folder>(action: .deleteSelf) var folder: Folder.ID? = nil
 }
 
-let note = Note(id: UUID(), folder: try RecordID(folder, zone: "Notes"))
-note.folder?.name                // the folder's record name
+let note = Note(id: UUID(), folder: folder.id)
+note.folder           // the folder's id
+note.$folder.zone     // the folder's zone, once the note is saved
 ```
 
-The property is set when the model is created or decoded, and the wrapper
-stores only the id and its action. It encodes a
-`RecordReference`, so `JSONEncoder` writes
-`{"folder":{"action":"deleteSelf","owner":"__defaultOwner__","recordName":"...","zone":"Notes"},"id":"..."}`.
-A `nil` reference is left out, and a missing key decodes as `nil`. CloudKit
-keeps a reference in its record's zone, so a record encoder writes only the
-name, and a record decoder fills in the zone and owner from the record it
-reads.
+The property is set when the model is created or decoded. It encodes a
+`RecordReference` named as the target's record is, so `JSONEncoder` writes
+`{"folder":{"action":"deleteSelf","recordName":"..."},"id":"..."}`, and
+decoding reads the id back from that name. A `nil` reference is left out, and
+a missing key decodes as `nil`.
+
+CloudKit follows a reference only within its record's zone, so the target's
+zone is always the holding record's. A reference built in code has no zone, and
+the container places it in the record's zone when it saves the record. Saving
+a reference that names another zone throws. The zone is encoded and is part of
+the reference's equality. The projected value, `$folder`, is the wrapper
+itself, which carries the target's type, id and zone together, as a view
+needs to find the target.
 
 The action follows `CKRecord.Reference`. With `.deleteSelf`, the record
 holding the property deletes itself when the target is deleted. A decoded
@@ -87,44 +92,49 @@ the action `.none`.
 
 ### Reference lists
 
-`@References` holds a read-only to-many relationship as the targets'
-`RecordID`s, in order. The initializer picks how the list is stored, and the property reads
+`@References` holds a read-only to-many relationship as the targets' own ids,
+in order. The initializer picks how the list is stored, and the property reads
 the same either way.
 
 ```swift
 struct Note: Codable, Identifiable {
     var id: UUID
-    @References var attachments: [RecordID<Attachment>] = []
-    @References(to: \Tag.notes, action: .deleteSelf) var tags: [RecordID<Tag>] = []
+    @References<Attachment> var attachments: [Attachment.ID] = []
+    @References<Tag>(to: \Tag.notes) var tags: [Tag.ID] = []
 }
 
 struct Tag: Codable, Identifiable {
     var id: UUID
-    @References(from: \Note.tags) var notes: [RecordID<Note>] = []
+    @References<Note>(from: \Note.tags) var notes: [Note.ID] = []
 }
 ```
 
-Without a key path the list is one reference list field, like
-`CKRecord`'s own, so it travels with the record and two devices settle on
-one list. A key path to the target's inverse stores each reference as its
-own `Relationship` record instead, so the list has no size limit and edits
-from two devices merge. The inverse points back at the declaring property
-and reads the same links from the other end. Its link name, `"Note.tags"`,
-comes from the coding key behind the key path, so it follows `CodingKeys`.
+Without a key path the list is one reference list field, like `CKRecord`'s
+own, so it travels with the record and two devices settle on one list. It
+encodes each id as a `RecordReference` carrying the action, which a decoded
+list takes from its first element. An empty field list is left out, and a
+missing key decodes as an empty list.
 
-A `Relationship` is named by the declaring side, as in `"Note.tags"`, with
-the declaring record's name and then the target's. Its id is a stable hash of
-those three values, so the same link always maps to the same record. It
+A key path to the other side stores each reference as its own `Relationship`
+record instead, so the list has no size limit and edits from two devices
+merge. The container writes the links when it saves the record and fills the
+list back in when it fetches it, so the record itself never holds them, and a
+predicate such as `#Predicate { $0.tags.contains(tag.id) }` finds every note
+with a tag. The inverse reads the same links from the other end, and saving
+either side writes them.
+
+A `Relationship` is named by the declaring side, as in `"Note.tags"`, with the
+declaring record's name and then the target's, and it names the inverse, as in
+`"Tag.notes"`, in `inverseKeyPath`. Each name comes from the coding key behind
+the key path, so it follows `CodingKeys`. The link's id is a stable hash of its
+name and both records, so the same link always maps to the same record. It
 also holds `order`, the link's position in the declaring list, and
-`inverseOrder`, its position in the inverse's list, and each side sorts by
-its own. A new link is unplaced, and `link[orderIn: record]` places it in
-either end's list without knowing which side declared it.
+`inverseOrder`, its position in the inverse's list, and each side sorts by its
+own. Removing a target deletes only its link and renumbers nothing.
 
-Either way the wrapper encodes each id as a `RecordReference`
-carrying the action, which a decoded list takes from its first element.
-With `.deleteSelf`, the record holding the property deletes itself when any
-target is deleted. An empty list is left out, and a missing key decodes as
-an empty list.
+Finding a name from a key path decodes a placeholder of the other type with a
+marker id in each list, so the other side's id must encode as a JSON string or
+number, as a `UUID`, `String` or `Int` does.
 
 Use `@Reference` for one target and `@References` for many. Add a key path
 when the list should merge across devices or outgrow a field.
@@ -138,7 +148,7 @@ every record whose parent points at it, so sharing a folder shares its notes.
 ```swift
 struct Note: Codable, Identifiable {
     var id: UUID
-    @Reference(isParent: true) var folder: RecordID<Folder>? = nil
+    @Reference<Folder>(isParent: true) var folder: Folder.ID? = nil
 }
 ```
 

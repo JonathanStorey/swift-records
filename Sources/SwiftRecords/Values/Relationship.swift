@@ -8,10 +8,10 @@ import Versioning
 /// `references` encode as a reference list, so CloudKit stores them as
 /// references you can follow in the Dashboard.
 ///
-/// Code that syncs a `@References` list creates the links for it with
-/// ``init(keyPath:from:to:symmetric:)``, places them with
-/// ``subscript(orderIn:)``, and reads them
-/// back into a list with `References.init(_:from:action:)`.
+/// The container creates a `@References` list's links with
+/// ``init(keyPath:from:to:symmetric:)`` and places them with
+/// ``subscript(orderIn:)`` when it saves a record, and reads them back into
+/// the list when it fetches one.
 ///
 /// A link is named by the declaring side alone. Linking a note to a tag
 /// through `Note.tags` gives `keyPath == "Note.tags"` and
@@ -36,6 +36,9 @@ public struct Relationship: Codable, Hashable, Sendable, Identifiable, Mergeable
     /// declared on the target's side. Each side writes only its own
     /// order, so the two sides never conflict over a field.
     public var inverseOrder: Int?
+    /// The target's property that reads the link back, as in `"Tag.notes"`, or `nil`
+    /// when the target declares no inverse. The container fills the inverse's list from it.
+    public var inverseKeyPath: String?
 
     /// A link from `source` to `target` through `keyPath`, not yet placed
     /// in either list.

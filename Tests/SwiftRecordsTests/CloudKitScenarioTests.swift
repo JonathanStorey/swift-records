@@ -41,7 +41,7 @@ private struct Draft: Codable, Equatable, Identifiable, Mergeable {
     @Encrypted var secret = "secret"
     @Encrypted var pin: Int? = 1234
     @Asset var attachment: Data? = nil
-    @Reference var folder: RecordID<Folder>? = nil
+    @Reference<Folder> var folder: Folder.ID? = nil
 
     /// This draft without the attachment's file, which each device keeps in its own place.
     var withoutFile: Draft {
@@ -293,7 +293,7 @@ private final class Device {
 
 @Suite struct CloudKitSyncScenarioTests {
     private let id = UUID()
-    private let folder = RecordID<Folder>(name: UUID(), zone: "Drafts")
+    private let folder = UUID()
 
     @Test func aRecordMadeOnOneDeviceArrivesWhole() throws {
         let server = Server()
@@ -304,7 +304,10 @@ private final class Device {
         try yours.fetch()
 
         let arrived = try #require(try yours.value(id: id))
-        #expect(arrived.withoutFile == draft.withoutFile)
+        let saved = try #require(try mine.value(id: id))
+        #expect(arrived.withoutFile == saved.withoutFile, "Each side holds the draft placed in its zone.")
+        #expect(arrived.folder == draft.folder)
+        #expect(arrived.$folder.zone == "Drafts")
         #expect(arrived.attachment == Data([1, 2, 3]))
         #expect(try mine.container.row(id: id)?.status == .synced)
         #expect(try yours.container.row(id: id)?.status == .synced)
