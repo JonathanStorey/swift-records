@@ -60,7 +60,7 @@ With every record type registered, `.conflict` never happens, because a register
 
 The row's id comes from `recordName(for:type:)`. A `UUID` id is used as it is, as its `uuidString`. Any other id becomes the record type and the id's text, a `String` id as it is and any other id as its JSON. Text of only ASCII letters, digits, `-`, `_` and `.` follows one colon, as in `Page:intro` or `Invoice:42`, so the name reads as the id. Any other text is Base64URL-encoded without padding after two colons, as in `Page::Y2Fmw6k` for `café`. Neither form contains a character that needs escaping in a URL or a Dashboard search, and both stay within CloudKit's ASCII. Two devices that create the same id independently therefore write the same record, and the type is part of the name because a record name must be unique in its zone across every type. The zone is not part of the name, so a copy of a record in another zone keeps its name.
 
-Because the name is the id, `id(_:fromRecordName:)` reads it back, which lets a reference that CloudKit stores as a bare record name return the target's own id. A name longer than CloudKit's 255 characters asserts. Outside debug builds it falls back to `<Type>#<stable hash of the id>`, which still names one record but cannot be read back.
+Because the name is the id, `id(_:fromRecordName:)` reads it back, which lets a reference that CloudKit stores as a bare record name return the target's own id. A name longer than CloudKit's 255 characters throws an `EncodingError`, so the save throws and nothing is written. A shortened or hashed name could not be read back as the id.
 
 Saving never merges. A local save is always on top of whatever the device already had, so it simply replaces `ours`.
 

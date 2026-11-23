@@ -81,6 +81,19 @@ private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: K
         #expect(try RecordContainer.recordName(for: slug, type: "Page") == "Page:" + slug)
     }
 
+    @Test func aLongerNameThrows() {
+        let slug = String(repeating: "a", count: 256 - "Page:".count)
+        #expect(throws: EncodingError.self) { try RecordContainer.recordName(for: slug, type: "Page") }
+        let encoded = String(repeating: "é", count: 100)
+        #expect(throws: EncodingError.self, "100 é are 200 bytes, so their Base64URL is too long.") { try RecordContainer.recordName(for: encoded, type: "Page") }
+    }
+
+    @Test func savingARecordWhoseNameIsTooLongThrowsAndSavesNothing() throws {
+        let container = RecordContainer()
+        #expect(throws: EncodingError.self) { try container.save(our: Page(slug: String(repeating: "a", count: 300)), id: \.slug, zone: "Notes") }
+        #expect(try container.zones().isEmpty)
+    }
+
     @Test func aPlainStructSavesUnderItsID() throws {
         let container = RecordContainer()
         try container.save(our: Page(slug: "intro", title: "First"), id: \.slug, zone: "Notes")

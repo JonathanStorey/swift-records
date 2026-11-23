@@ -128,18 +128,18 @@ extension RecordContainer {
     /// save one record. The type is part of the name because a record name is unique in
     /// its zone across every type. ``id(_:fromRecordName:)`` reads the id back.
     ///
-    /// A name longer than CloudKit's 255 characters asserts. Outside debug builds it falls
-    /// back to the type, a `#` and a stable hash of the id, which still names one record
-    /// but cannot be read back as the id.
+    /// Throws an `EncodingError` when the name would be longer than CloudKit's 255
+    /// characters, since a shortened name could not be read back as the id.
     static func recordName(for id: any Encodable, type: String) throws -> String {
         if let id = id as? UUID { return id.uuidString }
         let text = try (id as? String) ?? JSONRepresentation(id).description
         let name = text.unicodeScalars.allSatisfy(Unicode.Scalar.isPlainRecordName)
             ? type + ":" + text
             : type + "::" + Data(text.utf8).base64URLEncoded
-        guard name.utf8.count > 255 else { return name }
-        assertionFailure("The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id.")
-        return type + "#" + UUID(stableHashOf: type + "|" + text).uuidString
+        guard name.utf8.count <= 255 else {
+            throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id."))
+        }
+        return name
     }
 
     /// The id that ``recordName(for:type:)`` made `name` from, or `nil` when `name` is not
