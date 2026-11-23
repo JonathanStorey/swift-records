@@ -102,10 +102,3 @@ extension RecordContainer {
         try save(their: json, id: id.uuidString, zone: zone, type: type, metadata: metadata)
     }
 }
-
-extension Relationship {
-    /// A link between the records named by the `UUID`s `source` and `target`.
-    init(keyPath: String, from source: UUID, to target: UUID, symmetric: Bool = false) {
-        self.init(keyPath: keyPath, from: source.uuidString, to: target.uuidString, symmetric: symmetric)
-    }
-}

@@ -5,12 +5,12 @@ import Versioning
 
 private struct Tag: Codable, Hashable, Identifiable {
     var id = UUID()
-    @References<Note>(from: \Note.tags) var notes: [Note.ID] = []
+    @References<Note>(inverse: \Note.tags) var notes: [Note.ID] = []
 }
 
 private struct Note: Codable, Hashable, Identifiable {
     var id = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
-    @References<Tag>(to: \Tag.notes) var tags: [Tag.ID] = []
+    @References<Tag>(inverse: \Tag.notes) var tags: [Tag.ID] = []
 }
 
 private struct Attachment: Codable, Identifiable {
@@ -24,7 +24,7 @@ private struct Folder: Codable, Hashable {
 /// Stores `labels` under another coding key.
 private struct Article: Codable, Identifiable {
     var id = UUID()
-    @References<Sticker>(to: \Sticker.articles) var labels: [Sticker.ID] = []
+    @References<Sticker>(inverse: \Sticker.articles) var labels: [Sticker.ID] = []
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -34,18 +34,18 @@ private struct Article: Codable, Identifiable {
 
 private struct Sticker: Codable, Identifiable {
     var id = UUID()
-    @References<Article>(from: \Article.labels) var articles: [Article.ID] = []
+    @References<Article>(inverse: \Article.labels) var articles: [Article.ID] = []
 }
 
-/// Identified by an `Int` and a `String`, so each finds its link name with a marker of its own id type.
+/// Identified by an `Int` and a `String`, so each finds its inverse with a marker of its own id type.
 private struct Shelf: Codable, Identifiable {
     var id: Int
-    @References<Book>(from: \Book.shelves) var books: [Book.ID] = []
+    @References<Book>(inverse: \Book.shelves) var books: [Book.ID] = []
 }
 
 private struct Book: Codable, Identifiable {
     var id: String
-    @References<Shelf>(to: \Shelf.books) var shelves: [Shelf.ID] = []
+    @References<Shelf>(inverse: \Shelf.books) var shelves: [Shelf.ID] = []
 }
 
 /// Identified by a struct, which no record name reads back as a marker.
@@ -55,12 +55,12 @@ private struct Pair: Codable, Hashable {
 
 private struct Cell: Codable, Identifiable {
     var id = Pair()
-    @References<Grid>(from: \Grid.cells) var grids: [Grid.ID] = []
+    @References<Grid>(inverse: \Grid.cells) var grids: [Grid.ID] = []
 }
 
 private struct Grid: Codable, Identifiable {
     var id = UUID()
-    @References<Cell>(to: \Cell.grids) var cells: [Cell.ID] = []
+    @References<Cell>(inverse: \Cell.grids) var cells: [Cell.ID] = []
 }
 
 private struct Match: Codable, Hashable {
@@ -92,47 +92,46 @@ private struct Match: Codable, Hashable {
         #expect(try json(Match(tags: [a])) == #"{"tags":[{"action":"deleteSelf","recordName":"00000000-0000-0000-0000-0000000000A1"}]}"#)
     }
 
-    @Test func encodesALinkListWithTheOtherSidesName() throws {
-        #expect(try json(Note(tags: [a])) == #"{"id":"00000000-0000-0000-0000-00000000000A","tags":{"$isInverse":false,"$links":[{"action":"none","recordName":"00000000-0000-0000-0000-0000000000A1"}],"$otherSide":"Tag.notes"}}"#)
-        #expect(try JSONRepresentation(Tag(notes: [a]))["notes"]?["$otherSide"] == "Note.tags")
-        #expect(try JSONRepresentation(Tag(notes: [a]))["notes"]?["$isInverse"] == true)
+    @Test func encodesARelationshipListWithItsInverse() throws {
+        #expect(try json(Note(tags: [a])) == #"{"id":"00000000-0000-0000-0000-00000000000A","tags":{"$inverse":"Tag.notes","$relationships":[{"action":"none","recordName":"00000000-0000-0000-0000-0000000000A1"}]}}"#)
+        #expect(try JSONRepresentation(Tag(notes: [a]))["notes"]?["$inverse"] == "Note.tags", "Each side names the other.")
     }
 
     @Test func theOtherSideFollowsItsCodingKey() throws {
-        #expect(try JSONRepresentation(Sticker())["articles"]?["$otherSide"] == "Article.stickers")
-        #expect(try JSONRepresentation(Article())["stickers"]?["$otherSide"] == "Sticker.articles")
+        #expect(try JSONRepresentation(Sticker())["articles"]?["$inverse"] == "Article.stickers")
+        #expect(try JSONRepresentation(Article())["stickers"]?["$inverse"] == "Sticker.articles")
     }
 
-    @Test func intAndStringIDsFindTheirLinkNames() throws {
-        #expect(try JSONRepresentation(Shelf(id: 1))["books"]?["$otherSide"] == "Book.shelves")
-        #expect(try JSONRepresentation(Book(id: "swift"))["shelves"]?["$otherSide"] == "Shelf.books")
+    @Test func intAndStringIDsFindTheirInverse() throws {
+        #expect(try JSONRepresentation(Shelf(id: 1))["books"]?["$inverse"] == "Book.shelves")
+        #expect(try JSONRepresentation(Book(id: "swift"))["shelves"]?["$inverse"] == "Shelf.books")
     }
 
-    @Test func aStructIDCannotNameItsLinks() throws {
-        #expect(throws: (any Error).self, "The inverse marks Grid.cells with a Pair, which no record name reads back as.") {
+    @Test func aStructIDCannotBeFoundByItsInverse() throws {
+        #expect(throws: (any Error).self, "Cell finds Grid.cells with a Pair marker, which no record name reads back as.") {
             try JSONRepresentation(Cell())
         }
         let grid = try JSONRepresentation(Grid())
-        #expect(grid["cells"]?["$otherSide"] == "Cell.grids", "Grid's own side marks Cell.grids with a UUID.")
+        #expect(grid["cells"]?["$inverse"] == "Cell.grids", "Grid finds Cell.grids with a UUID marker.")
     }
 
-    @Test func anEmptyFieldListIsLeftOutButAnEmptyLinkListIsNot() throws {
+    @Test func anEmptyFieldListIsLeftOutButAnEmptyRelationshipListIsNot() throws {
         #expect(try json(Folder()) == "{}")
-        #expect(try JSONRepresentation(Note())["tags"]?["$links"] == [], "The container must see a list emptied, to remove its links.")
+        #expect(try JSONRepresentation(Note())["tags"]?["$relationships"] == [], "The container must see a list emptied, to remove its relationships.")
         #expect(try decode(Note.self, #"{"id":"00000000-0000-0000-0000-00000000000A"}"#).tags == [])
     }
 
     @Test func storageSurvivesDecoding() throws {
         #expect(try decode(Folder.self, json(Folder(attachments: [a]))).$attachments.storage == .field)
-        #expect(try decode(Note.self, json(Note(tags: [a]))).$tags.storage == .links)
-        #expect(try decode(Tag.self, json(Tag(notes: [a]))).$notes.storage == .inverse)
+        #expect(try decode(Note.self, json(Note(tags: [a]))).$tags.storage == .relationships)
+        #expect(try decode(Tag.self, json(Tag(notes: [a]))).$notes.storage == .relationships)
         #expect(try decode(Folder.self, "{}").$attachments.storage == nil, "A missing key cannot tell.")
     }
 
     @Test func initializerPicksTheStorage() {
         #expect(Folder().$attachments.storage == .field)
-        #expect(Note().$tags.storage == .links)
-        #expect(Tag().$notes.storage == .inverse)
+        #expect(Note().$tags.storage == .relationships)
+        #expect(Tag().$notes.storage == .relationships)
     }
 
     @Test func keepsTheAction() throws {

@@ -133,17 +133,17 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(titles == ["Linked"])
     }
 
-    @Test func fetchesRelationshipsByKeyPathAndRecord() throws {
+    @Test func fetchesRelationshipsByPropertyAndRecord() throws {
         let note = UUID().uuidString, tag = UUID().uuidString, other = UUID().uuidString
-        try container.save(our: Relationship(keyPath: "Note.tags", from: note, to: tag), zone: notes)
-        try container.save(our: Relationship(keyPath: "Note.tags", from: other, to: tag), zone: notes)
-        try container.save(our: Relationship(keyPath: "Note.links", from: note, to: other), zone: notes)
+        try container.save(our: Relationship(between: ("Note.tags", note), and: ("Tag.notes", tag)), zone: notes)
+        try container.save(our: Relationship(between: ("Note.tags", other), and: ("Tag.notes", tag)), zone: notes)
+        try container.save(our: Relationship(between: ("Note.links", note), and: ("Note.backlinks", other)), zone: notes)
         let keyPath = "Note.tags"
 
-        let links = try container.fetch(Relationship.self, in: notes, predicate: #Predicate {
-            $0.keyPath == keyPath && $0.references.contains(note)
+        let found = try container.fetch(Relationship.self, in: notes, predicate: #Predicate {
+            $0.keyPaths.contains(keyPath) && $0.references.contains(note)
         })
-        #expect(links.map { $0.target(from: note) } == [tag])
+        #expect(found.map { $0.target(from: note, keyPath: keyPath) } == [tag])
     }
 
     @Test func readsTheContainersCopyOfAnAsset() throws {

@@ -9,25 +9,28 @@ import Versioning
 /// ```swift
 /// struct Note: Codable, Identifiable {
 ///     var id: UUID
-///     @References<Attachment> var attachments: [Attachment.ID] = []       // a field on the record
-///     @References<Tag>(to: \Tag.notes) var tags: [Tag.ID] = []            // Relationship records
+///     @References<Attachment> var attachments: [Attachment.ID] = []      // a field on the record
+///     @References<Tag>(inverse: \Tag.notes) var tags: [Tag.ID] = []      // Relationship records
 /// }
 ///
 /// struct Tag: Codable, Identifiable {
 ///     var id: UUID
-///     @References<Note>(from: \Note.tags) var notes: [Note.ID] = []       // the inverse
+///     @References<Note>(inverse: \Note.tags) var notes: [Note.ID] = []   // the same relationships
 /// }
 /// ```
 ///
-/// No key path stores the list as one reference list field, like `CKRecord`'s own. It
-/// travels with the record, and two devices settle on one list.
+/// Without a key path the list is one reference list field, like `CKRecord`'s own. It
+/// travels with the record, and two devices settle on one list. It encodes each id as a
+/// ``RecordReference`` carrying the action. An empty field list is left out of a keyed
+/// container, and a missing key decodes as an empty list.
 ///
-/// A key path to the target's inverse stores each reference as its own ``Relationship``
-/// record, so the list has no size limit and edits from two devices merge. The link is
-/// named by the declaring side, as in `"Note.tags"`, from the coding key it encodes, and
-/// the inverse reads the same links from the other end. The container writes the links
-/// when it saves the record and reads them back when it fetches it, so the record itself
-/// never holds them.
+/// A key path to the other side's list stores each reference as its own ``Relationship``
+/// record, so the list has no size limit and edits from two devices merge. The two sides
+/// mirror each other: each names the other, either one can save a relationship, and both
+/// read it. The container writes the relationships when it saves the record and reads them
+/// back when it fetches it, so the record itself never holds them. A relationship list has
+/// no action, because a ``Relationship`` record carries none. A list built in code is always
+/// saved in full, even when empty, so emptying it removes its relationships.
 ///
 /// Every target lives in the holding record's zone, as CloudKit requires. ``zone`` is `nil`
 /// for a value built in code, and the container fills it in when it saves the record. The
@@ -35,15 +38,11 @@ import Versioning
 /// together.
 ///
 /// The property is set when the model is created or decoded and cannot be assigned
-/// afterwards. A field list encodes each id as a ``RecordReference`` carrying the action.
-/// An empty field list is left out of a keyed container, and a missing key decodes as an
-/// empty list.
-///
-/// The action follows `CKRecord.Reference`: with `.deleteSelf`, the record holding the
-/// property deletes itself when any target is deleted. Swift does not pass the attribute's
-/// arguments to `init(from:)`, so a decoded list takes the action of its first element, and
-/// an empty list decodes with `.none`. Equality and hashing compare the ids, the action and
-/// the zone.
+/// afterwards. The action follows `CKRecord.Reference`: with `.deleteSelf`, the record
+/// holding the property deletes itself when any target is deleted. Swift does not pass the
+/// attribute's arguments to `init(from:)`, so a decoded field list takes the action of its
+/// first element, and an empty list decodes with `.none`. Equality and hashing compare the
+/// ids, the action and the zone.
 @propertyWrapper
 public struct References<Target: Identifiable>: Sendable where Target.ID: Codable & Sendable {
     public let wrappedValue: [Target.ID]
@@ -55,29 +54,27 @@ public struct References<Target: Identifiable>: Sendable where Target.ID: Codabl
     /// cannot tell.
     public let storage: Storage?
 
-    /// The link name of the other side, as in `"Tag.notes"` for `Note.tags`, or `nil` for a
-    /// field list. A list built in code finds it from its key path when it is encoded.
-    private let otherSide: (@Sendable () throws -> String)?
+    /// The other side's property, as in `"Tag.notes"` for `Note.tags`, or `nil` for a field
+    /// list. A list built in code finds it from its key path when it is encoded.
+    private let inverse: (@Sendable () throws -> String)?
 
     /// Where a list's references are stored.
     public enum Storage: Hashable, Sendable {
         /// One reference list field on the record.
         case field
-        /// ``Relationship`` records named by this side.
-        case links
-        /// ``Relationship`` records named by the declaring property.
-        case inverse
+        /// ``Relationship`` records, one for each target.
+        case relationships
     }
 
     /// The list itself, with the targets' type, ids and zone.
     public var projectedValue: Self { self }
 
-    fileprivate init(_ ids: [Target.ID], action: RecordReference.Action, zone: Zone?, storage: Storage?, otherSide: (@Sendable () throws -> String)? = nil) {
+    fileprivate init(_ ids: [Target.ID], action: RecordReference.Action, zone: Zone?, storage: Storage?, inverse: (@Sendable () throws -> String)? = nil) {
         wrappedValue = ids
         self.action = action
         self.zone = zone
         self.storage = storage
-        self.otherSide = otherSide
+        self.inverse = inverse
     }
 
     /// A list stored as one reference list field on the record.
@@ -85,49 +82,41 @@ public struct References<Target: Identifiable>: Sendable where Target.ID: Codabl
         self.init(wrappedValue, action: action, zone: nil, storage: .field)
     }
 
-    /// A list stored as ``Relationship`` records, declared on this side. `inverse` is the
-    /// target's property that reads the same links back.
-    public init<SourceID: Codable & Hashable>(wrappedValue: [Target.ID] = [], to inverse: KeyPath<Target, [SourceID]> & Sendable, action: RecordReference.Action = .none) where Target: Decodable {
-        self.init(wrappedValue, action: action, zone: nil, storage: .links, otherSide: { try Self.linkName(of: inverse) })
-    }
-
-    /// The inverse of the list at `declaringProperty`, reading the same ``Relationship``
-    /// records from the other side.
-    public init<SourceID: Codable & Hashable>(wrappedValue: [Target.ID] = [], from declaringProperty: KeyPath<Target, [SourceID]> & Sendable, action: RecordReference.Action = .none) where Target: Decodable {
-        self.init(wrappedValue, action: action, zone: nil, storage: .inverse, otherSide: { try Self.linkName(of: declaringProperty) })
+    /// A list stored as ``Relationship`` records, read back by the target's list at
+    /// `inverse`, which names this list in turn.
+    public init<SourceID: Codable & Hashable>(wrappedValue: [Target.ID] = [], inverse: KeyPath<Target, [SourceID]> & Sendable) where Target: Decodable {
+        self.init(wrappedValue, action: .none, zone: nil, storage: .relationships, inverse: { try Self.propertyName(of: inverse) })
     }
 }
 
 /// How a list stored as ``Relationship`` records encodes: its targets and the other side's
-/// link name, never stored on the record. The container takes it out of a record it saves
+/// property, never stored on the record. The container takes it out of a record it saves
 /// and puts it in for a record it fetches. The keys start with `$` so no model's own
 /// property reads as one.
-struct LinkList: Codable, Hashable {
+struct RelationshipList: Codable, Hashable {
     /// The targets, in order.
-    var links: [RecordReference]
-    /// The other side's link name, as in `"Tag.notes"`.
-    var otherSide: String?
-    /// Whether this side is the inverse, reading links named by the other side.
-    var isInverse: Bool
+    var relationships: [RecordReference]
+    /// The other side's property, as in `"Tag.notes"`.
+    var inverse: String?
 
     private enum CodingKeys: String, CodingKey {
-        case links = "$links", otherSide = "$otherSide", isInverse = "$isInverse"
+        case relationships = "$relationships", inverse = "$inverse"
     }
 
-    /// Whether `json` is an encoded link list.
+    /// Whether `json` is an encoded relationship list.
     static func isEncoded(_ json: JSONRepresentation) -> Bool {
-        json[CodingKeys.links.rawValue] != nil
+        json[CodingKeys.relationships.rawValue] != nil
     }
 }
 
 extension References {
-    /// The link name of a reference list, `"Root.key"`, from a key path to it, such as
+    /// The property name of a reference list, `"Root.key"`, from a key path to it, such as
     /// `"Note.tags"` for `\Note.tags`.
     ///
     /// The key is the coding key `Root` decodes the property from, found by reading the key
     /// path on a placeholder `Root` whose lists each hold one unique marker id. It needs no
     /// runtime names, so it works in stripped builds and on Linux.
-    fileprivate static func linkName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
+    fileprivate static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
         let recorded = try JSONSchema.placeholder(for: Root.self)
         guard let marked = recorded.value[keyPath: keyPath].first,
               let key = recorded.markers.first(where: { ID.marked($0.key) == marked })?.value.first else {
@@ -176,7 +165,7 @@ extension References: Mergeable {
     /// how the list is stored is this version's.
     public func merging(with theirs: References, from base: References) throws(MergeConflict) -> References {
         let ids = try RangeReplaceableCollectionElementMerge<[Target.ID]>().merge(base: base.wrappedValue, ours: wrappedValue, theirs: theirs.wrappedValue)
-        return References(ids, action: action == base.action ? theirs.action : action, zone: zone ?? theirs.zone, storage: storage, otherSide: otherSide)
+        return References(ids, action: action == base.action ? theirs.action : action, zone: zone ?? theirs.zone, storage: storage, inverse: inverse)
     }
 
     /// Without a base, equal lists merge, and any others conflict.
@@ -189,24 +178,25 @@ extension References: Mergeable {
 extension References: Codable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
-        let references: [RecordReference], storage: Storage, otherSide: String?
+        let references: [RecordReference], storage: Storage, inverse: String?
         if let field = try? container.decode([RecordReference].self) {
-            (references, storage, otherSide) = (field, .field, nil)
+            (references, storage, inverse) = (field, .field, nil)
         } else {
-            let list = try container.decode(LinkList.self)
-            (references, storage, otherSide) = (list.links, list.isInverse ? .inverse : .links, list.otherSide)
+            let list = try container.decode(RelationshipList.self)
+            (references, storage, inverse) = (list.relationships, .relationships, list.inverse)
         }
         // A schema placeholder's reference has an empty name, which no record has.
         let named = references.filter { !$0.recordName.isEmpty }
         let ids = try named.map { try Target.ID($0, in: container) }
-        self.init(ids, action: named.first?.action ?? .none, zone: named.first?.placedZone, storage: storage, otherSide: otherSide.map { name in { @Sendable in name } })
+        let action = storage == .field ? named.first?.action ?? .none : .none
+        self.init(ids, action: action, zone: named.first?.placedZone, storage: storage, inverse: inverse.map { name in { @Sendable in name } })
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
         let references = try wrappedValue.map { try RecordReference(to: Target.self, id: $0, zone: zone, action: action) }
         switch storage {
-        case .links, .inverse: try container.encode(LinkList(links: references, otherSide: otherSide?(), isInverse: storage == .inverse))
+        case .relationships: try container.encode(RelationshipList(relationships: references, inverse: inverse?()))
         case .field, nil: try container.encode(references)
         }
     }
@@ -219,10 +209,10 @@ extension KeyedDecodingContainer {
 }
 
 extension KeyedEncodingContainer {
-    /// Leaves out an empty field list. A list stored as links is always encoded, so the
-    /// container sees an emptied list and removes its links.
+    /// Leaves out an empty field list. A relationship list is always encoded, so the
+    /// container sees an emptied list and removes its relationships.
     public mutating func encode<Target>(_ value: References<Target>, forKey key: Key) throws {
-        guard !value.wrappedValue.isEmpty || value.storage == .links || value.storage == .inverse else { return }
+        guard !value.wrappedValue.isEmpty || value.storage == .relationships else { return }
         try encodeIfPresent(Optional(value), forKey: key)
     }
 }

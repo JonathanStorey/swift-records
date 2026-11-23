@@ -307,17 +307,19 @@ A record with an `@Encrypted` value cannot be saved to `Zone.public`, because th
 
 SQLite cannot evaluate a Swift `#Predicate`, so the rest happens in Swift as SQLite steps through the rows. Each value has its asset paths resolved, is decoded as `T`, and is kept only if the predicate accepts it. A row that does not decode, such as one a newer version of the app wrote, is skipped. A predicate that throws, such as a force unwrap of `nil`, stops the fetch and throws. Only matches stay in memory, and they are sorted by `order` at the end.
 
-The same function finds `Relationship` rows, for example `#Predicate { $0.keyPath == "Note.tags" && $0.references.contains(id) }`.
+The same function finds `Relationship` rows, for example `#Predicate { $0.keyPaths.contains("Note.tags") && $0.references.contains(name) }`.
 
-## Links
+## Relationships
 
-A `@References` list declared with a key path is stored as `Relationship` rows, never on its record, so a long list never approaches CloudKit's record size limit.
+A `@References(inverse:)` list is stored as `Relationship` rows, never on its record, so a long list never approaches CloudKit's record size limit.
 
-When the list encodes, it writes a `LinkList` instead of an array: its references, the other side's link name and whether it is the inverse, under keys that start with `$` so no model's property reads as one. A list built in code finds the other side's name from its key path, by decoding a placeholder of the other type in which each list holds one marker id and reading which coding key the marker came back from. A decoded list keeps the name it was decoded with.
+When the list encodes, it writes a `RelationshipList` instead of an array: its references and the other side's property, under keys that start with `$` so no model's property reads as one. A list built in code finds the other side's property from its key path, by decoding a placeholder of the other type in which each list holds one marker id and reading which coding key the marker came back from. A decoded list keeps the name it was decoded with.
 
-`save(our:)` takes each top-level `LinkList` out of the record's JSON, then `linkChanges(_:of:type:zone:)` compares it with the zone's links. The declaring side owns the links named by its own property from the record, and an inverse owns the links its declaring property names to the record. A target with no link gets one, a link whose target left the list is deleted, and a link is saved only when it changes, so an unchanged list writes nothing. Orders are kept while they still increase along the list, so removing a target renumbers nothing. Each link also records the inverse's name in `inverseKeyPath`, which is how the other side finds it. The record and its links are written in one transaction.
+`save(our:)` takes each top-level `RelationshipList` out of the record's JSON, then `relationshipChanges(_:of:type:zone:)` compares it with the zone's relationships. A list owns the relationships with a side that is the record in its property. A target with no relationship gets one, a relationship whose target left the list is deleted, and a relationship is saved only when it changes, so an unchanged list writes nothing. Orders are kept while they still increase along the list, so removing a target renumbers nothing. A property already paired with another property, on the record or on a new target, throws, because the two key paths do not point at each other. The record and its relationships are written in one transaction.
 
-`fetch(_:in:predicate:order:)` reads the zone's links once with `linkLists(in:type:)`, groups them by record and coding key, sorts each list by its side's order with unplaced links last, and puts each `LinkList` into its record's JSON before decoding, so the predicate sees the full list. A record with no links has no list to put in, so it decodes from a missing key with no storage, and saving it leaves every link alone.
+`fetch(_:in:predicate:order:)` reads the zone's relationships once with `relationshipLists(in:type:)`, groups each side by record and coding key, sorts each list by its side's order with unplaced relationships last, and puts each `RelationshipList` into its record's JSON before decoding, so the predicate sees the full list. A record in its own symmetric list is listed once. A record with no relationships has no list to put in, so it decodes from a missing key with no storage, and saving it leaves every relationship alone.
+
+`delete(our:id:zone:)` deletes every relationship the record is a side of, found by `relationships(of:type:in:)`, in the same transaction as the record. A `Relationship` merges each side's order on its own, so two devices that reorder opposite sides both keep their change. Its id is already a record name, so `recordName(for:type:)` uses it as it is.
 
 `save(our:)` also places every reference. `placingReferences(in:)` gives each `RecordReference` with no zone the record's zone and owner, and throws for one that names another zone, since CloudKit follows a reference only within its record's zone.
 
@@ -394,8 +396,9 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The saved values of one type in one zone, filtered and sorted. |
-| `func linkLists(in zone: Zone, type: String) throws -> [String: [String: LinkList]]` | Each record's link lists in a zone, by record name and coding key. |
-| `func linkChanges(_ lists:of name:type:zone:) throws -> (saved: [Relationship], deleted: [Relationship])` | The links to save and delete so a record holds its lists. |
+| `func relationshipLists(in zone: Zone, type: String) throws -> [String: [String: RelationshipList]]` | Each record's relationship lists in a zone, by record name and coding key. |
+| `func relationshipChanges(_ lists:of name:type:zone:) throws -> (saved: [Relationship], deleted: [Relationship])` | The relationships to save and delete so a record holds its lists. |
+| `func relationships(of name: String, type: String, in zone: Zone) throws -> [Relationship]` | Every relationship a record is a side of. |
 | `func row(id: RowID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |
 | `func update(id: RowID, inserting new: Row?, _ change: (inout Row) -> Void) throws(DatabaseError)` | Reads, changes and writes a row under the lock, inserting `new` when there is none. |
 | `func write(_ row: Row) throws(DatabaseError)` (private) | Writes every column with portable asset paths, then sweeps the row's assets. |
@@ -410,7 +413,7 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func save<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | Saves a local version into `ours`, with its links, and places its references. |
+| `func save<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | Saves a local version into `ours`, with its relationships, and places its references. |
 | `func save<Record: Identifiable>(our record: Record, zone: Zone) throws` | The same, identified by `id`. |
 | `func save(their json: JSONRepresentation, id: String, zone: Zone, type: String, metadata: Data?) throws(DatabaseError)` | Saves an incoming version, merging when needed. |
 | `func delete(id: RowID) throws(DatabaseError)` | Removes a never-uploaded row, or marks the row deleted. |

@@ -55,7 +55,7 @@ let board = Zone.public          // public
 
 ### References
 
-`@Reference` holds a read-only link to another record in the same zone, as the
+`@Reference` holds a read-only reference to another record in the same zone, as the
 target's own id, ready for CloudKit's `CKRecord.Reference`. The target is any
 `Identifiable` type whose id is `Codable`.
 
@@ -100,12 +100,12 @@ the same either way.
 struct Note: Codable, Identifiable {
     var id: UUID
     @References<Attachment> var attachments: [Attachment.ID] = []
-    @References<Tag>(to: \Tag.notes) var tags: [Tag.ID] = []
+    @References<Tag>(inverse: \Tag.notes) var tags: [Tag.ID] = []
 }
 
 struct Tag: Codable, Identifiable {
     var id: UUID
-    @References<Note>(from: \Note.tags) var notes: [Note.ID] = []
+    @References<Note>(inverse: \Note.tags) var notes: [Note.ID] = []
 }
 ```
 
@@ -115,26 +115,30 @@ encodes each id as a `RecordReference` carrying the action, which a decoded
 list takes from its first element. An empty field list is left out, and a
 missing key decodes as an empty list.
 
-A key path to the other side stores each reference as its own `Relationship`
-record instead, so the list has no size limit and edits from two devices
-merge. The container writes the links when it saves the record and fills the
-list back in when it fetches it, so the record itself never holds them, and a
-predicate such as `#Predicate { $0.tags.contains(tag.id) }` finds every note
-with a tag. The inverse reads the same links from the other end, and saving
-either side writes them.
+A key path to the other side's list stores each reference as its own
+`Relationship` record instead, so the list has no size limit and edits from two
+devices merge. The two sides mirror each other: each names the other with
+`inverse:`, either one can save a relationship, and both read it. The container
+writes the relationships when it saves the record and fills the list back in
+when it fetches it, so the record itself never holds them, and a predicate such
+as `#Predicate { $0.tags.contains(tag.id) }` finds every note with a tag.
+Deleting a record deletes its relationships too. A relationship list has no
+action, because a `Relationship` record carries none.
 
-A `Relationship` is named by the declaring side, as in `"Note.tags"`, with the
-declaring record's name and then the target's, and it names the inverse, as in
-`"Tag.notes"`, in `inverseKeyPath`. Each name comes from the coding key behind
-the key path, so it follows `CodingKeys`. The link's id is a stable hash of its
-name and both records, so the same link always maps to the same record. It
-also holds `order`, the link's position in the declaring list, and
-`inverseOrder`, its position in the inverse's list, and each side sorts by its
-own. Removing a target deletes only its link and renumbers nothing.
+A `Relationship` has two sides, sorted by property and then record, so both ends
+build the same one. Side `i` is the record `references[i]`, holding the
+relationship in its property `keyPaths[i]` at position `orders[i]` of that list.
+Each side writes only its own order, so two devices reordering opposite sides
+both keep their change, and removing a target renumbers nothing. Its id is its
+record name, both properties and a stable hash of all four parts, as in
+`Note.tags~Tag.notes:E621E1F8-C36C-495A-93FC-0C247A3E6E5F`. A symmetric list,
+like `Person.friends`, names itself as its inverse.
 
-Finding a name from a key path decodes a placeholder of the other type with a
-marker id in each list, so the other side's id must encode as a JSON string or
-number, as a `UUID`, `String` or `Int` does.
+Each property name comes from the coding key behind the key path, so it follows
+`CodingKeys`. Finding it decodes a placeholder of the other type with a marker
+id in each list, so the other side's id must encode as a JSON string or number,
+as a `UUID`, `String` or `Int` does. Saving throws when two lists claim the same
+inverse, because their key paths do not point at each other.
 
 Use `@Reference` for one target and `@References` for many. Add a key path
 when the list should merge across devices or outgrow a field.
