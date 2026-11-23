@@ -92,7 +92,7 @@ A row with no `sent`, which can happen if the confirmation arrives for an upload
 
 - With no `ours`, there is nothing to merge. The incoming version becomes `base`, and `theirs` and `error` are cleared.
 - With an `ours`, the incoming version merges into it by the registered type's merge. If the merged result equals the incoming version, `ours` becomes `nil`, because the server already has everything this device wanted. Otherwise the merged result becomes `ours` and uploads next. Either way the incoming version becomes the new `base`.
-- If the merge throws, the incoming version waits in `theirs`, `error` says why, and `ours` and `base` are untouched. Nothing uploads until a later version settles it.
+- The merge never throws a conflict. It throws only when it cannot run, as for a record type this app has not registered. Then the incoming version waits in `theirs`, `error` says why, and `ours` and `base` are untouched. Nothing uploads until the type is registered.
 
 The type lookup happens before the row's lock is taken, since the lookup takes the same lock.
 

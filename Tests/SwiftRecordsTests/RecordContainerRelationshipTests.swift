@@ -205,6 +205,30 @@ private struct Book: Codable, Identifiable, Mergeable {
         #expect(try relationships().count == 1, "Nothing is saved.")
     }
 
+    @Test func aPropertyWhoseRelationshipsPairWithAnotherInverseThrows() throws {
+        let note = Note(title: "Hello")
+        try container.save(our: note, zone: notes)
+        // As left by an earlier version of the app that named another inverse.
+        try container.save(our: Relationship(between: ("Note.archived", note.id.uuidString), and: ("Tag.labels", swift.id.uuidString)), zone: notes)
+
+        #expect(throws: EncodingError.self, "Note.archived already pairs with Tag.labels, not Tag.notes.") {
+            try container.save(our: Note(id: note.id, title: "Hello", archived: [sql.id]), zone: notes)
+        }
+        #expect(try relationships().count == 1, "Nothing is saved.")
+    }
+
+    @Test func aListThatLostItsInverseThrows() throws {
+        let note = Note(title: "Hello")
+        // A relationship list decoded from data without its inverse.
+        guard case .object(var object) = try JSONRepresentation(note) else { Issue.record("A note encodes as an object."); return }
+        object.removeAll { $0.key == "tags" }
+        object.append(("tags", ["$relationships": [["recordName": .string(swift.id.uuidString), "action": "none"]]]))
+        let damaged = try JSONRepresentation.object(object).decode(Note.self)
+
+        #expect(throws: EncodingError.self) { try container.save(our: damaged, zone: notes) }
+        #expect(try relationships().isEmpty)
+    }
+
     @Test func relationshipsSortByOrderWithUnplacedOnesLast() throws {
         let note = Note(title: "Hello")
         try container.save(our: note, zone: notes)
