@@ -118,3 +118,64 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.relationshipLists(in: zone, type: "Tag").count == 2, "Each tag lists its notes.")
     }
 }
+
+private enum Mood: String, Codable, CaseIterable {
+    case calm, busy, away
+}
+
+/// Encodes as an object, not its raw value, as any type may choose.
+private struct Code: RawRepresentable, Codable, Hashable {
+    var rawValue: String
+
+    init(rawValue: String) { self.rawValue = rawValue }
+
+    init(from decoder: any Decoder) throws {
+        rawValue = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .text)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(rawValue, forKey: .text)
+    }
+
+    enum CodingKeys: CodingKey { case text }
+}
+
+private struct Chore: Codable, Identifiable, Mergeable {
+    var id = UUID()
+    var name = ""
+    var mood = Mood.calm
+    var code = Code(rawValue: "")
+}
+
+/// Enums and `RawRepresentable` values, which translate by however they encode.
+@Suite struct RecordContainerPredicateEnumTests {
+    private let zone = Zone("Tasks")
+    private let container = RecordContainer.inMemory(Chore.self)
+
+    private func save() throws {
+        try container.save(our: Chore(name: "Rest", mood: .calm, code: Code(rawValue: "r")), zone: zone)
+        try container.save(our: Chore(name: "Work", mood: .busy, code: Code(rawValue: "w")), zone: zone)
+        try container.save(our: Chore(name: "Trip", mood: .away, code: Code(rawValue: "t")), zone: zone)
+    }
+
+    private func titles(_ predicate: Predicate<Chore>) throws -> [String] {
+        let filter = try #require(RecordContainer.filter(for: predicate))
+        return try container.fetch(Chore.self, in: zone, where: filter).map(\.name).sorted()
+    }
+
+    @Test func anEnumComparesItsRawValue() throws {
+        try save()
+        let busy = Mood.busy, quiet = [Mood.calm, .away]
+        #expect(try titles(#Predicate { $0.mood == busy }) == ["Work"])
+        #expect(try titles(#Predicate { $0.mood != busy }) == ["Rest", "Trip"])
+        #expect(try titles(#Predicate { quiet.contains($0.mood) }) == ["Rest", "Trip"])
+    }
+
+    @Test func aValueThatEncodesAsAnObjectIsLeftToSwift() throws {
+        try save()
+        let code = Code(rawValue: "w")
+        #expect(RecordContainer.filter(for: #Predicate<Chore> { $0.code == code }) == nil, "Its JSON is not a scalar SQL can compare.")
+        #expect(try container.fetch(Chore.self, in: zone, predicate: #Predicate { $0.code == code }).map(\.name) == ["Work"])
+    }
+}
