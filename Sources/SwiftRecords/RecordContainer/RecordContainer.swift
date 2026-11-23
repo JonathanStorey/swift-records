@@ -5,6 +5,9 @@ import SQLite3
 #else
 import CSQLite
 #endif
+#if canImport(notify)
+import notify
+#endif
 
 /// The database that holds records: a single SQLite connection, and nothing else.
 ///
@@ -54,6 +57,13 @@ public final class RecordContainer: @unchecked Sendable {
     private var transactionChanges: [RecordTransaction.Change]?
     /// The id of the last ``RecordTransaction`` reported. Read and written while locked.
     private var transactionCount: Int64 = 0
+    /// The connection's `PRAGMA data_version` when another process's commit was last
+    /// reported, which changes only when another connection commits. Read and written while locked.
+    private var dataVersion: Int64 = 0
+    #if canImport(notify)
+    /// The registration for the store file's Darwin notification, or `nil` in memory.
+    private var notifyToken: Int32?
+    #endif
     /// Each live ``transactions()`` stream, by a key its termination removes. Read and written while locked.
     var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation] = [:]
 
@@ -87,10 +97,25 @@ public final class RecordContainer: @unchecked Sendable {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         // WAL lets a read run beside a write and makes each commit cheaper.
         try execute("PRAGMA journal_mode = WAL")
+        // A second process writing the same file waits for the first, rather than failing.
+        sqlite3_busy_timeout(connection, 5000)
         try execute(Self.createTable)
+        dataVersion = currentDataVersion()
+        #if canImport(notify)
+        if let name = changeNotification {
+            var token: Int32 = 0
+            let status = notify_register_dispatch(name, &token, DispatchQueue.global()) { [weak self] _ in
+                self?.receiveExternalChange()
+            }
+            if status == 0 { notifyToken = token }
+        }
+        #endif
     }
 
     deinit {
+        #if canImport(notify)
+        if let notifyToken { notify_cancel(notifyToken) }
+        #endif
         sqlite3_close_v2(connection)
         if url == nil { try? FileManager.default.removeItem(at: assets) }
     }
@@ -113,6 +138,11 @@ extension DatabaseError {
 extension RecordContainer {
     /// The author of the changes the sync engine saves.
     static let syncAuthor = "sync"
+
+    /// The author of a ``RecordTransaction`` that reports another process's changes to the
+    /// same file, such as a widget's. Its `changes` are empty, since the other process does
+    /// not say what changed, so every record may have.
+    public static let externalAuthor = "external"
 
     /// The database file: `default.records` in Application Support, or in the Application
     /// Support folder of `appGroup`'s shared container. The folder is created if needed.
@@ -175,7 +205,10 @@ extension RecordContainer {
             do throws(DatabaseError) {
                 let result = try body()
                 try execute("COMMIT")
-                report(transactionChanges ?? [], author: author)
+                if let changes = transactionChanges, !changes.isEmpty {
+                    report(changes, author: author)
+                    postChange()
+                }
                 return result
             } catch {
                 try? execute("ROLLBACK")
@@ -212,10 +245,37 @@ extension RecordContainer {
     /// Hands `changes`, which a transaction by `author` just committed, to every
     /// ``transactions()`` stream as one ``RecordTransaction``. Runs while locked.
     private func report(_ changes: [RecordTransaction.Change], author: String?) {
-        guard !changes.isEmpty else { return }
         transactionCount += 1
         let transaction = RecordTransaction(id: transactionCount, author: author, timestamp: Date(), changes: changes)
         for listener in listeners.values { listener.yield(transaction) }
+    }
+
+    /// The name of the Darwin notification every process posts after committing to this
+    /// container's file, or `nil` in memory. The same file gives the same name in every
+    /// process of an app group.
+    private var changeNotification: String? {
+        url.map { "SwiftRecords." + UUID(stableHashOf: $0.resolvingSymlinksInPath().path).uuidString }
+    }
+
+    /// Tells every other process with this file open that it changed. Does nothing on
+    /// platforms without Darwin notifications, or in memory.
+    private func postChange() {
+        #if canImport(notify)
+        if let changeNotification { notify_post(changeNotification) }
+        #endif
+    }
+
+    /// Reports another connection's commit to every ``transactions()`` stream, as one
+    /// ``RecordTransaction`` by ``externalAuthor``. Runs when the file's Darwin notification
+    /// arrives, which this process's own commits post too, so a commit counts only when
+    /// `PRAGMA data_version` moved.
+    func receiveExternalChange() {
+        locked {
+            let version = currentDataVersion()
+            guard version != dataVersion else { return }
+            dataVersion = version
+            report([], author: Self.externalAuthor)
+        }
     }
 
     /// Removes each file in the folder of `row` that none of its `base`, `ours`, `theirs`

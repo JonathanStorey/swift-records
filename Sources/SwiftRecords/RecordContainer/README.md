@@ -310,7 +310,16 @@ Every write to the `record` table runs inside `transaction(author:_:)`. While a 
 
 After `COMMIT`, `report(_:author:)` wraps the changes in one `RecordTransaction`, numbered from 1, and yields it to every `transactions()` stream. A rollback drops the array, so nothing is reported. A transaction with no changes reports nothing. Writes by the sync engine are authored `syncAuthor`.
 
-Nothing is stored, so only this container's own transactions are reported. Another process sharing the file, such as a widget, will signal its writes separately, so the context can refetch.
+Nothing is stored, so each element describes this container's own transaction.
+
+### Other processes
+
+An app and its widget in an app group open the same file with separate connections. Two things keep that safe and visible:
+
+- `sqlite3_busy_timeout(connection, 5000)` makes a writer wait up to 5 seconds for another process's write instead of failing with `SQLITE_BUSY`.
+- After each commit that changed something, `postChange()` posts a Darwin notification named `SwiftRecords.<UUID of the file path>`. Every container on that file observes it with `notify_register_dispatch`. Darwin notifications carry no payload and also reach the process that posted them, so `receiveExternalChange()` checks `PRAGMA data_version`, which moves only when another connection commits. When it moved, every `transactions()` stream gets a `RecordTransaction` by `externalAuthor` (`"external"`) with empty `changes`, meaning any record may have changed.
+
+The notification exists only where the `notify` module does, so Linux skips it. `receiveExternalChange()` is internal, so tests on Linux call it directly.
 
 ## Concurrency
 

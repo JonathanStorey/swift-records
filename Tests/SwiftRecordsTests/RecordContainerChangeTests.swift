@@ -195,3 +195,50 @@ private extension RecordContainer {
         #expect(container.locked { container.listeners.isEmpty })
     }
 }
+
+/// Two connections to one file, as an app and its widget in an app group have.
+@Suite struct RecordContainerSharedFileTests {
+    private let note = Note(title: "First")
+    private let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records")
+
+    @Test func anotherConnectionsCommitIsReportedAsExternal() async throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        let app = try RecordContainer(url: url), widget = try RecordContainer(url: url)
+        var transactions = app.transactions().makeAsyncIterator()
+        try widget.save(our: note, zone: "Notes")
+        widget.receiveExternalChange()
+        app.receiveExternalChange()
+        app.receiveExternalChange()
+        try app.save(our: Note(title: "Second"), zone: "Notes")
+
+        let external = await transactions.next(), own = await transactions.next()
+        #expect(external?.author == RecordContainer.externalAuthor)
+        #expect(external?.changes == [])
+        #expect(own?.author == nil, "The widget's own notification and a repeated one report nothing.")
+        #expect(own?.changes.count == 1)
+    }
+
+    @Test func aSecondWriterWaitsForTheFirst() async throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        let app = try RecordContainer(url: url), widget = try RecordContainer(url: url)
+        try app.execute("BEGIN IMMEDIATE")
+        let saving = Task.detached { [note] in try widget.save(our: note, zone: "Notes") }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try app.execute("COMMIT")
+
+        try await saving.value
+        #expect(try app.row(id: RecordContainer.RowID(name: note.id, zone: "Notes")) != nil)
+    }
+
+    #if canImport(notify)
+    @Test(.timeLimit(.minutes(1))) func anotherConnectionsCommitArrivesByDarwinNotification() async throws {
+        defer { try? FileManager.default.removeItem(at: url) }
+        let app = try RecordContainer(url: url), widget = try RecordContainer(url: url)
+        var transactions = app.transactions().makeAsyncIterator()
+        try widget.save(our: note, zone: "Notes")
+
+        let external = await transactions.next()
+        #expect(external?.author == RecordContainer.externalAuthor)
+    }
+    #endif
+}

@@ -243,6 +243,14 @@ extension RecordContainer {
         }
     }
 
+    /// The connection's `PRAGMA data_version`, which changes only when another connection
+    /// commits to the file, or 0 when it cannot be read.
+    func currentDataVersion() -> Int64 {
+        var version: Int64 = 0
+        try? run("PRAGMA data_version") { (statement) throws(DatabaseError) in version = sqlite3_column_int64(statement, 0) }
+        return version
+    }
+
     /// Whether the container has a row for `id`.
     func contains(_ id: RowID) throws(DatabaseError) -> Bool {
         var found = false
