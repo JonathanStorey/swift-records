@@ -138,10 +138,10 @@ Merging is where most of the container's decisions live. The goal is that a merg
 
 A merge runs only when an incoming server version meets a row that has local changes. That happens in `save(their:)`, and through it when an upload fails because the server has a newer version. Local saves and confirmations never merge. The one other caller will be an open draft in `RecordContext` rebasing onto its row after the row changed underneath it.
 
-Both run the same function, `merged(_:with:from:as:id:favoring:)`, so there is one merge in the container and not two that can drift apart. It returns the merged JSON and the paths where the type's own merge conflicted, and performs the merge in four steps.
+Both run the same function, `merged(_:with:from:as:id:favoring:)`, so there is one merge in the container and not two that can drift apart. Nothing in it throws a conflict. It performs the merge in four steps.
 
 1. Decode `ours`, `theirs` and `base` as the registered Swift type.
-2. Merge the decoded values with the type's own merge, through the static overload `merged(_:with:from:favoring:)`, which takes the decoded values themselves. It needs nothing from the container, so it is static.
+2. Merge the decoded values with `SettlingMerge`, a private `MergeStrategy` described below.
 3. Encode the result back to JSON.
 4. Copy any asset file the merge produced into the row's folder.
 
@@ -191,7 +191,7 @@ The default merge encodes the three versions to JSON and merges them under the t
 
 ### Every merge settles
 
-If the type's own merge throws a conflict, the static `merged(_:with:from:favoring:)` runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
+`SettlingMerge` is a private struct conforming to `MergeStrategy`. It runs the type's own merge first, so a hand-written merge such as `Relationship`'s is kept. If that throws a conflict, it runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
 
 | `favoring` | At each conflicting value |
 | --- | --- |
@@ -204,20 +204,11 @@ If the type's own merge throws a conflict, the static `merged(_:with:from:favori
 
 The favored side wins only at the exact paths that conflict. If one device changed a note's title and the other changed both its title and its body, `.ours` keeps this device's title and still takes the other device's body.
 
-### Who sees the conflicts
+### No conflict leaves the database
 
-The static `merged` returns the paths that conflicted alongside the settled value, and the JSON `merged` passes them up. What happens to them depends on the caller.
+The database never reports a conflict, not even as data. A server version arriving is a sync event, not a user event. Nobody is looking at the record when it arrives, the app is often in the background, and the settled value is already a sensible result that has been written and will upload. Recording where it conflicted would invent a state the row cannot leave, because nothing the user does refers to it, and it would tempt the app to warn about a decision already made and synced to every device. The settle is meant to be invisible, and that is what makes sync quiet.
 
-| Caller | Side passed | Conflict paths |
-| --- | --- | --- |
-| `save(their:)` | The container's `favoring` | Dropped |
-| A draft rebasing onto its row | `.ours` | Kept for the editor |
-
-`save(their:)` drops the paths on purpose, and keeps them nowhere. A server version arriving is a sync event, not a user event. Nobody is looking at the record when it arrives, often the app is in the background, and the settled value is already a sensible result that has been written and will upload. Recording the paths on the row would invent a state the row cannot leave: there is no moment when a stored conflict becomes resolved, because nothing the user does refers to it. It would also tempt the app to show a warning about a decision that has already been made and synced to every device. The settle is meant to be invisible, and that is what makes sync quiet.
-
-A draft is different, because a person is in the middle of editing it. When the row changes under an open draft, the draft rebases with `.ours`, so the user's typing is never overwritten, and keeps the conflict paths. Those paths name exactly the fields where another device changed the same value the user is editing, so an editor can mark them while the person can still decide. Once the draft is saved, its value is ordinary `ours` and the paths go with the draft.
-
-So a conflict is visible only to the one person who can still act on it, and only while they can.
+An open draft in `RecordContext` is different, because a person is still editing it. It will merge onto its changed row through the same `merged`, passing `.ours` so the user's typing stays. If an editor wants to mark the fields another device also changed, the draft can find them then, without the database keeping anything.
 
 ## Schema changes
 
@@ -465,8 +456,8 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> (value: JSONRepresentation, conflicts: [JSONRepresentation.Path])` | The one merge: decodes, merges, re-encodes, stores assets, and returns the conflict paths. |
-| `static func merged<Record>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path])` (private) | The overload for decoded values: the type's own merge, then the favoring strategy on conflict, with the paths that conflicted. |
+| `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation` | The one merge: decodes, merges by `SettlingMerge`, re-encodes and stores assets. |
+| `struct SettlingMerge<Value: Codable & Mergeable>: MergeStrategy` (private), `init(favoring side: KeepMerge<JSONRepresentation>)` | The type's own merge, then `DefaultMergeStrategy(favoring:)` where that conflicts. |
 | `func JSONRepresentation.decoded<T>(as:filling:) -> T?` (private) | Decodes as it is, or with missing keys filled from the other version. |
 | `func JSONRepresentation.filling(from:) -> JSONRepresentation` (private) | Adds each top-level key this object lacks from another. |
 

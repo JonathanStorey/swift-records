@@ -168,17 +168,11 @@ extension RecordContainer {
 }
 
 extension RecordContainer {
-    /// `ours` merged with `theirs`, from `base` when there is one, by `type`'s own merge,
-    /// with any file the merge wrote, as a merged `@Asset`, copied into the row `id`'s folder,
-    /// and the paths where the type's own merge conflicted.
+    /// `ours` merged with `theirs`, from `base` when there is one, by ``SettlingMerge``, with
+    /// any file the merge wrote, as a merged `@Asset`, copied into the row `id`'s folder.
     ///
-    /// Every merge in the container runs here: a server version arriving in `save(their:)`,
-    /// which passes ``favoring`` and drops `conflicts`, and an open draft rebasing onto its
-    /// row, which passes `.ours` so the user's edit stays and keeps `conflicts` to show.
-    ///
-    /// The merge settles itself:
-    /// - Values that still conflict after the type's merge keep the `side` given, and their
-    ///   paths are returned as `conflicts`.
+    /// Every merge in the container runs here, and none throws a conflict:
+    /// - The type's own merge runs first. Values it cannot settle keep the `side` given.
     /// - A version that cannot be read as `type` counts as missing: an unreadable `base`
     ///   makes a two-way merge, an unreadable `theirs` keeps `ours`, and an unreadable `ours`
     ///   takes `theirs`. Fields the type does not have are dropped.
@@ -186,38 +180,39 @@ extension RecordContainer {
     ///   stays cleared. Only when a key it lacks stops it decoding, as a version saved before
     ///   a field was added, is each missing key read from the other version, so the older
     ///   shape still decodes and leaves that field unchanged.
-    func merged<Record: Codable & Mergeable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> (value: JSONRepresentation, conflicts: [JSONRepresentation.Path]) {
+    func merged<Record: Codable & Mergeable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation {
         let mine = ours.decoded(as: Record.self, filling: theirs)
         let other = theirs.decoded(as: Record.self, filling: ours)
         let original = base?.decoded(as: Record.self, filling: ours.filling(from: theirs))
-        let result: (value: Record, conflicts: [JSONRepresentation.Path])
+        let merged: Record
         switch (mine, other) {
-        case let (mine?, other?): result = try Self.merged(mine, with: other, from: original, favoring: side)
-        case let (nil, other?): result = (other, [])
-        case (_?, nil): return (ours, [])
-        case (nil, nil): return (theirs, [])
+        case let (mine?, other?):
+            let strategy = SettlingMerge<Record>(favoring: side)
+            merged = if let original { try mine.merging(with: other, from: original, using: strategy) } else { try mine.merging(with: other, using: strategy) }
+        case let (nil, other?): merged = other
+        case (_?, nil): return ours
+        case (nil, nil): return theirs
         }
-        return (storingAssets(of: result.value, in: try JSONRepresentation(result.value), id: id), result.conflicts)
+        return storingAssets(of: merged, in: try JSONRepresentation(merged), id: id)
     }
 }
 
-private extension RecordContainer {
-    /// `ours` merged with `theirs` by the type's own merge, and, where that conflicts, again
-    /// with ``DefaultMergeStrategy`` keeping `favoring` at each conflicting value, which still
-    /// merges each `Mergeable` property by its own merge, with the paths that conflicted.
-    static func merged<Record: Codable & Mergeable>(_ ours: Record, with theirs: Record, from base: Record?, favoring: KeepMerge<JSONRepresentation>) throws(MergeConflict) -> (value: Record, conflicts: [JSONRepresentation.Path]) {
-        do {
-            if let base { return (try ours.merging(with: theirs, from: base), []) }
-            return (try ours.merging(with: theirs), [])
-        } catch {
-            let side: KeepMerge<Record> = switch favoring {
-            case .ours: .ours
-            case .theirs: .theirs
-            }
-            let strategy = DefaultMergeStrategy<Record>(favoring: side)
-            let value = if let base { try ours.merging(with: theirs, from: base, using: strategy) } else { try ours.merging(with: theirs, using: strategy) }
-            return (value, error.paths)
-        }
+/// The type's own merge, and, where that conflicts, ``DefaultMergeStrategy`` keeping
+/// `favoring` at each conflicting value, which still merges each `Mergeable` property by its
+/// own merge. Running the type's merge first keeps a hand-written one, as `Relationship` has.
+private struct SettlingMerge<Value: Codable & Mergeable>: MergeStrategy {
+    let fallback: DefaultMergeStrategy<Value>
+
+    init(favoring side: KeepMerge<JSONRepresentation>) {
+        fallback = DefaultMergeStrategy(favoring: side == .ours ? .ours : .theirs)
+    }
+
+    func merge(base: Value, ours: Value, theirs: Value) throws(MergeConflict) -> Value {
+        do { return try ours.merging(with: theirs, from: base) } catch { return try fallback.merge(base: base, ours: ours, theirs: theirs) }
+    }
+
+    func merge(ours: Value, theirs: Value) throws(MergeConflict) -> Value {
+        do { return try ours.merging(with: theirs) } catch { return try fallback.merge(ours: ours, theirs: theirs) }
     }
 }
 

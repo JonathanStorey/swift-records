@@ -112,27 +112,16 @@ private extension RecordContainer {
         #expect(row.ours == json(Note(id: id, title: "Theirs", body: "Ours")))
     }
 
-    @Test func theMergeReturnsWhereItConflicted() throws {
+    @Test func theMergeKeepsTheSideGivenOnlyWhereItConflicts() throws {
         let container = RecordContainer.registered()
         let base = json(Note(id: id)), ours = json(Note(id: id, title: "Ours"))
         let theirs = json(Note(id: id, title: "Theirs", body: "Theirs"))
         let rowID = RecordContainer.RowID(name: id.uuidString, zone: "Notes")
 
         let kept = try container.merged(ours, with: theirs, from: base, as: Note.self, id: rowID, favoring: .ours)
-        #expect(kept.value == json(Note(id: id, title: "Ours", body: "Theirs")), "The other side's body still merges.")
-        #expect(kept.conflicts == [["title"]])
-
+        #expect(kept == json(Note(id: id, title: "Ours", body: "Theirs")), "The other side's body still merges.")
         let taken = try container.merged(ours, with: theirs, from: base, as: Note.self, id: rowID, favoring: .theirs)
-        #expect(taken.value == json(Note(id: id, title: "Theirs", body: "Theirs")))
-        #expect(taken.conflicts == [["title"]])
-    }
-
-    @Test func aMergeWithoutConflictReturnsNoPaths() throws {
-        let container = RecordContainer.registered()
-        let rowID = RecordContainer.RowID(name: id.uuidString, zone: "Notes")
-        let merged = try container.merged(json(Note(id: id, title: "Ours")), with: json(Note(id: id, body: "Theirs")), from: json(Note(id: id)), as: Note.self, id: rowID, favoring: .ours)
-        #expect(merged.value == json(Note(id: id, title: "Ours", body: "Theirs")))
-        #expect(merged.conflicts.isEmpty)
+        #expect(taken == json(Note(id: id, title: "Theirs", body: "Theirs")))
     }
 
     @Test func registeringStoresTheTypesSchema() throws {
