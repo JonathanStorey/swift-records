@@ -221,14 +221,15 @@ private final class Device {
     func send() throws {
         let pending = try container.pendingChanges()
         for recordID in pending.saves {
-            let id = UUID(uuidString: recordID.recordName)!
+            let id = RecordContainer.RowID(name: UUID(uuidString: recordID.recordName)!, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
             let isNew = try container.row(id: id)?.metadata == nil
             guard let record = try container.send(id: id) else { continue }
             lastSent[recordID] = record
             try upload(record, isNew: isNew)
         }
         for recordID in pending.deletes {
-            guard let deleted = try container.send(deleted: UUID(uuidString: recordID.recordName)!) else { continue }
+            let id = RecordContainer.RowID(name: UUID(uuidString: recordID.recordName)!, zone: Zone(recordID.zoneID.zoneName, owner: recordID.zoneID.ownerName))
+            guard let deleted = try container.send(deleted: id) else { continue }
             if server.records[deleted] == nil {
                 try container.save(failed: deleted, error: CKError(.unknownItem))
             } else {
@@ -863,6 +864,33 @@ private final class Device {
         #expect(try yours.value(Page.self, id: id) == stored)
         #expect(try mine.container.pendingChanges().saves.isEmpty)
         #expect(try yours.container.pendingChanges().saves.isEmpty)
+    }
+}
+
+@Suite struct CloudKitTwoZoneScenarioTests {
+    private let id = UUID()
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func theSameRecordInTwoZonesSyncsAsTwoRecords() throws {
+        let server = Server()
+        let mine = Device(server), yours = Device(server)
+        try mine.save(Draft(id: id, title: "Kept"), zone: "Drafts")
+        try mine.save(Draft(id: id, title: "Archived"), zone: "Archive")
+        try mine.sync()
+        #expect(try server.value(Draft.self, id: id, zone: "Drafts")?.title == "Kept")
+        #expect(try server.value(Draft.self, id: id, zone: "Archive")?.title == "Archived")
+
+        try yours.fetch()
+        let drafts = RecordContainer.RowID(name: id, zone: "Drafts"), archive = RecordContainer.RowID(name: id, zone: "Archive")
+        #expect(try yours.container.row(id: drafts)?.base?["title"] == "Kept")
+        #expect(try yours.container.row(id: archive)?.base?["title"] == "Archived")
+
+        try yours.container.delete(id: archive)
+        try yours.sync()
+        try mine.fetch()
+        #expect(try server.value(Draft.self, id: id, zone: "Archive") == nil)
+        #expect(try mine.container.row(id: archive) == nil)
+        #expect(try mine.container.row(id: drafts)?.base?["title"] == "Kept", "Deleting one copy leaves the other.")
     }
 }
 

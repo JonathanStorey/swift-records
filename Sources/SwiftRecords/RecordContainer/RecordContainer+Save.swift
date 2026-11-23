@@ -9,7 +9,7 @@ import CSQLite
 extension RecordContainer {
     static let createTable = """
         CREATE TABLE IF NOT EXISTS record (
-            id TEXT PRIMARY KEY NOT NULL,
+            id TEXT NOT NULL,
             zone TEXT NOT NULL,
             owner TEXT NOT NULL,
             type TEXT NOT NULL,
@@ -19,7 +19,8 @@ extension RecordContainer {
             theirs TEXT,
             sent TEXT,
             is_deleted INTEGER NOT NULL DEFAULT 0,
-            error TEXT
+            error TEXT,
+            PRIMARY KEY (id, zone, owner)
         );
         CREATE TABLE IF NOT EXISTS engine_state (
             id INTEGER PRIMARY KEY CHECK (id = 0),
@@ -33,8 +34,9 @@ extension RecordContainer {
 
     /// Saves `record` as this device's version: `ours`, waiting to upload.
     ///
-    /// The row's id comes from the value at `id`, by ``recordID(for:type:)``. A new id adds
-    /// a row. An existing id replaces `ours`, clears `isDeleted` and `error`, and keeps
+    /// The row's id comes from the value at `id`, by ``recordID(for:type:)``, and `zone`,
+    /// so the same record saved to another zone is another row. A new id adds a row. An
+    /// existing one replaces `ours`, clears `isDeleted` and `error`, and keeps
     /// `base`, `theirs`, `metadata` and the zone, in one statement. Each `@Asset` file is
     /// copied into the container, so the row keeps it however the original changes. Asserts that a record
     /// saved to ``Zone/public`` has no `@Encrypted` values, which the public database rejects.
@@ -45,14 +47,14 @@ extension RecordContainer {
     func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
         assert(zone != .public || !Mirror(reflecting: record).properties.contains { $0.value is any EncryptedValue },
                "The public database cannot store @Encrypted values, so \(Record.self) cannot be saved to Zone.public.")
-        let id = try Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self))
+        let id = RowID(name: try Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone)
         let json = try JSONRepresentation(record)
         let ours = try Self.text(portable(storingAssets(of: record, in: json, id: id), id: id))
         try locked {
             try run("""
                 INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT (id) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
-                """, id.uuidString, zone.name, zone.owner, Self.recordType(of: Record.self), ours)
+                ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
+                """, id.name.uuidString, zone.name, zone.owner, Self.recordType(of: Record.self), ours)
             if let row = try row(id: id) { sweepAssets(of: row) }
         }
     }
@@ -62,7 +64,7 @@ extension RecordContainer {
         try save(our: record, id: \.id, zone: zone)
     }
 
-    /// Saves the server's version of the record `id`, with its system fields as `metadata`.
+    /// Saves the server's version of the record `id` in `zone`, with its system fields as `metadata`.
     ///
     /// A new record, or one with no local changes, takes `json` as its `base`. With local
     /// changes waiting, `json` merges into `ours` first, by the registered type's own merge.
@@ -71,27 +73,28 @@ extension RecordContainer {
     func save(their json: JSONRepresentation, id: UUID, zone: Zone, type: String, metadata: Data?) throws(DatabaseError) {
         // Looked up before the row is locked, since the lookup takes the same lock.
         let registered = Result { try registeredType(named: type) }
-        try update(id: id, inserting: Row(id: id, zone: zone, type: type)) { row in
+        let rowID = RowID(name: id, zone: zone)
+        try update(id: rowID, inserting: Row(id: id, zone: zone, type: type)) { row in
             row.metadata = metadata
             row.receive(json) { ours, theirs, base in
-                try merged(ours, with: theirs, from: base, as: registered.get(), id: id)
+                try merged(ours, with: theirs, from: base, as: registered.get(), id: rowID)
             }
         }
     }
 
-    /// Deletes `record` on this device, identified by the value at `id`, as ``delete(id:)``
-    /// describes.
+    /// Deletes `record` in `zone` on this device, identified by the value at `id`, as
+    /// ``delete(id:)`` describes. A copy of the record in another zone stays.
     ///
     /// ```swift
-    /// try container.delete(our: page, id: \.slug)
+    /// try container.delete(our: page, id: \.slug, zone: "Pages")
     /// ```
-    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>) throws {
-        try delete(id: Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)))
+    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
+        try delete(id: RowID(name: Self.recordID(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone))
     }
 
-    /// Deletes an `Identifiable` `record` on this device, identified by its `id`.
-    func delete<Record: Encodable & Identifiable>(our record: Record) throws where Record.ID: Encodable {
-        try delete(our: record, id: \.id)
+    /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
+    func delete<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws where Record.ID: Encodable {
+        try delete(our: record, id: \.id, zone: zone)
     }
 
     /// Deletes the record `id` on this device.
@@ -100,7 +103,7 @@ extension RecordContainer {
     /// to delete there. Any other record waits to upload its delete, and its unsent changes,
     /// any version waiting to merge, and any error are dropped. Saving the record again
     /// before the delete uploads undoes it.
-    func delete(id: UUID) throws(DatabaseError) {
+    func delete(id: RowID) throws(DatabaseError) {
         try locked { () throws(DatabaseError) in
             guard var row = try row(id: id) else { return }
             guard row.metadata != nil || row.base != nil else { return try remove(id: id) }
@@ -117,11 +120,11 @@ extension RecordContainer {
     ///
     /// The row is removed, unless this device has unsent changes. Those win: the row forgets
     /// the server's version and keeps `ours`, so the next send creates the record again.
-    func save(deleted id: UUID) throws(DatabaseError) {
+    func save(deleted id: RowID) throws(DatabaseError) {
         try locked { () throws(DatabaseError) in
             guard let row = try row(id: id) else { return }
             guard let ours = row.ours, !row.isDeleted else { return try remove(id: id) }
-            try write(Row(id: id, zone: row.zone, type: row.type, ours: ours))
+            try write(Row(id: id.name, zone: row.zone, type: row.type, ours: ours))
         }
     }
 
@@ -145,16 +148,16 @@ extension RecordContainer {
     /// is forgotten. A record waiting to upload its delete is removed.
     func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError) {
         try locked { () throws(DatabaseError) in
-            var ids: [UUID] = []
+            var ids: [RowID] = []
             try run("SELECT id FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
-                if let id = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append(id) }
+                if let name = statement.text(at: 0).flatMap(UUID.init(uuidString:)) { ids.append(RowID(name: name, zone: zone)) }
             }
             for id in ids {
                 guard resending, let row = try row(id: id), !row.isDeleted, let content = row.ours ?? row.base else {
                     try remove(id: id)
                     continue
                 }
-                try write(Row(id: id, zone: row.zone, type: row.type, ours: content))
+                try write(Row(id: id.name, zone: row.zone, type: row.type, ours: content))
             }
         }
     }
@@ -224,7 +227,7 @@ extension RecordContainer {
 
     /// Changes the row for `id` by `change`, in one locked read and write. With no row for
     /// `id`, changes `new` and adds it, or does nothing when `new` is `nil`.
-    func update(id: UUID, inserting new: Row? = nil, _ change: (inout Row) -> Void) throws(DatabaseError) {
+    func update(id: RowID, inserting new: Row? = nil, _ change: (inout Row) -> Void) throws(DatabaseError) {
         try locked { () throws(DatabaseError) in
             guard var row = try row(id: id) ?? new else { return }
             change(&row)
@@ -233,20 +236,23 @@ extension RecordContainer {
     }
 
     /// The row for `id`, or `nil` when the container has none.
-    func row(id: UUID) throws(DatabaseError) -> Row? {
+    func row(id: RowID) throws(DatabaseError) -> Row? {
         var row: Row?
-        try run("SELECT zone, owner, type, metadata, base, ours, theirs, sent, is_deleted, error FROM record WHERE id = ?", id.uuidString) { (statement) throws(DatabaseError) in
+        try run("""
+            SELECT type, metadata, base, ours, theirs, sent, is_deleted, error FROM record
+            WHERE id = ? AND zone = ? AND owner = ?
+            """, id.name.uuidString, id.zone.name, id.zone.owner) { (statement) throws(DatabaseError) in
             row = Row(
-                id: id,
-                zone: Zone(statement.text(at: 0) ?? "", owner: statement.text(at: 1) ?? ""),
-                type: statement.text(at: 2) ?? "",
-                metadata: statement.blob(at: 3),
-                base: try statement.json(at: 4).map { resolved($0, id: id) },
-                ours: try statement.json(at: 5).map { resolved($0, id: id) },
-                theirs: try statement.json(at: 6).map { resolved($0, id: id) },
-                sent: try statement.json(at: 7).map { resolved($0, id: id) },
-                isDeleted: sqlite3_column_int(statement, 8) != 0,
-                error: statement.text(at: 9)
+                id: id.name,
+                zone: id.zone,
+                type: statement.text(at: 0) ?? "",
+                metadata: statement.blob(at: 1),
+                base: try statement.json(at: 2).map { resolved($0, id: id) },
+                ours: try statement.json(at: 3).map { resolved($0, id: id) },
+                theirs: try statement.json(at: 4).map { resolved($0, id: id) },
+                sent: try statement.json(at: 5).map { resolved($0, id: id) },
+                isDeleted: sqlite3_column_int(statement, 6) != 0,
+                error: statement.text(at: 7)
             )
         }
         return row
@@ -264,15 +270,15 @@ private extension RecordContainer {
     }
 
     /// Removes the row for `id`.
-    func remove(id: UUID) throws(DatabaseError) {
-        try run("DELETE FROM record WHERE id = ?", id.uuidString)
+    func remove(id: RowID) throws(DatabaseError) {
+        try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name.uuidString, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
 
     /// Writes every column of `row`, replacing any row with the same id.
     func write(_ row: Row) throws(DatabaseError) {
         let text = { (json: JSONRepresentation?) throws(DatabaseError) -> String? in
-            try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.id)) }
+            try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.rowID)) }
         }
         try run("""
             INSERT OR REPLACE INTO record (id, zone, owner, type, metadata, base, ours, theirs, sent, is_deleted, error)

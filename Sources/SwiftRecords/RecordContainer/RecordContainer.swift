@@ -48,7 +48,7 @@ public final class RecordContainer: @unchecked Sendable {
     /// The rows whose unused asset files wait for the transaction around them to end, or
     /// `nil` outside a transaction. Read and written while locked, only by `transaction(_:)`
     /// and `sweepAssets`.
-    private var assetsToSweep: Set<UUID>?
+    private var assetsToSweep: Set<RowID>?
 
     /// An empty container held in memory, with no record types registered.
     convenience init() {
@@ -169,8 +169,8 @@ extension RecordContainer {
     /// and `sent` points at, and the folder once nothing is left in it: now, or, inside a
     /// transaction, once it ends, so a rolled-back write still finds its files.
     func sweepAssets(of row: Row) {
-        guard assetsToSweep == nil else { assetsToSweep?.insert(row.id); return }
-        let folder = assetFolder(id: row.id)
+        guard assetsToSweep == nil else { assetsToSweep?.insert(row.rowID); return }
+        let folder = assetFolder(id: row.rowID)
         guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
         let used = Set([row.base, row.ours, row.theirs, row.sent].compactMap { $0 }.flatMap(\.strings).compactMap { text in
             text.hasPrefix(folder.absoluteString) ? URL(string: text)?.lastPathComponent : nil
@@ -182,7 +182,7 @@ extension RecordContainer {
 
     /// Removes the folder of the removed row `id` and every file in it: now, or, inside a
     /// transaction, once it ends, so a rolled-back removal still finds its files.
-    func sweepAssets(id: UUID) {
+    func sweepAssets(id: RowID) {
         guard assetsToSweep == nil else { assetsToSweep?.insert(id); return }
         try? FileManager.default.removeItem(at: assetFolder(id: id))
     }

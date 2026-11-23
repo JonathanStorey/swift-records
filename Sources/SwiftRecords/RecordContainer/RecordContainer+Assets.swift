@@ -4,8 +4,13 @@ import Versioning
 extension RecordContainer {
     /// The folder holding the asset files of the row `id`, one file for each version that
     /// uses it, so `base`, `ours` and `theirs` can each keep their own file for a merge.
-    func assetFolder(id: UUID) -> URL {
-        assets.appendingPathComponent(id.uuidString, isDirectory: true)
+    ///
+    /// Each zone has its own folder, named by a hash of its owner and name, which may hold
+    /// any character, so a copy of a record in another zone keeps its own files.
+    func assetFolder(id: RowID) -> URL {
+        assets
+            .appendingPathComponent(UUID(stableHashOf: id.zone.owner + "|" + id.zone.name).uuidString, isDirectory: true)
+            .appendingPathComponent(id.name.uuidString, isDirectory: true)
     }
 
     /// `json` with the file at each of `files`, by field, copied into the row's folder under
@@ -15,7 +20,7 @@ extension RecordContainer {
     /// field already has in the folder points at that one instead, so saving the same bytes
     /// again is no change and uploads nothing. A file that cannot be copied keeps its URL.
     /// On APFS the copy is a clone, which shares the original's blocks.
-    func storingAssets(_ files: [String: URL], in json: JSONRepresentation, id: UUID) -> JSONRepresentation {
+    func storingAssets(_ files: [String: URL], in json: JSONRepresentation, id: RowID) -> JSONRepresentation {
         let folder = assetFolder(id: id)
         let existing = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         var stored: [String: JSONRepresentation] = [:]
@@ -43,21 +48,21 @@ extension RecordContainer {
 
     /// `json`, the encoding of `record`, with the file of each `Asset` property of `record`
     /// copied into the row's folder, as ``storingAssets(_:in:id:)`` does.
-    func storingAssets(of record: Any, in json: JSONRepresentation, id: UUID) -> JSONRepresentation {
+    func storingAssets(of record: Any, in json: JSONRepresentation, id: RowID) -> JSONRepresentation {
         storingAssets(json.assetFiles(of: record), in: json, id: id)
     }
 
     /// `json` with each top-level file in the row's folder named relative to the folder, as
     /// the table stores it, so the database still finds its files when the app's container
     /// moves, as it can on iOS when the app updates.
-    func portable(_ json: JSONRepresentation, id: UUID) -> JSONRepresentation {
+    func portable(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation {
         let folder = assetFolder(id: id).absoluteString
         return json.mappingTopLevelStrings { $0.hasPrefix(folder) ? Self.assetScheme + $0.dropFirst(folder.count) : nil }
     }
 
     /// `json`, as the table stores it, with each file named by ``portable(_:id:)`` pointing
     /// into the row's folder again.
-    func resolved(_ json: JSONRepresentation, id: UUID) -> JSONRepresentation {
+    func resolved(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation {
         let folder = assetFolder(id: id)
         return json.mappingTopLevelStrings { text in
             text.hasPrefix(Self.assetScheme) ? folder.appendingPathComponent(String(text.dropFirst(Self.assetScheme.count))).absoluteString : nil

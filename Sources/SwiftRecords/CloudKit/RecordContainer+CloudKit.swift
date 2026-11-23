@@ -26,7 +26,7 @@ extension RecordContainer {
         }
         // The sync engine removes an asset's file after the event, so the row keeps a copy.
         let stored = storingAssets(record.assetFiles, in: json, id: id)
-        try save(their: stored, id: id, zone: record.recordID.zone, type: record.recordType, metadata: record.systemFields)
+        try save(their: stored, id: id.name, zone: id.zone, type: record.recordType, metadata: record.systemFields)
     }
 
     /// Saves the server's version of each of `records`, as `save(their:)` does for one record,
@@ -87,13 +87,13 @@ extension RecordContainer {
     /// database fails.
     ///
     /// ```swift
-    /// let record = try container.send(id: note.id)
+    /// let record = try container.send(id: RecordID(note, zone: "Notes"))
     /// ```
-    func send(id: UUID) throws(DatabaseError) -> CKRecord? {
+    func send(id: RowID) throws(DatabaseError) -> CKRecord? {
         guard let row = try row(id: id), let ours = row.ours, row.status == .waitingToUpload, !row.isDeleted else { return nil }
         let record = row.metadata.flatMap(CKRecord.init(systemFields:)) ?? CKRecord(
             recordType: row.type,
-            recordID: CKRecord.ID(recordName: id.uuidString, zoneID: row.zone.zoneID)
+            recordID: CKRecord.ID(recordName: id.name.uuidString, zoneID: id.zone.zoneID)
         )
         do {
             try CKRecordEncoder().encode(ours, as: registeredType(named: row.type), to: record, changedFrom: row.base)
@@ -160,11 +160,11 @@ extension RecordContainer {
     /// waiting to upload.
     ///
     /// ```swift
-    /// let recordID = try container.send(deleted: note.id)
+    /// let recordID = try container.send(deleted: RecordID(note, zone: "Notes"))
     /// ```
-    func send(deleted id: UUID) throws(DatabaseError) -> CKRecord.ID? {
+    func send(deleted id: RowID) throws(DatabaseError) -> CKRecord.ID? {
         guard let row = try row(id: id), row.isDeleted, row.status == .waitingToUpload else { return nil }
-        return CKRecord.ID(recordName: id.uuidString, zoneID: row.zone.zoneID)
+        return CKRecord.ID(recordName: id.name.uuidString, zoneID: id.zone.zoneID)
     }
 
     /// Saves that the server no longer has the record `id`, because it confirmed this
@@ -303,9 +303,10 @@ private extension CKRecordZone.ID {
 }
 
 private extension CKRecord.ID {
-    /// The row's id: the record's name as a UUID, or `nil` for a record this package did not name.
-    var rowID: UUID? {
-        UUID(uuidString: recordName)
+    /// The row's key: the record's name as a UUID, in its zone, or `nil` for a record this
+    /// package did not name.
+    var rowID: RecordContainer.RowID? {
+        UUID(uuidString: recordName).map { RecordContainer.RowID(name: $0, zone: zone) }
     }
 
     /// The record's zone, with its owner.
