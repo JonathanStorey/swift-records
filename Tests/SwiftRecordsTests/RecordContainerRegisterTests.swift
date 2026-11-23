@@ -57,7 +57,7 @@ private extension RecordContainer {
         let container = RecordContainer.registered()
         try container.save(their: Note(id: id))
         let row = try #require(try container.row(id: id))
-        #expect(row == RecordContainer.Row(id: id, zone: "Notes", type: "Note", metadata: metadata, base: json(Note(id: id))))
+        #expect(row == RecordContainer.Row(id: id.uuidString, zone: "Notes", type: "Note", metadata: metadata, base: json(Note(id: id))))
         #expect(row.status == .synced)
     }
 
@@ -225,6 +225,6 @@ private enum V2 {
         let updated = try RecordContainer(for: [V2.Note.self], url: url)
         #expect(updated.engineStateData == nil)
         let pending = try updated.pendingRows().map(\.id)
-        #expect(pending == [id])
+        #expect(pending == [id.uuidString])
     }
 }

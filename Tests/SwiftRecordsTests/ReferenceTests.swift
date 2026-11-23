@@ -57,14 +57,12 @@ private struct Child: Codable, Hashable {
         #expect(try JSONRepresentation(note).decode(Note.self) == note)
     }
 
-    @Test func readsLowercaseRecordNames() throws {
-        let text = #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"e621e1f8-c36c-495a-93fc-0c247a3e6e5f","zone":"Z","action":"none"}}"#
-        #expect(try JSONDecoder().decode(Note.self, from: Data(text.utf8)).folder == folderID)
-    }
-
-    @Test func rejectsARecordNameThatIsNotAUUID() {
-        let text = #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"42","zone":"Z","action":"none"}}"#
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Note.self, from: Data(text.utf8)) }
+    @Test func readsAnyRecordNameAsItIs() throws {
+        for name in ["e621e1f8-c36c-495a-93fc-0c247a3e6e5f", "Folder:inbox", "42"] {
+            let text = #"{"id":"00000000-0000-0000-0000-000000000001","folder":{"recordName":"\#(name)","zone":"Z","action":"none"}}"#
+            #expect(try JSONDecoder().decode(Note.self, from: Data(text.utf8)).folder == RecordID(name: name, zone: "Z"),
+                    "CloudKit names are case-sensitive, so a lowercase UUID names another record.")
+        }
     }
 
     @Test func keepsTheAction() throws {
@@ -78,7 +76,7 @@ private struct Child: Codable, Hashable {
 
     @Test func pointsAtAnyTargetByItsRecordID() throws {
         let id = try RecordID(Folder(slug: "inbox"), id: \.slug, zone: "Z")
-        #expect(id == RecordID(name: UUID(stableHashOf: #"Folder|"inbox""#), zone: "Z"))
+        #expect(id == RecordID(name: "Folder:inbox", zone: "Z"))
         #expect(Note(id: noteID, folder: id).folder?.name == id.name)
     }
 
@@ -145,7 +143,8 @@ private struct Page: Codable, Hashable {
         #expect(try JSONDecoder().decode(RecordReference.self, from: Data(#"{"action":"none","recordName":"A"}"#.utf8)).isParent == false)
     }
 
-    @Test func rejectsARecordNameThatIsNotAUUID() {
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Page.self, from: Data(#"{"folder":{"recordName":"42","zone":"Z","action":"none","isParent":true}}"#.utf8)) }
+    @Test func readsAParentByAnyRecordName() throws {
+        let page = try JSONDecoder().decode(Page.self, from: Data(#"{"folder":{"recordName":"Folder:inbox","zone":"Z","action":"none","isParent":true}}"#.utf8))
+        #expect(page.folder == RecordID(name: "Folder:inbox", zone: "Z"))
     }
 }

@@ -230,14 +230,35 @@ private func json(_ value: some Encodable) -> Data {
 
 @Suite struct RecordContainerCloudKitTests {
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
-    @Test func savesARecordNamedByAHashOfItsID() throws {
+    @Test func savesARecordNamedByItsTypeAndID() throws {
         let page = Page(slug: "intro", title: "Hello")
         let container = RecordContainer.inMemory(Page.self)
-        let name = try RecordContainer.recordID(for: page.slug, type: "Page")
-        try container.save(their: record(["slug": "intro" as NSString, "title": "Hello" as NSString], type: "Page", name: name.uuidString))
+        let name = try RecordContainer.recordName(for: page.slug, type: "Page")
+        try container.save(their: record(["slug": "intro" as NSString, "title": "Hello" as NSString], type: "Page", name: name))
 
+        #expect(name == "Page:intro")
         let row = try #require(try container.row(id: name))
         #expect(row.base == (try? JSONRepresentation(page)))
+    }
+
+    @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
+    @Test func aPercentEncodedNameSurvivesCloudKitsRecordID() throws {
+        let page = Page(slug: "café / menu: 50%", title: "Hello")
+        let container = RecordContainer.inMemory(Page.self)
+        let name = try RecordContainer.recordName(for: page.slug, type: "Page")
+        #expect(name == "Page:caf%C3%A9%20%2F%20menu%3A%2050%25")
+
+        let server = record(["slug": page.slug as NSString, "title": "Hello" as NSString], type: "Page", name: name)
+        let archived = try NSKeyedArchiver.archivedData(withRootObject: server, requiringSecureCoding: true)
+        let unarchived = try #require(try NSKeyedUnarchiver.unarchivedObject(ofClass: CKRecord.self, from: archived))
+        #expect(unarchived.recordID.recordName == name)
+
+        try container.save(their: unarchived)
+        #expect(try container.row(id: name)?.base == (try? JSONRepresentation(page)))
+        try container.save(our: Page(slug: page.slug, title: "Changed"), id: \.slug, zone: Zone(zoneID.zoneName, owner: zoneID.ownerName))
+        let sent = try #require(try container.send(id: RecordContainer.RowID(name: name, zone: Zone(zoneID.zoneName, owner: zoneID.ownerName))))
+        #expect(sent.recordID.recordName == name)
+        #expect(RecordContainer.id(String.self, fromRecordName: sent.recordID.recordName) == page.slug)
     }
 
     @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
@@ -513,9 +534,7 @@ private func noteContainer() -> RecordContainer {
         try container.save(their: share)
         let pending = try container.pendingChanges()
         #expect(pending.saves.isEmpty && pending.deletes.isEmpty)
-        if let shareID = UUID(uuidString: share.recordID.recordName) {
-            #expect(try container.row(id: shareID) == nil)
-        }
+        #expect(try container.row(id: share.recordID.recordName) == nil)
     }
 }
 

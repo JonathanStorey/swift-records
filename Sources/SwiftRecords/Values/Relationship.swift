@@ -25,8 +25,8 @@ import Versioning
 public struct Relationship: Codable, Hashable, Sendable, Identifiable, Mergeable {
     /// The declaring type and property, as in `"Note.tags"`.
     public private(set) var keyPath: String
-    /// The declaring record's id, then the target's id.
-    @Related public private(set) var references: [UUID]
+    /// The declaring record's name, then the target's, as ``RecordID/name`` gives them.
+    @Related public private(set) var references: [String]
     /// The link's position in the list of `references[0]`, the declaring
     /// record. Orders only need to increase, so deleting a link never
     /// renumbers the others. `nil` means the link has not been placed yet,
@@ -43,9 +43,9 @@ public struct Relationship: Codable, Hashable, Sendable, Identifiable, Mergeable
     /// A symmetric relationship is its own inverse, like `Person.friends`.
     /// It has no declaring side, so its ids are sorted and the link is the
     /// same whichever record creates it.
-    public init(keyPath: String, from source: UUID, to target: UUID, symmetric: Bool = false) {
+    public init(keyPath: String, from source: String, to target: String, symmetric: Bool = false) {
         self.keyPath = keyPath
-        let swapped = symmetric && target.uuidString < source.uuidString
+        let swapped = symmetric && target < source
         _references = Related(swapped ? [target, source] : [source, target])
     }
 
@@ -58,7 +58,7 @@ public struct Relationship: Codable, Hashable, Sendable, Identifiable, Mergeable
     /// var link = Relationship(keyPath: "Note.tags", from: note, to: tag)
     /// link[orderIn: note] = 3
     /// ```
-    public subscript(orderIn record: UUID) -> Int? {
+    public subscript(orderIn record: String) -> Int? {
         get { references[0] == record ? order : inverseOrder }
         set {
             if references[0] == record { order = newValue } else { inverseOrder = newValue }
@@ -71,11 +71,11 @@ public struct Relationship: Codable, Hashable, Sendable, Identifiable, Mergeable
     /// never disagrees with the link, and lets a removal delete the link
     /// without fetching it.
     public var id: UUID {
-        UUID(stableHashOf: ([keyPath] + references.map(\.uuidString)).joined(separator: "|"))
+        UUID(stableHashOf: ([keyPath] + references).joined(separator: "|"))
     }
 
     /// The id at the other end of the link from `source`.
-    public func target(from source: UUID) -> UUID {
+    public func target(from source: String) -> String {
         references[0] == source ? references[1] : references[0]
     }
 }

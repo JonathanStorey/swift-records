@@ -110,7 +110,7 @@ private extension References {
     /// stripped builds and on Linux.
     static func linkName<Root: Decodable, Element>(of keyPath: KeyPath<Root, [RecordID<Element>]>) throws -> String {
         let recorded = try JSONSchema.placeholder(for: Root.self)
-        guard let marker = recorded.value[keyPath: keyPath].first?.name, let key = recorded.markers[marker]?.first else {
+        guard let marker = recorded.value[keyPath: keyPath].first.flatMap({ UUID(uuidString: $0.name) }), let key = recorded.markers[marker]?.first else {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The key path does not lead to a reference list that \(Root.self) decodes."))
         }
         return "\(Root.self).\(key)"

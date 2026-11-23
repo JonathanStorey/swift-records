@@ -115,16 +115,34 @@ extension RecordContainer {
     }
 
     /// The row's id and the record's name for the id `id` of a record of type `type`: a
-    /// `UUID` id itself, or, for any other id, a stable hash of the record type and the
-    /// id's JSON, as in `"Page|\"intro\""`.
+    /// `UUID` id as it is, or, for any other id, the type, a colon and the id, percent-encoded,
+    /// as in `"Page:intro"`, `"Invoice:42"` or `"Page:caf%C3%A9"`. A `String` id is used as it
+    /// is, and any other id as its JSON.
     ///
     /// The same id always names the same record, so two devices that create it apart
-    /// save one record. The type is part of the hash because a record name is unique in
-    /// its zone across every type. A `UUID` id is kept as it is so a reference to the
-    /// record can be read back as the id.
-    static func recordID(for id: any Encodable, type: String) throws -> UUID {
-        if let id = id as? UUID { return id }
-        return UUID(stableHashOf: type + "|" + (try JSONRepresentation(id)).description)
+    /// save one record. The type is part of the name because a record name is unique in
+    /// its zone across every type. Percent-encoding keeps the name ASCII, as CloudKit
+    /// requires, and ``id(_:fromRecordName:)`` reads the id back from it.
+    ///
+    /// A name longer than CloudKit's 255 characters asserts. Outside debug builds it falls
+    /// back to the type, a `#` and a stable hash of the id, which still names one record
+    /// but cannot be read back as the id.
+    static func recordName(for id: any Encodable, type: String) throws -> String {
+        if let id = id as? UUID { return id.uuidString }
+        let text = try (id as? String) ?? JSONRepresentation(id).description
+        let name = type + ":" + (text.addingPercentEncoding(withAllowedCharacters: .recordName) ?? text)
+        guard name.utf8.count > 255 else { return name }
+        assertionFailure("The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id.")
+        return type + "#" + UUID(stableHashOf: type + "|" + text).uuidString
+    }
+
+    /// The id that ``recordName(for:type:)`` made `name` from, or `nil` when `name` is not
+    /// one it made, or its id does not decode as `ID`.
+    static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID? {
+        if ID.self == UUID.self { return UUID(uuidString: name) as? ID }
+        guard let colon = name.firstIndex(of: ":"), let text = name[name.index(after: colon)...].removingPercentEncoding else { return nil }
+        if ID.self == String.self { return text as? ID }
+        return try? JSONDecoder().decode(ID.self, from: Data(text.utf8))
     }
 }
 
@@ -191,4 +209,10 @@ private extension JSONRepresentation {
         pairs += others.filter { !keys.contains($0.key) }
         return .object(pairs)
     }
+}
+
+private extension CharacterSet {
+    /// The characters a record name keeps as they are: ASCII letters, digits and `-._~`.
+    /// Every other character is percent-encoded.
+    static let recordName = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 }

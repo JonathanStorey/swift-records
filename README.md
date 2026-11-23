@@ -38,8 +38,9 @@ let folder = try RecordID(folder, zone: "Notes")          // an Identifiable fol
 let page = try RecordID(page, id: \.slug, zone: "Pages")   // a plain struct
 ```
 
-The name is the record's `UUID` id, or a stable hash of the type and any
-other id, the same name the record is saved under.
+The name is the record's `UUID` id, or the type and any other id, as in
+`Page:intro`, the same name the record is saved under. Characters other than
+ASCII letters, digits and `-._~` are percent-encoded, as in `Page:caf%C3%A9`.
 
 A `Zone` is a zone as this device sees it, a name and an owner. A string
 literal is your own private zone, and `Zone.public` is the public database.
@@ -111,7 +112,7 @@ and reads the same links from the other end. Its link name, `"Note.tags"`,
 comes from the coding key behind the key path, so it follows `CodingKeys`.
 
 A `Relationship` is named by the declaring side, as in `"Note.tags"`, with
-the declaring record's id and then the target's. Its id is a stable hash of
+the declaring record's name and then the target's. Its id is a stable hash of
 those three values, so the same link always maps to the same record. It
 also holds `order`, the link's position in the declaring list, and
 `inverseOrder`, its position in the inverse's list, and each side sorts by

@@ -5,7 +5,7 @@ extension RecordContainer {
     /// One record in the container: its identity, and up to three versions of its fields.
     struct Row: Equatable, Sendable {
         /// The record's name in CloudKit, and the table's primary key.
-        var id: UUID
+        var id: String
         /// The zone, with its owner: you for a private zone, or the sharer for a shared one.
         var zone: Zone
         /// The CloudKit record type, checked when the row is read.

@@ -5,8 +5,8 @@ import Versioning
 
 @Suite struct RelationshipTests {
 
-    private let note = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
-    private let tag = UUID(uuidString: "00000000-0000-0000-0000-00000000000B")!
+    private let note = "00000000-0000-0000-0000-00000000000A"
+    private let tag = "00000000-0000-0000-0000-00000000000B"
 
     @Test func putsTheDeclaringRecordFirst() {
         let link = Relationship(keyPath: "Note.tags", from: note, to: tag)
@@ -28,7 +28,7 @@ import Versioning
     }
 
     @Test func differentRecordsAreDifferentLinks() {
-        #expect(Relationship(keyPath: "Note.tags", from: note, to: UUID()).id != Relationship(keyPath: "Note.tags", from: note, to: tag).id)
+        #expect(Relationship(keyPath: "Note.tags", from: note, to: UUID().uuidString).id != Relationship(keyPath: "Note.tags", from: note, to: tag).id)
     }
 
     @Test func directionMatters() {
@@ -77,8 +77,8 @@ import Versioning
         #expect(json["id"] == nil)
         #expect(json["keyPath"] == "Note.tags")
         #expect(json["references"] == [
-            ["recordName": .string(note.uuidString), "action": "none"],
-            ["recordName": .string(tag.uuidString), "action": "none"],
+            ["recordName": .string(note), "action": "none"],
+            ["recordName": .string(tag), "action": "none"],
         ])
         #expect(json["order"] == 2)
     }

@@ -52,8 +52,8 @@ private extension RecordContainer {
 
         let pending = try container.pendingRows()
         #expect(pending.count == 2)
-        #expect(pending.contains { $0.id == saved.id && !$0.isDeleted && $0.zone == "Notes" })
-        #expect(pending.contains { $0.id == deleted.id && $0.isDeleted })
+        #expect(pending.contains { $0.id == saved.id.uuidString && !$0.isDeleted && $0.zone == "Notes" })
+        #expect(pending.contains { $0.id == deleted.id.uuidString && $0.isDeleted })
     }
 
     @Test func zonesListsEachZoneOnce() throws {

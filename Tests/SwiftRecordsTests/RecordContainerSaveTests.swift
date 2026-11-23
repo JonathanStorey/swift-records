@@ -18,25 +18,55 @@ private struct Chapter: Codable, Mergeable {
     var slug: String
 }
 
-private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: KeyPath<Record, ID>) throws -> UUID {
-    try RecordContainer.recordID(for: record[keyPath: id], type: RecordContainer.recordType(of: Record.self))
+private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: KeyPath<Record, ID>) throws -> String {
+    try RecordContainer.recordName(for: record[keyPath: id], type: RecordContainer.recordType(of: Record.self))
 }
 
 @Suite struct RecordContainerSaveTests {
-    @Test func aUUIDIDIsTheRecordID() throws {
+    @Test func aUUIDIDIsTheRecordName() throws {
         let note = Note(title: "Draft")
-        #expect(try recordID(of: note, id: \.id) == note.id)
+        #expect(try recordID(of: note, id: \.id) == note.id.uuidString)
     }
 
-    @Test func anyOtherIDHashesWithItsType() throws {
+    @Test func anyOtherIDIsItsTypeAndItself() throws {
         let id = try recordID(of: Page(slug: "intro"), id: \.slug)
+        #expect(id == "Page:intro")
         #expect(try recordID(of: Page(slug: "intro", title: "Changed"), id: \.slug) == id)
         #expect(try recordID(of: Page(slug: "outro"), id: \.slug) != id)
-        #expect(try recordID(of: Chapter(slug: "intro"), id: \.slug) != id)
-        #expect(id == UUID(stableHashOf: #"Page|"intro""#))
+        #expect(try recordID(of: Chapter(slug: "intro"), id: \.slug) == "Chapter:intro", "A name is unique across types, so the type keeps two ids apart.")
     }
 
-    @Test func aPlainStructSavesUnderTheHashOfItsID() throws {
+    @Test func aNonStringIDIsItsJSON() throws {
+        #expect(try RecordContainer.recordName(for: 42, type: "Invoice") == "Invoice:42")
+        #expect(try RecordContainer.recordName(for: true, type: "Flag") == "Flag:true")
+    }
+
+    @Test func everyCharacterOutsideASCIILettersDigitsAndDashDotUnderscoreTildeIsPercentEncoded() throws {
+        #expect(try RecordContainer.recordName(for: "café", type: "Page") == "Page:caf%C3%A9")
+        #expect(try RecordContainer.recordName(for: "a b/c:d%e", type: "Page") == "Page:a%20b%2Fc%3Ad%25e")
+        #expect(try RecordContainer.recordName(for: "A-z_0.9~", type: "Page") == "Page:A-z_0.9~")
+        let emoji = try RecordContainer.recordName(for: "👩🏽‍💻", type: "Page")
+        let isASCII = emoji.allSatisfy(\.isASCII)
+        #expect(isASCII, "CloudKit names must be ASCII.")
+    }
+
+    @Test func theIDReadsBackFromItsName() throws {
+        let uuid = UUID()
+        for slug in ["intro", "café", "a b/c:d%e", "👩🏽‍💻", ""] {
+            #expect(RecordContainer.id(String.self, fromRecordName: try RecordContainer.recordName(for: slug, type: "Page")) == slug)
+        }
+        #expect(RecordContainer.id(Int.self, fromRecordName: try RecordContainer.recordName(for: 42, type: "Invoice")) == 42)
+        #expect(RecordContainer.id(UUID.self, fromRecordName: try RecordContainer.recordName(for: uuid, type: "Note")) == uuid)
+        #expect(RecordContainer.id(Int.self, fromRecordName: "Page:intro") == nil, "An id of another type does not decode.")
+        #expect(RecordContainer.id(String.self, fromRecordName: "no-colon") == nil)
+    }
+
+    @Test func aNameUpToCloudKitsLimitIsKept() throws {
+        let slug = String(repeating: "a", count: 255 - "Page:".count)
+        #expect(try RecordContainer.recordName(for: slug, type: "Page") == "Page:" + slug)
+    }
+
+    @Test func aPlainStructSavesUnderItsID() throws {
         let container = RecordContainer()
         try container.save(our: Page(slug: "intro", title: "First"), id: \.slug, zone: "Notes")
         try container.save(our: Page(slug: "intro", title: "Second"), id: \.slug, zone: "Notes")
@@ -61,7 +91,7 @@ private func recordID<Record: Encodable, ID: Encodable>(of record: Record, id: K
         try container.save(our: note, zone: "Notes")
 
         let row = try #require(try container.row(id: note.id))
-        #expect(row == RecordContainer.Row(id: note.id, zone: "Notes", type: "Note", ours: ["id": .string(note.id.uuidString), "title": "Draft"]))
+        #expect(row == RecordContainer.Row(id: note.id.uuidString, zone: "Notes", type: "Note", ours: ["id": .string(note.id.uuidString), "title": "Draft"]))
         #expect(row.status == .waitingToUpload)
     }
 
