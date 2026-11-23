@@ -51,7 +51,7 @@ private struct PredicateSchema {
     let value: Any
     let json: JSONRepresentation
     let scalars: [JSONRepresentation: JSONRepresentation.Path]
-    /// A copy of the placeholder for each `Bool`, with only that `Bool` `true`, and its JSON.
+    /// A copy of the placeholder for each `Bool` and enum, with only that value changed, and its JSON.
     let flags: [(path: JSONRepresentation.Path, value: Any, json: JSONRepresentation)]
 
     init?<T: Decodable>(_ type: T.Type) {
@@ -73,9 +73,14 @@ private struct PredicateSchema {
            let path = scalars[json], self.json[path] == json {
             return path.sqlite.map { ("json_extract(COALESCE(ours, base), ?)", [$0]) }
         }
-        let flag = flags.first { (keyPath.read($0.value) as? Bool) == true }
-        guard let flag, flag.json[flag.path] == .bool(true) else { return nil }
-        return flag.path.sqlite.map { ("json_extract(COALESCE(ours, base), ?)", [$0]) }
+        // A `Bool` or enum reads differently only on the copy in which its own value changed.
+        guard let plain = keyPath.read(value).flatMap(JSONRepresentation.init(encoding:)) else { return nil }
+        for flag in flags {
+            guard let changed = keyPath.read(flag.value).flatMap(JSONRepresentation.init(encoding:)), changed != plain else { continue }
+            guard flag.json[flag.path] == changed, json[flag.path] == plain else { return nil }
+            return flag.path.sqlite.map { ("json_extract(COALESCE(ours, base), ?)", [$0]) }
+        }
+        return nil
     }
 
     /// The SQL that tests whether the reference list at `keyPath` holds `target`, or `nil`
