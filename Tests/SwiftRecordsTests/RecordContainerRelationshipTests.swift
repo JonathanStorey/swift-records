@@ -90,9 +90,9 @@ private struct Book: Codable, Identifiable, Mergeable {
         try container.save(our: Note(title: "Tagged", tags: [sql.id, swift.id]), zone: notes)
         try container.save(our: Note(title: "Other", tags: [sql.id]), zone: notes)
         try container.save(our: Note(title: "Plain"), zone: notes)
-        let tag = swift.id
+        let tagID = swift.id
 
-        let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.tags.contains(tag) }).map(\.title)
+        let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.tags.contains(tagID) }).map(\.title)
         #expect(titles == ["Tagged"])
     }
 

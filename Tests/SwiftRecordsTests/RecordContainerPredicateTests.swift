@@ -91,8 +91,8 @@ private struct Note: Codable, Identifiable, Mergeable {
 
     @Test func aRelationshipListFindsItsTarget() throws {
         try save()
-        let tag = sql.id
-        #expect(try titles(#Predicate { $0.tags.contains(tag) }) == ["Beta", "Gamma"])
+        let tagID = sql.id
+        #expect(try titles(#Predicate { $0.tags.contains(tagID) }) == ["Beta", "Gamma"])
     }
 
     @Test func whatSQLCannotReadIsLeftToSwift() throws {
