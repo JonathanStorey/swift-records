@@ -19,7 +19,7 @@ private struct Post: Codable, Equatable, Mergeable {
     var title = "Title"
     @Encrypted var hits = Hits(rawValue: 1)
     var place: Location? = nil
-    @References var photos: [RecordID<Photo>] = []
+    @References<Photo> var photos: [Photo.ID] = []
 }
 
 private func file(containing text: String) throws -> URL {
@@ -36,9 +36,9 @@ private let a = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
 private let b = UUID(uuidString: "00000000-0000-0000-0000-0000000000B2")!
 private let c = UUID(uuidString: "00000000-0000-0000-0000-0000000000C3")!
 
-/// The id of a photo named `name` in the zone `"Z"`.
-private func id(_ name: UUID) -> RecordID<Photo> {
-    RecordID(name: name, zone: "Z")
+/// The id of the photo `name`.
+private func id(_ name: UUID) -> Photo.ID {
+    name
 }
 
 @Suite struct RecordWrapperValueTests {

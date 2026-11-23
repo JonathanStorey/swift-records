@@ -1,8 +1,7 @@
 import Foundation
 
 /// Where a record of type `Record` lives: its name and its ``Zone``. It is
-/// everything needed to find the record again, so it can be stored in a reference or handed
-/// to a view.
+/// everything needed to find the record again.
 ///
 /// ```swift
 /// let folder = try RecordID(folder, zone: "Notes")          // an Identifiable folder

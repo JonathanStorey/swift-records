@@ -42,23 +42,32 @@ extension RecordContainer {
     /// copied into the container, so the row keeps it however the original changes. Asserts that a record
     /// saved to ``Zone/public`` has no `@Encrypted` values, which the public database rejects.
     ///
+    /// Each reference with no zone is placed in `zone`, and one in another zone throws,
+    /// since CloudKit follows a reference only within its record's zone. Each
+    /// `@References(inverse:)` list is left out of the record and saved as ``Relationship``
+    /// records instead, in the same transaction, as ``relationshipChanges(_:of:type:zone:)``
+    /// describes.
+    ///
     /// ```swift
     /// try container.save(our: page, id: \.slug, zone: "Pages")
     /// ```
     func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
         assert(zone != .public || !Mirror(reflecting: record).properties.contains { $0.value is any EncryptedValue },
                "The public database cannot store @Encrypted values, so \(Record.self) cannot be saved to Zone.public.")
-        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone)
-        let json = try JSONRepresentation(record)
-        let ours = try Self.text(portable(storingAssets(of: record, in: json, id: id), id: id))
         let type = Self.recordType(of: Record.self)
+        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
+        var json = try JSONRepresentation(record)
+        let lists = try json.removeRelationshipLists()
+        let ours = try Self.text(portable(storingAssets(of: record, in: json.placingReferences(in: zone), id: id), id: id))
+        let changes = try relationshipChanges(lists, of: id.name, type: type, zone: zone)
+        let relationshipType = Self.recordType(of: Relationship.self)
+        let saved = try changes.saved.map { relationship in
+            (id: RowID(name: relationship.id, zone: zone), ours: try Self.text(JSONRepresentation(relationship).placingReferences(in: zone)))
+        }
         try transaction { () throws(DatabaseError) in
-            log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type))
-            try run("""
-                INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
-                """, id.name, zone.name, zone.owner, type, ours)
-            if let row = try row(id: id) { sweepAssets(of: row) }
+            try write(ours: ours, id: id, type: type)
+            for relationship in saved { try write(ours: relationship.ours, id: relationship.id, type: relationshipType) }
+            for relationship in changes.deleted { try delete(id: RowID(name: relationship.id, zone: zone)) }
         }
     }
 
@@ -86,13 +95,20 @@ extension RecordContainer {
     }
 
     /// Deletes `record` in `zone` on this device, identified by the value at `id`, as
-    /// ``delete(id:)`` describes. A copy of the record in another zone stays.
+    /// ``delete(id:)`` describes, together with every ``Relationship`` it is a side of, in
+    /// one transaction. A copy of the record in another zone stays.
     ///
     /// ```swift
     /// try container.delete(our: page, id: \.slug, zone: "Pages")
     /// ```
     func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
-        try delete(id: RowID(name: Self.recordName(for: record[keyPath: id], type: Self.recordType(of: Record.self)), zone: zone))
+        let type = Self.recordType(of: Record.self)
+        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
+        let relationships = Record.self == Relationship.self ? [] : try relationships(of: id.name, type: type, in: zone)
+        try transaction { () throws(DatabaseError) in
+            try delete(id: id)
+            for relationship in relationships { try delete(id: RowID(name: relationship.id, zone: zone)) }
+        }
     }
 
     /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
@@ -250,7 +266,8 @@ extension RecordContainer {
     /// marked deleted are left out, and so is a row whose value does not decode as `T`, such
     /// as one a newer version of the app wrote. Each value is decoded and tested as SQLite
     /// reads its row, so only the matches are kept in memory. With no `order`, the values
-    /// keep no particular order.
+    /// keep no particular order. Each `@References(inverse:)` list is filled from the zone's
+    /// ``Relationship`` records before its record decodes, so `predicate` can test it.
     ///
     /// ```swift
     /// let drafts = try container.fetch(Note.self, in: "Notes", predicate: #Predicate { $0.isDraft }, order: [SortDescriptor(\.title)])
@@ -258,13 +275,14 @@ extension RecordContainer {
     func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
         var values: [T] = []
         var failure: (any Error)?
+        let lists = type == Relationship.self ? [:] : try relationshipLists(in: zone, type: Self.recordType(of: type))
         try run("""
             SELECT id, COALESCE(ours, base) FROM record
             WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0
             """, Self.recordType(of: type), zone.name, zone.owner) { (statement) throws(DatabaseError) in
             guard failure == nil,
                   let name = statement.text(at: 0),
-                  let json = try? statement.json(at: 1),
+                  let json = (try? statement.json(at: 1))??.relating(lists[name]),
                   let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(type) else { return }
             do {
                 if try predicate?.evaluate(value) ?? true { values.append(value) }
@@ -396,5 +414,18 @@ private extension OpaquePointer {
         } catch {
             throw DatabaseError(code: SQLITE_CORRUPT, description: "Stored JSON could not be read: \(error)")
         }
+    }
+}
+
+private extension RecordContainer {
+    /// Writes `ours` as the row `id`'s version, adding the row when it is new, in one
+    /// statement, and logs the change.
+    func write(ours: String, id: RowID, type: String) throws(DatabaseError) {
+        log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type))
+        try run("""
+            INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
+            """, id.name, id.zone.name, id.zone.owner, type, ours)
+        if let row = try row(id: id) { sweepAssets(of: row) }
     }
 }

@@ -3,16 +3,14 @@ import Testing
 @testable import SwiftRecords
 import Versioning
 
-private struct Tag: Codable, Identifiable {
-    var id: UUID
-    var notes: [RecordID<Note>] = []
+private struct Tag: Codable, Hashable, Identifiable {
+    var id = UUID()
+    @References<Note>(inverse: \Note.tags) var notes: [Note.ID] = []
 }
 
-private struct Note: Codable, Hashable {
-    @References(to: \Tag.notes) var tags: [RecordID<Tag>] = []
-
-    /// The wrapper's storage is private, so only this file can read it.
-    var tagsStorage: References<Tag>.Storage? { _tags.storage }
+private struct Note: Codable, Hashable, Identifiable {
+    var id = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
+    @References<Tag>(inverse: \Tag.notes) var tags: [Tag.ID] = []
 }
 
 private struct Attachment: Codable, Identifiable {
@@ -20,28 +18,13 @@ private struct Attachment: Codable, Identifiable {
 }
 
 private struct Folder: Codable, Hashable {
-    @References var attachments: [RecordID<Attachment>] = []
-
-    var attachmentsStorage: References<Attachment>.Storage? { _attachments.storage }
-}
-
-private struct Post: Codable, Identifiable {
-    var id: UUID
-    @References(to: \Label.posts) var labels: [RecordID<Label>] = []
-}
-
-private struct Label: Codable, Hashable, Identifiable {
-    var id = UUID()
-    @References(from: \Post.labels) var posts: [RecordID<Post>] = []
-
-    var postsStorage: References<Post>.Storage? { _posts.storage }
-    var postsInverse: String? { get throws { try _posts.inverse } }
+    @References<Attachment> var attachments: [Attachment.ID] = []
 }
 
 /// Stores `labels` under another coding key.
 private struct Article: Codable, Identifiable {
-    var id: UUID
-    @References(to: \Sticker.articles) var labels: [RecordID<Sticker>] = []
+    var id = UUID()
+    @References<Sticker>(inverse: \Sticker.articles) var labels: [Sticker.ID] = []
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -51,34 +34,42 @@ private struct Article: Codable, Identifiable {
 
 private struct Sticker: Codable, Identifiable {
     var id = UUID()
-    @References(from: \Article.labels) var articles: [RecordID<Article>] = []
+    @References<Article>(inverse: \Article.labels) var articles: [Article.ID] = []
+}
 
-    var articlesInverse: String? { get throws { try _articles.inverse } }
+/// Identified by an `Int` and a `String`, so each finds its inverse with a marker of its own id type.
+private struct Shelf: Codable, Identifiable {
+    var id: Int
+    @References<Book>(inverse: \Book.shelves) var books: [Book.ID] = []
+}
+
+private struct Book: Codable, Identifiable {
+    var id: String
+    @References<Shelf>(inverse: \Shelf.books) var shelves: [Shelf.ID] = []
+}
+
+/// Identified by a struct, which no record name reads back as a marker.
+private struct Pair: Codable, Hashable {
+    var row = 0, column = 0
+}
+
+private struct Cell: Codable, Identifiable {
+    var id = Pair()
+    @References<Grid>(inverse: \Grid.cells) var grids: [Grid.ID] = []
+}
+
+private struct Grid: Codable, Identifiable {
+    var id = UUID()
+    @References<Cell>(inverse: \Cell.grids) var cells: [Cell.ID] = []
 }
 
 private struct Match: Codable, Hashable {
-    @References(action: .deleteSelf) var tags: [RecordID<Tag>] = []
-
-    var tagsAction: RecordReference.Action { _tags.action }
+    @References<Tag>(action: .deleteSelf) var tags: [Tag.ID] = []
 }
 
 @Suite struct ReferencesTests {
-    private let note = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
     private let a = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
     private let b = UUID(uuidString: "00000000-0000-0000-0000-0000000000B2")!
-    private let c = UUID(uuidString: "00000000-0000-0000-0000-0000000000C3")!
-
-    /// The id of a record named `name` in the zone `"Z"`.
-    private func id<T>(_ name: UUID) -> RecordID<T> {
-        RecordID(name: name, zone: "Z")
-    }
-
-    private func link(_ keyPath: String, from source: UUID, to target: UUID, order: Int? = nil, inverseOrder: Int? = nil) -> Relationship {
-        var link = Relationship(keyPath: keyPath, from: source, to: target)
-        link.order = order
-        link.inverseOrder = inverseOrder
-        return link
-    }
 
     private func json(_ value: some Encodable) throws -> String {
         let encoder = JSONEncoder()
@@ -86,83 +77,87 @@ private struct Match: Codable, Hashable {
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
+    private func decode<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
+        try JSONDecoder().decode(type, from: Data(text.utf8))
+    }
+
     @Test func holdsTheIDsInOrder() {
-        #expect(Note(tags: [id(b), id(a)]).tags == [id(b), id(a)])
+        #expect(Note(tags: [b, a]).tags == [b, a])
         #expect(Note().tags == [])
+        #expect(Note().$tags.zone == nil)
     }
 
-    @Test func encodesEachReferenceWithTheAction() throws {
-        #expect(try json(Note(tags: [id(a)])) == #"{"tags":[{"action":"none","owner":"__defaultOwner__","recordName":"00000000-0000-0000-0000-0000000000A1","zone":"Z"}]}"#)
-        #expect(try json(Match(tags: [id(a)])) == #"{"tags":[{"action":"deleteSelf","owner":"__defaultOwner__","recordName":"00000000-0000-0000-0000-0000000000A1","zone":"Z"}]}"#)
+    @Test func encodesAFieldListAsReferences() throws {
+        #expect(try json(Folder(attachments: [a])) == #"{"attachments":[{"action":"none","recordName":"00000000-0000-0000-0000-0000000000A1"}]}"#)
+        #expect(try json(Match(tags: [a])) == #"{"tags":[{"action":"deleteSelf","recordName":"00000000-0000-0000-0000-0000000000A1"}]}"#)
     }
 
-    @Test func keepsTheAction() throws {
-        let model = Match(tags: [id(a), id(b)])
-        let decoded = try JSONDecoder().decode(Match.self, from: JSONEncoder().encode(model))
-        #expect(decoded == model)
-        #expect(decoded.tagsAction == .deleteSelf)
-        #expect(try JSONDecoder().decode(Match.self, from: Data("{}".utf8)).tagsAction == .none)
+    @Test func encodesARelationshipListWithItsInverse() throws {
+        #expect(try json(Note(tags: [a])) == #"{"id":"00000000-0000-0000-0000-00000000000A","tags":{"$inverse":"Tag.notes","$relationships":[{"action":"none","recordName":"00000000-0000-0000-0000-0000000000A1"}]}}"#)
+        #expect(try JSONRepresentation(Tag(notes: [a]))["notes"]?["$inverse"] == "Note.tags", "Each side names the other.")
+    }
+
+    @Test func theOtherSideFollowsItsCodingKey() throws {
+        #expect(try JSONRepresentation(Sticker())["articles"]?["$inverse"] == "Article.stickers")
+        #expect(try JSONRepresentation(Article())["stickers"]?["$inverse"] == "Sticker.articles")
+    }
+
+    @Test func intAndStringIDsFindTheirInverse() throws {
+        #expect(try JSONRepresentation(Shelf(id: 1))["books"]?["$inverse"] == "Book.shelves")
+        #expect(try JSONRepresentation(Book(id: "swift"))["shelves"]?["$inverse"] == "Shelf.books")
+    }
+
+    @Test func aStructIDCannotBeFoundByItsInverse() throws {
+        #expect(throws: (any Error).self, "Cell finds Grid.cells with a Pair marker, which no record name reads back as.") {
+            try JSONRepresentation(Cell())
+        }
+        let grid = try JSONRepresentation(Grid())
+        #expect(grid["cells"]?["$inverse"] == "Cell.grids", "Grid finds Cell.grids with a UUID marker.")
+    }
+
+    @Test func anEmptyFieldListIsLeftOutButAnEmptyRelationshipListIsNot() throws {
+        #expect(try json(Folder()) == "{}")
+        #expect(try JSONRepresentation(Note())["tags"]?["$relationships"] == [], "The container must see a list emptied, to remove its relationships.")
+        #expect(try decode(Note.self, #"{"id":"00000000-0000-0000-0000-00000000000A"}"#).tags == [])
+    }
+
+    @Test func storageSurvivesDecoding() throws {
+        #expect(try decode(Folder.self, json(Folder(attachments: [a]))).$attachments.storage == .field)
+        #expect(try decode(Note.self, json(Note(tags: [a]))).$tags.storage == .relationships)
+        #expect(try decode(Tag.self, json(Tag(notes: [a]))).$notes.storage == .relationships)
+        #expect(try decode(Folder.self, "{}").$attachments.storage == nil, "A missing key cannot tell.")
     }
 
     @Test func initializerPicksTheStorage() {
-        #expect(Folder().attachmentsStorage == .field)
-        #expect(Note().tagsStorage == .links)
-        #expect(Label().postsStorage == .inverse)
+        #expect(Folder().$attachments.storage == .field)
+        #expect(Note().$tags.storage == .relationships)
+        #expect(Tag().$notes.storage == .relationships)
     }
 
-    @Test func inverseNamesTheDeclaringCodingKey() throws {
-        #expect(try Label().postsInverse == "Post.labels")
-        #expect(try Sticker().articlesInverse == "Article.stickers")
-    }
-
-    @Test func decodedListHasNoStorageAndStillEqualsTheOriginal() throws {
-        let model = Note(tags: [id(a), id(b)])
-        let decoded = try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(model))
-        #expect(decoded.tagsStorage == nil)
+    @Test func keepsTheAction() throws {
+        let model = Match(tags: [a, b])
+        let decoded = try decode(Match.self, json(model))
         #expect(decoded == model)
-        #expect(try JSONDecoder().decode(Note.self, from: Data("{}".utf8)).tagsStorage == nil)
+        #expect(decoded.$tags.action == .deleteSelf)
+        #expect(try decode(Match.self, "{}").$tags.action == .none)
     }
 
-    @Test func fieldAndLinksEncodeAlike() throws {
-        #expect(try json(Folder(attachments: [id(a)])) == #"{"attachments":[{"action":"none","owner":"__defaultOwner__","recordName":"00000000-0000-0000-0000-0000000000A1","zone":"Z"}]}"#)
+    @Test func readsTheIDsAndZone() throws {
+        let folder = try decode(Folder.self, #"{"attachments":[{"recordName":"00000000-0000-0000-0000-0000000000A1","zone":"Z","action":"none"}]}"#)
+        #expect(folder.attachments == [a])
+        #expect(folder.$attachments.zone == Zone("Z"))
+        #expect(folder != Folder(attachments: [a]), "The zone is part of the list.")
     }
 
-    @Test func inverseSortsByInverseOrder() {
-        let links = [
-            link("Post.labels", from: a, to: note, order: 0, inverseOrder: 2),
-            link("Post.labels", from: b, to: note, order: 5, inverseOrder: 1),
-        ]
-        #expect(References<Post>(links, from: id(note) as RecordID<Label>).wrappedValue == [id(b), id(a)])
-    }
-
-    @Test func readsAnyRecordName() throws {
-        let note = try JSONDecoder().decode(Note.self, from: Data(#"{"tags":[{"recordName":"Tag:swift","zone":"Z","action":"none"}]}"#.utf8))
-        #expect(note.tags == [RecordID(name: "Tag:swift", zone: "Z")])
-    }
-
-    @Test func rejectsAReferenceWithNoZone() {
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Note.self, from: Data(#"{"tags":[{"recordName":"00000000-0000-0000-0000-0000000000A1","action":"none"}]}"#.utf8)) }
-    }
-
-    @Test func leavesOutAnEmptyList() throws {
-        #expect(try json(Note()) == "{}")
-        #expect(try JSONDecoder().decode(Note.self, from: Data("{}".utf8)).tags == [])
+    @Test func rejectsANameThatIsNotTheTargetsID() {
+        #expect(throws: DecodingError.self) { try decode(Folder.self, #"{"attachments":[{"recordName":"Attachment:a","action":"none"}]}"#) }
     }
 
     @Test func roundTrips() throws {
-        let model = Note(tags: [id(a), id(b)])
+        let model = Note(tags: [a, b])
         #expect(try JSONDecoder().decode(Note.self, from: JSONEncoder().encode(model)) == model)
         #expect(try JSONRepresentation(model).decode(Note.self) == model)
-    }
-
-    @Test func fetchedLinksSortByOrderWithUnplacedLinksLast() {
-        let links = [
-            link("Note.tags", from: note, to: a, order: 4),
-            link("Note.tags", from: note, to: c, inverseOrder: 0),
-            link("Note.tags", from: note, to: b, order: 0),
-        ]
-        let model = References<Tag>(links, from: id(note) as RecordID<Note>, action: .deleteSelf)
-        #expect(model.wrappedValue == [id(b), id(a), id(c)])
-        #expect(model.action == .deleteSelf)
+        let tag = Tag(notes: [a])
+        #expect(try JSONRepresentation(tag).decode(Tag.self) == tag)
     }
 }

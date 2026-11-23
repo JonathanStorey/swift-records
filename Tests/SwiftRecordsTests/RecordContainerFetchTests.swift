@@ -20,8 +20,8 @@ private struct Note: Codable, Identifiable, Mergeable {
     var tags: [String] = []
     var address: Address? = nil
     var stops: [Address] = []
-    @Reference var folder: RecordID<Folder>? = nil
-    @References var related: [RecordID<Folder>] = []
+    @Reference<Folder> var folder: Folder.ID? = nil
+    @References<Folder> var related: [Folder.ID] = []
     @Asset var picture: Data? = nil
 }
 
@@ -117,33 +117,33 @@ private struct Note: Codable, Identifiable, Mergeable {
     }
 
     @Test func filtersByAReference() throws {
-        let folder = RecordID<Folder>(name: UUID(), zone: notes)
+        let folder = UUID()
         try save(Note(title: "Filed", folder: folder), Note(title: "Loose"))
-        let wanted: RecordID<Folder>? = folder
+        let wanted: UUID? = folder
 
         let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.folder == wanted }).map(\.title)
         #expect(titles == ["Filed"])
     }
 
     @Test func filtersByReferences() throws {
-        let folder = RecordID<Folder>(name: UUID(), zone: notes)
-        try save(Note(title: "Linked", related: [RecordID(name: UUID(), zone: notes), folder]), Note(title: "Unlinked"))
+        let folder = UUID()
+        try save(Note(title: "Linked", related: [UUID(), folder]), Note(title: "Unlinked"))
 
         let titles = try container.fetch(Note.self, in: notes, predicate: #Predicate { $0.related.contains(folder) }).map(\.title)
         #expect(titles == ["Linked"])
     }
 
-    @Test func fetchesRelationshipsByKeyPathAndRecord() throws {
+    @Test func fetchesRelationshipsByPropertyAndRecord() throws {
         let note = UUID().uuidString, tag = UUID().uuidString, other = UUID().uuidString
-        try container.save(our: Relationship(keyPath: "Note.tags", from: note, to: tag), zone: notes)
-        try container.save(our: Relationship(keyPath: "Note.tags", from: other, to: tag), zone: notes)
-        try container.save(our: Relationship(keyPath: "Note.links", from: note, to: other), zone: notes)
+        try container.save(our: Relationship(between: ("Note.tags", note), and: ("Tag.notes", tag)), zone: notes)
+        try container.save(our: Relationship(between: ("Note.tags", other), and: ("Tag.notes", tag)), zone: notes)
+        try container.save(our: Relationship(between: ("Note.links", note), and: ("Note.backlinks", other)), zone: notes)
         let keyPath = "Note.tags"
 
-        let links = try container.fetch(Relationship.self, in: notes, predicate: #Predicate {
-            $0.keyPath == keyPath && $0.references.contains(note)
+        let found = try container.fetch(Relationship.self, in: notes, predicate: #Predicate {
+            $0.keyPaths.contains(keyPath) && $0.references.contains(note)
         })
-        #expect(links.map { $0.target(from: note) } == [tag])
+        #expect(found.map { $0.target(from: note, keyPath: keyPath) } == [tag])
     }
 
     @Test func readsTheContainersCopyOfAnAsset() throws {

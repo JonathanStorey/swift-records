@@ -124,6 +124,8 @@ extension RecordContainer {
     ///   `"Page::Y2Fmw6k"` for `"café"`, which keeps the name to CloudKit's ASCII, with no
     ///   character that needs escaping in a URL.
     ///
+    /// A ``Relationship``'s id is its name as it is, since it is already one.
+    ///
     /// The same id always names the same record, so two devices that create it apart
     /// save one record. The type is part of the name because a record name is unique in
     /// its zone across every type. ``id(_:fromRecordName:)`` reads the id back.
@@ -133,9 +135,13 @@ extension RecordContainer {
     static func recordName(for id: any Encodable, type: String) throws -> String {
         if let id = id as? UUID { return id.uuidString }
         let text = try (id as? String) ?? JSONRepresentation(id).description
-        let name = text.unicodeScalars.allSatisfy(Unicode.Scalar.isPlainRecordName)
-            ? type + ":" + text
-            : type + "::" + Data(text.utf8).base64URLEncoded
+        let name = if type == recordType(of: Relationship.self) {
+            text   // already a record name, and one no other record can have
+        } else if text.unicodeScalars.allSatisfy(Unicode.Scalar.isPlainRecordName) {
+            type + ":" + text
+        } else {
+            type + "::" + Data(text.utf8).base64URLEncoded
+        }
         guard name.utf8.count <= 255 else {
             throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id."))
         }
@@ -145,7 +151,8 @@ extension RecordContainer {
     /// The id that ``recordName(for:type:)`` made `name` from, or `nil` when `name` is not
     /// one it made, or its id does not decode as `ID`.
     static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID? {
-        if ID.self == UUID.self { return UUID(uuidString: name) as? ID }
+        // CloudKit names are case-sensitive, so only the uppercase name reads back as the UUID.
+        if ID.self == UUID.self { return UUID(uuidString: name).flatMap { $0.uuidString == name ? $0 : nil } as? ID }
         guard let colon = name.firstIndex(of: ":") else { return nil }
         let rest = name[name.index(after: colon)...]
         let text: String
