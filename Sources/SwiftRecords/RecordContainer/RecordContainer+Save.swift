@@ -84,12 +84,12 @@ extension RecordContainer {
     /// `json` waits in `theirs` with the reason in `error`.
     func save(their json: JSONRepresentation, id: String, zone: Zone, type: String, metadata: Data?) throws(DatabaseError) {
         // Looked up before the row is locked, since the lookup takes the same lock.
-        let registered = Result { try registeredType(named: type) }
+        let registered = Result { try registeredType(named: type) }, side = favoring
         let rowID = RowID(name: id, zone: zone)
         try update(id: rowID, inserting: Row(id: id, zone: zone, type: type)) { row in
             row.metadata = metadata
             row.receive(json) { ours, theirs, base in
-                try merged(ours, with: theirs, from: base, as: registered.get(), id: rowID)
+                try merged(ours, with: theirs, from: base, as: registered.get(), id: rowID, favoring: side).value
             }
         }
     }
