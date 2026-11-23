@@ -264,8 +264,9 @@ extension RecordContainer {
     ///
     /// Each row's value is this device's version, `ours`, or else the server's, `base`. Rows
     /// marked deleted are left out, and so is a row whose value does not decode as `T`, such
-    /// as one a newer version of the app wrote. Each value is decoded and tested as SQLite
-    /// reads its row, so only the matches are kept in memory. With no `order`, the values
+    /// as one a newer version of the app wrote. The part of `predicate` SQLite can test, by
+    /// ``filter(for:)``, narrows the rows first, and each row left is decoded and tested as
+    /// SQLite reads it, so only the matches are kept in memory. With no `order`, the values
     /// keep no particular order. Each `@References(inverse:)` list is filled from the zone's
     /// ``Relationship`` records before its record decodes, so `predicate` can test it.
     ///
@@ -273,13 +274,21 @@ extension RecordContainer {
     /// let drafts = try container.fetch(Note.self, in: "Notes", predicate: #Predicate { $0.isDraft }, order: [SortDescriptor(\.title)])
     /// ```
     func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
+        try fetch(type, in: zone, where: predicate.flatMap(Self.filter(for:)), predicate: predicate, order: order)
+    }
+
+    /// The saved value of every `T` in `zone` whose row `filter` keeps and `predicate`
+    /// accepts, sorted by `order`. `filter` only narrows the rows that decode, so it must
+    /// keep every row that `predicate` accepts.
+    func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
         var values: [T] = []
         var failure: (any Error)?
-        let lists = type == Relationship.self ? [:] : try relationshipLists(in: zone, type: Self.recordType(of: type))
+        let recordType = Self.recordType(of: type)
+        let lists = type == Relationship.self ? [:] : try relationshipLists(in: zone, type: recordType, where: filter)
         try run("""
             SELECT id, COALESCE(ours, base) FROM record
-            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0
-            """, Self.recordType(of: type), zone.name, zone.owner) { (statement) throws(DatabaseError) in
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter?.clause ?? "1")
+            """, values: [recordType, zone.name, zone.owner] + (filter?.values ?? [])) { (statement) throws(DatabaseError) in
             guard failure == nil,
                   let name = statement.text(at: 0),
                   let json = (try? statement.json(at: 1))??.relating(lists[name]),
@@ -368,6 +377,11 @@ private extension RecordContainer {
 
     /// Prepares `sql`, binds `values` in order, and steps through it, passing each result row to `body`.
     func run(_ sql: String, _ values: Any?..., each body: (OpaquePointer) throws(DatabaseError) -> Void = { _ in }) throws(DatabaseError) {
+        try run(sql, values: values, each: body)
+    }
+
+    /// Prepares `sql`, binds `values` in order, and steps through it, passing each result row to `body`.
+    func run(_ sql: String, values: [Any?], each body: (OpaquePointer) throws(DatabaseError) -> Void) throws(DatabaseError) {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw DatabaseError(code: sqlite3_errcode(connection), connection: connection)
@@ -381,6 +395,8 @@ private extension RecordContainer {
             case let text as String: sqlite3_bind_text(statement, index, text, -1, transient)
             case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
             case let flag as Bool: sqlite3_bind_int(statement, index, flag ? 1 : 0)
+            case let integer as Int64: sqlite3_bind_int64(statement, index, integer)
+            case let number as Double: sqlite3_bind_double(statement, index, number)
             default: sqlite3_bind_null(statement, index)
             }
         }

@@ -305,7 +305,23 @@ A record with an `@Encrypted` value cannot be saved to `Zone.public`, because th
 
 `fetch(_:in:predicate:order:)` reads every row of one type in one zone. The `record_type` index on `(type, zone, owner)` finds them without scanning the table. Each row's value is `ours`, or else `base`, and rows marked deleted are left out.
 
-SQLite cannot evaluate a Swift `#Predicate`, so the rest happens in Swift as SQLite steps through the rows. Each value has its asset paths resolved, is decoded as `T`, and is kept only if the predicate accepts it. A row that does not decode, such as one a newer version of the app wrote, is skipped. A predicate that throws, such as a force unwrap of `nil`, stops the fetch and throws. Only matches stay in memory, and they are sorted by `order` at the end.
+SQL narrows and Swift decides. `filter(for:)` translates every part of the predicate that SQLite can test into a `WHERE` condition, and leaves out each part it cannot, so the condition only ever keeps more rows than the predicate would. A key path finds where its value is stored by reading it on `JSONSchema.placeholder(for:)`, whose values are each unique, and whose `flags` give each `Bool` a copy of its own. Only a stored property translates, since a computed one is not in the JSON, and its value is read with `json_extract` on `COALESCE(ours, base)`.
+
+| Swift | SQL |
+| --- | --- |
+| `$0.title == "x"`, `!=` | `json_extract(…, '$."heading"') IS ?`, `IS NOT ?` |
+| `<`, `<=`, `>`, `>=` | the same operator |
+| `$0.due == nil` | `IS NULL` |
+| `$0.isPinned` | `IS 1` |
+| `ids.contains($0.id)` | `IN (SELECT value FROM json_each(?))`, with the list bound as one JSON array |
+| `$0.tags.contains(tag)` | `EXISTS` over the list on the record, or over the `Relationship` rows named for `Note.tags` |
+| `&&` | both sides, or the one that translates |
+| `\|\|` | both sides, or nothing |
+| `!` | `NOT`, only of a condition that is exact |
+
+Text compares by its UTF-8 bytes, as SQLite stores it, so two spellings Swift treats as equal, such as a composed and a decomposed accent, do not match in SQL.
+
+Then, as SQLite steps through the rows it keeps, each value has its asset paths resolved, is decoded as `T`, and is kept only if the predicate accepts it. A row that does not decode, such as one a newer version of the app wrote, is skipped. A predicate that throws, such as a force unwrap of `nil`, stops the fetch and throws. Only matches stay in memory, and they are sorted by `order` at the end.
 
 The same function finds `Relationship` rows, for example `#Predicate { $0.keyPaths.contains("Note.tags") && $0.references.contains(name) }`.
 
@@ -317,7 +333,7 @@ When the list encodes, it writes a `RelationshipList` instead of an array: its r
 
 `save(our:)` takes each top-level `RelationshipList` out of the record's JSON, then `relationshipChanges(_:of:type:zone:)` compares it with the zone's relationships. A list owns the relationships with a side that is the record in its property. A target with no relationship gets one, a relationship whose target left the list is deleted, and a relationship is saved only when it changes, so an unchanged list writes nothing. Orders are kept while they still increase along the list, so removing a target renumbers nothing. A property already paired with another property, on the record or on a new target, throws, because the two key paths do not point at each other. The record and its relationships are written in one transaction.
 
-`fetch(_:in:predicate:order:)` reads the zone's relationships once with `relationshipLists(in:type:)`, groups each side by record and coding key, sorts each list by its side's order with unplaced relationships last, and puts each `RelationshipList` into its record's JSON before decoding, so the predicate sees the full list. A record in its own symmetric list is listed once. A record with no relationships has no list to put in, so it decodes from a missing key with no storage, and saving it leaves every relationship alone.
+`fetch(_:in:predicate:order:)` reads the relationships once with `relationshipLists(in:type:where:)`, only those with a side of the fetched type, and, with a translated predicate, only those with a side among the rows it keeps. Relationship ids begin with their properties, as in `Note.tags~Tag.notes:`, so `instr` finds a type's relationships without decoding the rest. `relationshipLists` groups each side by record and coding key, sorts each list by its side's order with unplaced relationships last, and puts each `RelationshipList` into its record's JSON before decoding, so the predicate sees the full list. A record in its own symmetric list is listed once. A record with no relationships has no list to put in, so it decodes from a missing key with no storage, and saving it leaves every relationship alone.
 
 `delete(our:id:zone:)` deletes every relationship the record is a side of, found by `relationships(of:type:in:)`, in the same transaction as the record. A `Relationship` merges each side's order on its own, so two devices that reorder opposite sides both keep their change. Its id is already a record name, so `recordName(for:type:)` uses it as it is.
 
@@ -396,7 +412,11 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The saved values of one type in one zone, filtered and sorted. |
-| `func relationshipLists(in zone: Zone, type: String) throws -> [String: [String: RelationshipList]]` | Each record's relationship lists in a zone, by record name and coding key. |
+| `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The same, with the rows narrowed by `filter` first. |
+| `typealias SQLFilter = (clause: String, values: [Any?], isExact: Bool)` | A `WHERE` condition, its bound values, and whether it keeps exactly what its Swift source accepts. |
+| `static func filter<T: Decodable>(for predicate: Predicate<T>) -> SQLFilter?` | The part of a predicate SQLite can test. |
+| `static func Relationship.filter(type: String? = nil, among records: (clause: String, values: [Any?])?) -> SQLFilter?` | Relationships with a side of `type` and a side among `records`. |
+| `func relationshipLists(in zone: Zone, type: String, where filter: SQLFilter? = nil) throws -> [String: [String: RelationshipList]]` | Each record's relationship lists in a zone, by record name and coding key, for the rows `filter` keeps. |
 | `func relationshipChanges(_ lists:of name:type:zone:) throws -> (saved: [Relationship], deleted: [Relationship])` | The relationships to save and delete so a record holds its lists. |
 | `func relationships(of name: String, type: String, in zone: Zone) throws -> [Relationship]` | Every relationship a record is a side of. |
 | `func row(id: RowID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |

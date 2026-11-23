@@ -9,10 +9,17 @@ extension RecordContainer {
     /// to `Note`, puts the other side's record in that side's list. Each list is sorted by
     /// its side's order, with unplaced relationships last. A record related to itself
     /// through one symmetric property is listed once.
-    func relationshipLists(in zone: Zone, type: String) throws -> [String: [String: RelationshipList]] {
+    ///
+    /// Only the relationships with a side of `type` are read, and with `filter`, only those
+    /// with a side among the records of `type` that `filter` keeps.
+    func relationshipLists(in zone: Zone, type: String, where filter: SQLFilter? = nil) throws -> [String: [String: RelationshipList]] {
         let prefix = type + "."
         var found: [String: [String: (inverse: String, targets: [(name: String, order: Int?, id: String)])]] = [:]
-        for relationship in try fetch(Relationship.self, in: zone) where relationship.isWellFormed {
+        let records = filter.map { filter in
+            (clause: "SELECT id FROM record WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)",
+             values: [type, zone.name, zone.owner] + filter.values)
+        }
+        for relationship in try fetch(Relationship.self, in: zone, where: Relationship.filter(type: type, among: records)) where relationship.isWellFormed {
             let (keyPaths, references) = (relationship.keyPaths, relationship.references)
             for side in [0, 1] where keyPaths[side].hasPrefix(prefix) {
                 if side == 1, keyPaths[0] == keyPaths[1], references[0] == references[1] { continue }
@@ -44,7 +51,9 @@ extension RecordContainer {
     /// the two sides' key paths do not point at each other.
     func relationshipChanges(_ lists: [(key: String, list: RelationshipList)], of name: String, type: String, zone: Zone) throws -> (saved: [Relationship], deleted: [Relationship]) {
         guard !lists.isEmpty else { return ([], []) }
-        let all = try fetch(Relationship.self, in: zone).filter(\.isWellFormed)
+        let targets = lists.flatMap { $0.list.relationships.map(\.recordName) }
+        let all = try fetch(Relationship.self, in: zone, where: Relationship.filter(among: (clause: "SELECT value FROM json_each(?)", values: [JSONRepresentation.array(([name] + targets).map(JSONRepresentation.string)).description])))
+            .filter(\.isWellFormed)
         var saved: [Relationship] = [], deleted: [Relationship] = []
         for (key, list) in lists {
             let keyPath = type + "." + key
@@ -90,7 +99,7 @@ extension RecordContainer {
 
     /// Every ``Relationship`` in `zone` with a side that is the record `name` of type `type`.
     func relationships(of name: String, type: String, in zone: Zone) throws -> [Relationship] {
-        try fetch(Relationship.self, in: zone).filter { relationship in
+        try fetch(Relationship.self, in: zone, where: Relationship.filter(type: type, among: (clause: "SELECT ?", values: [name]))).filter { relationship in
             relationship.isWellFormed && [0, 1].contains { relationship.references[$0] == name && relationship.keyPaths[$0].hasPrefix(type + ".") }
         }
     }
