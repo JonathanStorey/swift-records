@@ -49,6 +49,11 @@ public final class RecordContainer: @unchecked Sendable {
     /// `nil` outside a transaction. Read and written while locked, only by `transaction(_:)`
     /// and `sweepAssets`.
     private var assetsToSweep: Set<RowID>?
+    /// Each live ``changes()`` stream, by a key its termination removes. Read and written while locked.
+    var listeners: [UUID: AsyncStream<Change>.Continuation] = [:]
+    /// The `sequence` of the last `record_change` row reported to ``changes()``. Read and
+    /// written while locked.
+    private var reportedChange: Int64 = 0
 
     /// An empty container held in memory, with no record types registered.
     convenience init() {
@@ -81,6 +86,8 @@ public final class RecordContainer: @unchecked Sendable {
         // WAL lets a read run beside a write and makes each commit cheaper.
         try execute("PRAGMA journal_mode = WAL")
         try execute(Self.createTable)
+        try purgeChanges()
+        reportedChange = try latestChange()
     }
 
     deinit {
@@ -104,6 +111,13 @@ extension DatabaseError {
 }
 
 extension RecordContainer {
+    /// The changes one transaction committed: who made them, and the rows they changed, or
+    /// `nil` when any row may have changed.
+    typealias Change = (author: String?, ids: Set<RowID>?)
+
+    /// The author of the changes the sync engine saves.
+    static let syncAuthor = "sync"
+
     /// The database file: `default.records` in Application Support, or in the Application
     /// Support folder of `appGroup`'s shared container. The folder is created if needed.
     static func storeURL(appGroup: String?) throws(DatabaseError) -> URL {
@@ -138,10 +152,16 @@ extension RecordContainer {
     /// The result of `body`, run as one SQLite transaction: every write in it commits
     /// together, or, when it throws, none does.
     ///
+    /// Each change it makes to the `record` table is logged in `record_change`, stamped with
+    /// `author` just before it commits, and reported to every ``changes()`` stream once it has.
+    /// A rollback removes the log rows with the rest. Inside another transaction, `body`
+    /// joins it, and the outer transaction's `author` stands.
+    ///
     /// Asset files no longer used are removed only once it ends, so a rolled-back row
     /// still finds its files, and files copied in for rows that never landed are removed.
-    func transaction<T>(_ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T {
+    func transaction<T>(author: String? = nil, _ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T {
         try locked { () throws(DatabaseError) -> T in
+            guard sqlite3_get_autocommit(connection) != 0 else { return try body() }
             assetsToSweep = []
             defer {
                 let ids = assetsToSweep ?? []
@@ -156,12 +176,48 @@ extension RecordContainer {
             try execute("BEGIN IMMEDIATE")
             do throws(DatabaseError) {
                 let result = try body()
+                try stampChanges(author: author)
+                try purgeChanges()
                 try execute("COMMIT")
+                reportChanges()
                 return result
             } catch {
                 try? execute("ROLLBACK")
                 throw error
             }
+        }
+    }
+
+    /// A stream of every committed change to the container's records, one element per
+    /// transaction, including those another connection to the same file committed. It
+    /// ends when the task reading it is cancelled.
+    ///
+    /// An element's `ids` is `nil` when changes were purged before this connection read
+    /// them, so any record may have changed.
+    ///
+    /// ```swift
+    /// for await change in container.changes() where change.author != "context" {
+    ///     reload(change.ids)
+    /// }
+    /// ```
+    func changes() -> AsyncStream<Change> {
+        let (stream, continuation) = AsyncStream<Change>.makeStream()
+        let key = UUID()
+        continuation.onTermination = { [weak self] _ in
+            self?.locked { self?.listeners[key] = nil }
+        }
+        locked { listeners[key] = continuation }
+        return stream
+    }
+
+    /// Hands each `record_change` row logged since the last report to every ``changes()``
+    /// stream. Runs while locked, after a commit. A failed read reports nothing, and its
+    /// rows wait for the next commit.
+    private func reportChanges() {
+        guard let (last, changes) = try? loggedChanges(after: reportedChange) else { return }
+        reportedChange = last
+        for change in changes {
+            for listener in listeners.values { listener.yield(change) }
         }
     }
 

@@ -36,7 +36,7 @@ extension RecordContainer {
     /// try container.save(their: changes.modifications.map(\.record))
     /// ```
     func save(their records: some Sequence<CKRecord>) throws(DatabaseError) {
-        try transaction { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             for record in records { try save(their: record) }
         }
     }
@@ -44,7 +44,7 @@ extension RecordContainer {
     /// Saves each of `records`, which this device sent and the server saved, as
     /// `save(sent:)` does for one record, in one transaction.
     func save(sent records: some Sequence<CKRecord>) throws(DatabaseError) {
-        try transaction { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             for record in records { try save(sent: record) }
         }
     }
@@ -52,7 +52,7 @@ extension RecordContainer {
     /// Saves that the server no longer has each record in `ids`, as
     /// `save(deleted:)` does for one id, in one transaction.
     func save(deleted ids: some Sequence<CKRecord.ID>) throws(DatabaseError) {
-        try transaction { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             for id in ids { try save(deleted: id) }
         }
     }
