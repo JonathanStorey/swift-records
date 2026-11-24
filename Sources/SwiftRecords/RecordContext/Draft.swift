@@ -23,7 +23,12 @@ import Versioning
     /// `base`. A field only `theirs` changed comes in, and a field the user changed stays.
     func rebase(onto theirs: Record) {
         let strategy = RecordMergeStrategy<Record>(favoring: .ours)
-        ours = if let base { (try? strategy.merge(base: base, ours: ours, theirs: theirs)) ?? ours } else { (try? strategy.merge(ours: ours, theirs: theirs)) ?? ours }
+        if let base {
+            ours = (try? strategy.merge(base: base, ours: ours, theirs: theirs)) ?? ours
+        } else {
+            // A new record that the saved value overtook: a two-way merge.
+            ours = (try? strategy.merge(ours: ours, theirs: theirs)) ?? ours
+        }
         base = theirs
     }
 
