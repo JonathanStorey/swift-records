@@ -14,6 +14,8 @@ import Foundation
 public final class RecordContext {
     /// The container this context reads from and saves into.
     public let container: RecordContainer
+    /// The open drafts, each a ``Draft`` of its record's type, by the row they edit.
+    var drafts: [RecordContainer.RowID: AnyObject] = [:]
 
     /// A new context on `container`, with no edits.
     init(_ container: RecordContainer) {

@@ -32,3 +32,8 @@ The container keeps its main context, and the context keeps its container. Once 
 | `init(_ container: RecordContainer)` | A new context with no edits. Internal. |
 | `@MainActor public var mainContext: RecordContext` on `RecordContainer` | The context views use, made once and kept. |
 | `@MainActor var storedMainContext: RecordContext?` on `RecordContainer` | Where the container keeps it. Internal. |
+| `@Observable final class Draft<Record: Codable>` | A record being edited and not saved. Internal. |
+| `var base: Record?`, `var ours: Record` on `Draft` | The saved value the edit started from, and the edit. |
+| `func rebase(onto theirs: Record)` on `Draft` | Brings a new saved value in wherever the user did not change it, through `RecordMergeStrategy(favoring: .ours)`, and makes it `base`. |
+| `var hasChanges: Bool` on `Draft` | Whether `ours` differs from `base`, compared as JSON. |
+| `var drafts: [RecordContainer.RowID: AnyObject]` on `RecordContext` | The open drafts, each a `Draft` of its record's type. Internal. |
