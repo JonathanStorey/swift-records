@@ -37,7 +37,7 @@ extension RecordContainer {
     /// let container = try RecordContainer(for: [Note.self, Tag.self])
     /// let preview = try RecordContainer(for: [Note.self], storage: .inMemory)
     /// ```
-    public convenience init(for types: [any (Codable & Mergeable).Type], storage: Storage = .local) throws(DatabaseError) {
+    public convenience init(for types: [any Codable.Type], storage: Storage = .local) throws(DatabaseError) {
         if storage.isInMemory {
             self.init()
             for type in types { register(type) }
@@ -48,7 +48,7 @@ extension RecordContainer {
 
     /// A container stored in the file at `url`, created if it does not exist, with each of
     /// `types` registered, as tests reopen one across launches.
-    convenience init(for types: [any (Codable & Mergeable).Type], url: URL) throws(DatabaseError) {
+    convenience init(for types: [any Codable.Type], url: URL) throws(DatabaseError) {
         try self.init(url: url)
         for type in types { register(type) }
     }
@@ -60,14 +60,14 @@ extension RecordContainer {
     /// ```
     ///
     /// The first type is separate, so at least one type is always given.
-    public convenience init(for type: any (Codable & Mergeable).Type, _ others: any (Codable & Mergeable).Type..., storage: Storage = .local) throws(DatabaseError) {
+    public convenience init(for type: any Codable.Type, _ others: any Codable.Type..., storage: Storage = .local) throws(DatabaseError) {
         try self.init(for: [type] + others, storage: storage)
     }
 }
 
 extension RecordContainer {
     /// A record type the container can merge, decode and encode.
-    typealias RecordType = any (Codable & Mergeable).Type
+    typealias RecordType = any Codable.Type
 
     /// Registers `type`, so its records can merge on arrival by the type's own merge,
     /// ``DefaultMergeStrategy`` unless the type implements another.
@@ -88,7 +88,7 @@ extension RecordContainer {
     /// ```swift
     /// let container = RecordContainer(for: Note.self)
     /// ```
-    private func register<Record: Codable & Mergeable>(_ type: Record.Type) {
+    private func register<Record: Codable>(_ type: Record.Type) {
         let name = Self.recordType(of: type)
         locked { registrations[name] = type }
         guard let schema = try? JSONSchema(for: type) else { return }
@@ -180,7 +180,7 @@ extension RecordContainer {
     ///   stays cleared. Only when a key it lacks stops it decoding, as a version saved before
     ///   a field was added, is each missing key read from the other version, so the older
     ///   shape still decodes and leaves that field unchanged.
-    func merged<Record: Codable & Mergeable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation {
+    func merged<Record: Codable>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation {
         let mine = ours.decoded(as: Record.self, filling: theirs)
         let other = theirs.decoded(as: Record.self, filling: ours)
         let original = base?.decoded(as: Record.self, filling: ours.filling(from: theirs))
@@ -188,7 +188,7 @@ extension RecordContainer {
         switch (mine, other) {
         case let (mine?, other?):
             let strategy = RecordMergeStrategy<Record>(favoring: side)
-            merged = if let original { try mine.merging(with: other, from: original, using: strategy) } else { try mine.merging(with: other, using: strategy) }
+            merged = if let original { try strategy.merge(base: original, ours: mine, theirs: other) } else { try strategy.merge(ours: mine, theirs: other) }
         case let (nil, other?): merged = other
         case (_?, nil): return ours
         case (nil, nil): return theirs

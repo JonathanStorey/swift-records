@@ -124,6 +124,22 @@ private extension RecordContainer {
         #expect(taken == json(Note(id: id, title: "Theirs", body: "Theirs")))
     }
 
+    @Test func aPlainCodableRecordRegistersAndMergesFieldByField() throws {
+        struct Card: Codable, Identifiable {
+            var id: UUID
+            var front = "", back = ""
+        }
+        let container = try RecordContainer(for: Card.self, storage: .inMemory)
+        let id = UUID()
+        let json = { (card: Card) in try JSONRepresentation(card) }
+        try container.save(their: json(Card(id: id)), id: id.uuidString, zone: "Cards", type: "Card", metadata: metadata)
+        try container.save(our: Card(id: id, front: "Ours"), zone: "Cards")
+        try container.save(their: json(Card(id: id, front: "Theirs", back: "Theirs")), id: id.uuidString, zone: "Cards", type: "Card", metadata: metadata)
+
+        let row = try #require(try container.row(id: RecordContainer.RowID(name: id.uuidString, zone: "Cards")))
+        #expect(try row.ours == json(Card(id: id, front: "Ours", back: "Theirs")), "The other side's back merges, and ours keeps its front.")
+    }
+
     @Test func registeringStoresTheTypesSchema() throws {
         let container = RecordContainer.registered()
         let schema = try JSONSchema(for: Note.self)

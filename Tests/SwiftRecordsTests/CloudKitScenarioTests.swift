@@ -191,20 +191,20 @@ private final class Device {
     /// The database file, kept across launches, or `nil` for a device that keeps it in memory.
     let url: URL?
 
-    init(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self], url: URL? = nil) {
+    init(_ server: Server, registering types: [any Codable.Type] = [Draft.self], url: URL? = nil) {
         self.server = server
         self.url = url
         container = url.map { try! RecordContainer(for: types, url: $0) } ?? RecordContainer.inMemory(types)
     }
 
     /// A device that keeps its database in a new file, so it can be launched again.
-    static func onDisk(_ server: Server, registering types: [any (Codable & Mergeable).Type] = [Draft.self]) -> Device {
+    static func onDisk(_ server: Server, registering types: [any Codable.Type] = [Draft.self]) -> Device {
         Device(server, registering: types, url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".records"))
     }
 
     /// This device after the app quits and launches again, perhaps as a newer version that
     /// registers `types`: the same file, holding the sync state the engine saved.
-    func relaunched(registering types: [any (Codable & Mergeable).Type] = [Draft.self]) -> Device {
+    func relaunched(registering types: [any Codable.Type] = [Draft.self]) -> Device {
         let device = Device(server, registering: types, url: url)
         device.known = known
         return device
