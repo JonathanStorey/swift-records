@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import SwiftRecords
+import Versioning
 
 @Suite struct RecordContextTests {
     @MainActor @Test func theMainContextIsMadeOnceAndKept() {
@@ -99,5 +100,82 @@ private struct Page: Codable, Identifiable, Equatable {
         let context = RecordContext(container)
         context.insert(Page(id: "intro", title: "Edited"))
         #expect(try draft(page, in: context)?.base == page)
+    }
+}
+
+private struct Album: Codable, Identifiable {
+    var id = UUID()
+    var name = ""
+    @References<Photo>(inverse: \Photo.albums) var photos: [Photo.ID] = []
+}
+
+private struct Photo: Codable, Identifiable {
+    var id = UUID()
+    @References<Album>(inverse: \Album.photos) var albums: [Album.ID] = []
+}
+
+/// `record(_:id:)` reads the open edit first, then the saved value.
+@Suite struct RecordContextRecordTests {
+    private let container = RecordContainer.inMemory(Note.self, Page.self, Album.self, Photo.self)
+
+    @Test func anOpenEditIsWhatItReads() throws {
+        let saved = Note(title: "Saved")
+        try container.save(our: saved, zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Note(id: saved.id, title: "Edited"))
+        #expect(context.record(Note.self, id: saved.id)?.title == "Edited")
+        #expect(RecordContext(container).record(Note.self, id: saved.id)?.title == "Saved", "Another context sees only what is saved.")
+    }
+
+    @Test func aRecordOnlyTheServerHasReads() throws {
+        let note = Note(title: "Theirs")
+        try container.save(their: JSONRepresentation(note), id: note.id.uuidString, zone: "Records", type: "Note", metadata: nil)
+        #expect(RecordContext(container).record(Note.self, id: note.id) == note)
+    }
+
+    @Test func unsentChangesWinOverTheServersVersion() throws {
+        let note = Note(title: "Theirs")
+        try container.save(their: JSONRepresentation(note), id: note.id.uuidString, zone: "Records", type: "Note", metadata: nil)
+        try container.save(our: Note(id: note.id, title: "Ours"), zone: "Records")
+        #expect(RecordContext(container).record(Note.self, id: note.id)?.title == "Ours")
+    }
+
+    @Test func aMissingOrDeletedRecordIsNil() throws {
+        let context = RecordContext(container)
+        #expect(context.record(Note.self, id: UUID()) == nil)
+        let note = Note(title: "Gone")
+        try container.save(our: note, zone: "Records")
+        try container.delete(our: note, zone: "Records")
+        #expect(context.record(Note.self, id: note.id) == nil)
+    }
+
+    @Test func aRecordInAnotherZoneIsNil() throws {
+        let note = Note(title: "Elsewhere")
+        try container.save(our: note, zone: "Elsewhere")
+        let context = RecordContext(container)
+        #expect(context.record(Note.self, id: note.id) == nil)
+        context.zone = "Elsewhere"
+        #expect(context.record(Note.self, id: note.id) == note)
+    }
+
+    @Test func aValueThatDoesNotDecodeIsNil() throws {
+        let id = UUID()
+        try container.save(their: ["id": .string(id.uuidString), "title": 3], id: id.uuidString, zone: "Records", type: "Note", metadata: nil)
+        #expect(RecordContext(container).record(Note.self, id: id) == nil)
+    }
+
+    @Test func relationshipListsComeBackFilled() throws {
+        let photo = Photo()
+        let album = Album(name: "Trip", photos: [photo.id])
+        try container.save(our: photo, zone: "Records")
+        try container.save(our: album, zone: "Records")   // after the photo, whose empty list would remove it
+        let context = RecordContext(container)
+        #expect(context.record(Album.self, id: album.id)?.photos == [photo.id])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [album.id], "The other side fills too.")
+    }
+
+    @Test func aStringIdFindsItsRecord() throws {
+        try container.save(our: Page(id: "intro", title: "Hello"), zone: "Records")
+        #expect(RecordContext(container).record(Page.self, id: "intro")?.title == "Hello")
     }
 }

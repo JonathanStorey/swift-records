@@ -39,18 +39,46 @@ extension RecordContext {
     public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable {
         let type = RecordContainer.recordType(of: Record.self)
         assert((try? container.registeredType(named: type)) != nil, "\(type) is not registered. Pass it to RecordContainer(for:).")
-        guard let name = try? RecordContainer.recordName(for: record.id, type: type, checkingLength: false) else {
+        guard let id = rowID(of: Record.self, id: record.id) else {
             assertionFailure("The id of \(type) \(record.id) cannot be encoded as a record name.")
             return
         }
-        assert(name.utf8.count <= 255, "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id.")
-        let id = RecordContainer.RowID(name: name, zone: zone)
+        assert(id.name.utf8.count <= 255, "The record name \(id.name) is longer than CloudKit's 255 characters. Use a shorter id.")
         if let draft = drafts[id] as? Draft<Record> {
             draft.ours = record
         } else {
-            let saved = try? container.fetch(Record.self, in: zone, where: (clause: "id = ?", values: [name], isExact: true)).first
-            drafts[id] = Draft(record, base: saved)
+            drafts[id] = Draft(record, base: saved(Record.self, at: id))
         }
+    }
+
+    /// The record of type `type` with the id `id` in ``zone``: the edit open for it, or else
+    /// its saved value, with its relationship lists filled.
+    ///
+    /// Returns `nil` when there is no such record, it is deleted, or its saved value does not
+    /// decode as `type`, as `ModelContext.model(for:)` returns `nil` rather than throwing.
+    ///
+    /// ```swift
+    /// let note = context.record(Note.self, id: noteID)
+    /// ```
+    public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
+        guard let rowID = rowID(of: type, id: id) else { return nil }
+        if let draft = drafts[rowID] as? Draft<Record> { return draft.ours }
+        return saved(type, at: rowID)
+    }
+}
+
+private extension RecordContext {
+    /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
+    /// cannot be encoded. Its name's length is checked at save.
+    func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {
+        guard let name = try? RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: false) else { return nil }
+        return RecordContainer.RowID(name: name, zone: zone)
+    }
+
+    /// The saved value of the row `id` as `type`, with its relationship lists filled, or `nil`
+    /// when there is none, it is deleted, it does not decode, or it cannot be read.
+    func saved<Record: Decodable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Record? {
+        try? container.fetch(type, in: id.zone, where: (clause: "id = ?", values: [id.name], isExact: true)).first
     }
 }
 

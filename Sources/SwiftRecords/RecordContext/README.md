@@ -45,3 +45,13 @@ The container keeps its main context, and the context keeps its container. Once 
 `insert(_:)` writes nothing and never throws, like `ModelContext.insert(_:)`. It holds the Swift value in a `Draft`, so the record is not encoded until `save()`, which throws. The first insert of a record that is already saved reads its saved value, with its relationship lists, as the draft's `base`. If that read fails, `base` stays `nil` and the save merges two ways, so the edit is never lost. A second insert keeps the same `Draft` and replaces only `ours`, so a view watching it keeps watching it.
 
 Two mistakes in an app's code assert in a debug build: inserting a type the container did not register, and an id whose record name is longer than CloudKit's 255 characters. In a release build the draft is kept, and `save()` throws the error.
+
+## Reading
+
+`record(_:id:)` returns the open edit for a record if there is one, and otherwise its saved value, `ours ?? base`, with its relationship lists filled. Every view on a context therefore agrees with what is being edited, as with `ModelContext.model(for:)`. Another context sees only what is saved. It returns `nil` for a record that is missing, deleted, in another zone, or saved in a shape the type cannot decode.
+
+| Declaration | What it does |
+| --- | --- |
+| `public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable` | The open edit, or else the saved value, in `zone`. |
+| `func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID?` (private) | The row in `zone` for a type and id. |
+| `func saved<Record: Decodable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Record?` (private) | The row's saved value, with its relationship lists, or `nil`. |
