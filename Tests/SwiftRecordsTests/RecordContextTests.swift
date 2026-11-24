@@ -179,3 +179,67 @@ private struct Photo: Codable, Identifiable {
         #expect(RecordContext(container).record(Page.self, id: "intro")?.title == "Hello")
     }
 }
+
+/// `insert(_:into:at:)` adds a child to a parent's list in the parent's draft.
+@Suite struct RecordContextInsertIntoTests {
+    private let container = RecordContainer.inMemory(Album.self, Photo.self)
+
+    @Test func aNewChildJoinsASavedParentByItsId() throws {
+        let kept = Photo(), album = Album(name: "Trip", photos: [kept.id])
+        try container.save(our: kept, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        let photo = Photo()
+        context.insert(photo, into: album.id, at: \Album.photos)
+
+        #expect(context.record(Album.self, id: album.id)?.photos == [kept.id, photo.id])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [album.id], "The child is inserted, listing its parent.")
+        #expect(RecordContext(container).record(Album.self, id: album.id)?.photos == [kept.id], "Nothing is saved yet.")
+    }
+
+    @Test func aNewParentAndANewChildAreMadeInOneCall() {
+        let context = RecordContext(container)
+        let album = Album(name: "New"), photo = Photo()
+        context.insert(photo, into: album, at: \.photos)
+        #expect(context.record(Album.self, id: album.id)?.photos == [photo.id])
+        #expect(context.record(Album.self, id: album.id)?.name == "New")
+    }
+
+    @Test func aSavedParentWithNoChildrenLearnsItsInverseFromTheChild() throws {
+        let album = Album(name: "Empty")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        let photo = Photo()
+        context.insert(photo, into: album.id, at: \Album.photos)
+        #expect(context.record(Album.self, id: album.id)?.photos == [photo.id])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [album.id])
+    }
+
+    @Test func bothSidesSaveTheSameRelationship() throws {
+        let context = RecordContext(container)
+        let album = Album(name: "Trip"), photo = Photo()
+        context.insert(photo, into: album, at: \.photos)
+        try container.save(our: try #require(context.record(Photo.self, id: photo.id)), zone: "Records")
+        try container.save(our: try #require(context.record(Album.self, id: album.id)), zone: "Records")
+        let saved = RecordContext(container)
+        #expect(saved.record(Album.self, id: album.id)?.photos == [photo.id], "Saving the album second keeps what the photo saved.")
+        #expect(saved.record(Photo.self, id: photo.id)?.albums == [album.id])
+    }
+
+    @Test func theParentsOpenEditIsKept() throws {
+        let album = Album(name: "Saved")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Album(id: album.id, name: "Renamed"))
+        context.insert(Photo(), into: album, at: \.photos)
+        #expect(context.record(Album.self, id: album.id)?.name == "Renamed", "The stale value passed in is only used for its id.")
+    }
+
+    @Test func aChildAlreadyInTheListIsNotAddedAgain() {
+        let context = RecordContext(container)
+        let album = Album(), photo = Photo()
+        context.insert(photo, into: album, at: \.photos)
+        context.insert(photo, into: album.id, at: \Album.photos)
+        #expect(context.record(Album.self, id: album.id)?.photos == [photo.id])
+    }
+}

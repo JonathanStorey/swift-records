@@ -67,7 +67,69 @@ extension RecordContext {
     }
 }
 
+extension RecordContext {
+    /// Inserts `child` and adds it to the list at `keyPath` of `parent`, both in ``zone``.
+    ///
+    /// The parent's open edit is used, or else its saved value, so only `parent`'s id is read
+    /// from the value passed. A parent with neither is inserted as `parent`, so a new parent
+    /// and a new child can be made in one call. A child already in the list is not added
+    /// again. For a relationship list, the child's own list lists the parent at once too.
+    ///
+    /// ```swift
+    /// context.insert(tag, into: note, at: \.tags)
+    /// ```
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable {
+        if openedDraft(Parent.self, id: parent.id) == nil { insert(parent) }
+        insert(child, into: parent.id, at: keyPath)
+    }
+
+    /// Inserts `child` and adds it to the list at `keyPath` of the parent with the id
+    /// `parentID`, both in ``zone``. The parent's open edit is used, or else its saved value.
+    ///
+    /// ```swift
+    /// context.insert(tag, into: note.id, at: \Note.tags)
+    /// ```
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable {
+        insert(child)
+        guard let parent = openedDraft(Parent.self, id: parentID), let child = openedDraft(Child.self, id: child.id) else {
+            assertionFailure("There is no \(Parent.self) \(parentID) in \(zone.name) to insert into.")
+            return
+        }
+        do {
+            try relate(child, to: parent, at: keyPath)
+        } catch {
+            assertionFailure("\(keyPath) is not a @References list: \(error)")
+        }
+    }
+}
+
 private extension RecordContext {
+    /// The open draft of the record of type `type` with the id `id`, or a new one opened from
+    /// its saved value, or `nil` when it has neither.
+    func openedDraft<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Draft<Record>? where Record.ID: Encodable {
+        guard let rowID = rowID(of: type, id: id) else { return nil }
+        if let draft = drafts[rowID] as? Draft<Record> { return draft }
+        guard let saved = try? container.fetch(type, id: rowID) else { return nil }
+        let draft = Draft(saved, base: saved)
+        drafts[rowID] = draft
+        return draft
+    }
+
+    /// Adds `child` to the list at `keyPath` of `parent`. For a relationship list, also adds
+    /// `parent` to the child's list on the other side, found from either side, since a list
+    /// decoded with no relationships does not know its inverse.
+    func relate<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Draft<Child>, to parent: Draft<Parent>, at keyPath: KeyPath<Parent, [Child.ID]>) throws where Parent.ID: Encodable, Child.ID: Codable {
+        let parentProperty = try RecordContainer.propertyName(of: keyPath)
+        let parentKey = String(parentProperty.drop { $0 != "." }.dropFirst())
+        let childType = RecordContainer.recordType(of: Child.self) + "."
+        let childKey = parent.inverse(ofListAt: parentKey).flatMap { $0.hasPrefix(childType) ? String($0.dropFirst(childType.count)) : nil }
+            ?? child.key(ofListWithInverse: parentProperty)
+        try parent.add(RecordReference(to: Child.self, id: child.ours.id, zone: zone), toListAt: parentKey, inverse: childKey.map { childType + $0 })
+        if let childKey {
+            try child.add(RecordReference(to: Parent.self, id: parent.ours.id, zone: zone), toListAt: childKey, inverse: parentProperty)
+        }
+    }
+
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
     /// cannot be encoded. Its name's length is checked at save.
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {

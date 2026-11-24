@@ -85,7 +85,7 @@ public struct References<Target: Identifiable>: Sendable where Target.ID: Codabl
     /// A list stored as ``Relationship`` records, read back by the target's list at
     /// `inverse`, which names this list in turn.
     public init<SourceID: Codable & Hashable>(wrappedValue: [Target.ID] = [], inverse: KeyPath<Target, [SourceID]> & Sendable) where Target: Decodable {
-        self.init(wrappedValue, action: .none, zone: nil, storage: .relationships, inverse: { try Self.propertyName(of: inverse) })
+        self.init(wrappedValue, action: .none, zone: nil, storage: .relationships, inverse: { try RecordContainer.propertyName(of: inverse) })
     }
 }
 
@@ -109,14 +109,14 @@ struct RelationshipList: Codable, Hashable {
     }
 }
 
-extension References {
+extension RecordContainer {
     /// The property name of a reference list, `"Root.key"`, from a key path to it, such as
     /// `"Note.tags"` for `\Note.tags`.
     ///
     /// The key is the coding key `Root` decodes the property from, found by reading the key
     /// path on a placeholder `Root` whose lists each hold one unique marker id. It needs no
     /// runtime names, so it works in stripped builds and on Linux.
-    fileprivate static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
+    static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
         let recorded = try JSONSchema.placeholder(for: Root.self)
         guard let marked = recorded.value[keyPath: keyPath].first,
               let key = recorded.markers.first(where: { ID.marked($0.key) == marked })?.value.first else {
