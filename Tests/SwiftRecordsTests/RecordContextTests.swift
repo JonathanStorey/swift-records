@@ -107,6 +107,7 @@ private struct Album: Codable, Identifiable {
     var id = UUID()
     var name = ""
     @References<Photo>(inverse: \Photo.albums) var photos: [Photo.ID] = []
+    @References<Photo> var covers: [Photo.ID] = []
 }
 
 private struct Photo: Codable, Identifiable {
@@ -224,6 +225,26 @@ private struct Photo: Codable, Identifiable {
         let saved = RecordContext(container)
         #expect(saved.record(Album.self, id: album.id)?.photos == [photo.id], "Saving the album second keeps what the photo saved.")
         #expect(saved.record(Photo.self, id: photo.id)?.albums == [album.id])
+    }
+
+    @Test func aFieldListTakesTheChildWithoutTouchingTheChild() throws {
+        let first = Photo(), album = Album(name: "Trip", covers: [first.id])
+        try container.save(our: first, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        let photo = Photo()
+        context.insert(photo, into: album.id, at: \Album.covers)
+        #expect(context.record(Album.self, id: album.id)?.covers == [first.id, photo.id])
+        #expect(context.record(Album.self, id: album.id)?.photos == [])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [], "A field list has no other side.")
+    }
+
+    @Test func aFieldListOnANewParentSavesOnTheRecord() throws {
+        let context = RecordContext(container)
+        let album = Album(name: "New"), photo = Photo()
+        context.insert(photo, into: album, at: \.covers)
+        try container.save(our: try #require(context.record(Album.self, id: album.id)), zone: "Records")
+        #expect(RecordContext(container).record(Album.self, id: album.id)?.covers == [photo.id])
     }
 
     @Test func theParentsOpenEditIsKept() throws {
