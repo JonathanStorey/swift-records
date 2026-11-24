@@ -67,6 +67,8 @@ public final class RecordContainer: @unchecked Sendable {
     /// The registration for the store file's Darwin notification, or `nil` in memory.
     private var notifyToken: Int32?
     #endif
+    /// The context ``mainContext`` returns, once it has been made.
+    @MainActor var storedMainContext: RecordContext?
     /// Each live ``transactions()`` stream, by a key its termination removes. Read and written while locked.
     var listeners: [UUID: AsyncStream<RecordTransaction>.Continuation] = [:]
 
