@@ -107,7 +107,7 @@ private struct Album: Codable, Identifiable {
     var id = UUID()
     var name = ""
     @References<Photo>(inverse: \Photo.albums) var photos: [Photo.ID] = []
-    @References<Photo> var covers: [Photo.ID] = []
+    @References<Photo>(action: .deleteSelf) var covers: [Photo.ID] = []
 }
 
 private struct Photo: Codable, Identifiable {
@@ -245,6 +245,7 @@ private struct Photo: Codable, Identifiable {
         context.insert(photo, into: album, at: \.covers)
         try container.save(our: try #require(context.record(Album.self, id: album.id)), zone: "Records")
         #expect(RecordContext(container).record(Album.self, id: album.id)?.covers == [photo.id])
+        #expect(RecordContext(container).record(Album.self, id: album.id)?.$covers.action == .deleteSelf, "An empty list built in code keeps its declared action.")
     }
 
     @Test func theParentsOpenEditIsKept() throws {
@@ -262,5 +263,52 @@ private struct Photo: Codable, Identifiable {
         context.insert(photo, into: album, at: \.photos)
         context.insert(photo, into: album.id, at: \Album.photos)
         #expect(context.record(Album.self, id: album.id)?.photos == [photo.id])
+    }
+}
+
+private struct Shelf: Codable, Identifiable {
+    var id = UUID()
+}
+
+private struct Book: Codable, Identifiable {
+    var id = UUID()
+    @Reference<Shelf>(action: .deleteSelf) var shelf: Shelf.ID? = nil
+    @Reference<Shelf>(isParent: true) var home: Shelf.ID? = nil
+}
+
+/// `insert(_:into:at:)` points a parent's to-one `@Reference` at a child.
+@Suite struct RecordContextInsertIntoReferenceTests {
+    private let container = RecordContainer.inMemory(Shelf.self, Book.self)
+
+    @Test func aNewParentKeepsTheDeclaredAction() throws {
+        let context = RecordContext(container)
+        let book = Book(), shelf = Shelf()
+        context.insert(shelf, into: book, at: \.shelf)
+        let read = try #require(context.record(Book.self, id: book.id))
+        #expect(read.shelf == shelf.id)
+        #expect(read.$shelf.action == .deleteSelf)
+        #expect(context.record(Shelf.self, id: shelf.id) != nil, "The child is inserted too.")
+    }
+
+    @Test func aParentReferenceStaysAParent() throws {
+        let context = RecordContext(container)
+        let book = Book(), shelf = Shelf()
+        context.insert(shelf, into: book, at: \.home)
+        let read = try #require(context.record(Book.self, id: book.id))
+        #expect(read.home == shelf.id)
+        #expect(read.$home.isParent)
+    }
+
+    @Test func aSavedReferenceIsReplacedKeepingItsAction() throws {
+        let old = Shelf(), book = Book(shelf: old.id)
+        try container.save(our: old, zone: "Records")
+        try container.save(our: book, zone: "Records")
+        let context = RecordContext(container)
+        let shelf = Shelf()
+        context.insert(shelf, into: book.id, at: \Book.shelf)
+        let read = try #require(context.record(Book.self, id: book.id))
+        #expect(read.shelf == shelf.id)
+        #expect(read.$shelf.action == .deleteSelf)
+        #expect(RecordContext(container).record(Book.self, id: book.id)?.shelf == old.id, "Nothing is saved yet.")
     }
 }

@@ -57,10 +57,19 @@ context.insert(tag, into: note.id, at: \Note.tags)
 
 A `@References` list cannot be assigned, so the key path is a plain `KeyPath`, and the draft edits the list through its edit's JSON, by the coding key the key path leads to. A child already in the list is not added again. For a relationship list, the child's own list on the other side lists the parent at once, so `record(_:id:)` reads both sides before anything is saved, and the two sides save the same `Relationship`. The other side is found from the parent's list, or else from the child's, since a list decoded with no relationships does not know its inverse.
 
+A key path to a to-one `@Reference` replaces the reference instead of appending. A field list or a to-one reference takes its action, and whether it is a parent, from the property's wrapper, read with `Mirror`, so a value built in code keeps what it declared even when the list is empty or the reference is `nil`. A saved value decoded with an empty list or a `nil` reference has lost them, because Swift never passes the attribute's arguments to `init(from:)`, and then a replaced reference keeps the old one's.
+
 | Declaration | What it does |
 | --- | --- |
 | `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable` | Inserts `child` into `parent`'s list, inserting `parent` too when it is new. |
 | `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id. |
+| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable` | Inserts `child` and points `parent`'s to-one `@Reference` at it. |
+| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id. |
+| `func set(_ reference: RecordReference, at key: String) throws` on `Draft` | Points the to-one reference under `key` at a new target. |
+| `func wrapper(at key: String) -> (any ReferenceAttributes)?` on `Draft` (private) | The property's wrapper, read with `Mirror`, for its declared action and parent flag. |
+| `private protocol ReferenceAttributes` | `action` and `isParent`, adopted by `Reference` and `References`. |
+| `extension Reference: JSONSchema.Markable` | Lets a key path to a to-one reference find its coding key, as lists already could. |
+| `static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, ID?>) throws -> String` on `RecordContainer` | The to-one version of `propertyName(of:)`. |
 | `func relate<Parent, Child>(_ child: Draft<Child>, to parent: Draft<Parent>, at keyPath: KeyPath<Parent, [Child.ID]>) throws` (private) | Adds each side to the other's list. |
 | `func openedDraft<Record>(_ type: Record.Type, id: Record.ID) -> Draft<Record>?` (private) | The open draft, or one opened from the saved value. |
 | `func inverse(ofListAt key: String) -> String?` on `Draft` | The other side of the relationship list under `key`, as in `"Tag.notes"`. |

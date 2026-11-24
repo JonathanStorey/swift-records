@@ -103,6 +103,39 @@ extension RecordContext {
     }
 }
 
+extension RecordContext {
+    /// Inserts `child` and points the reference at `keyPath` of `parent` at it, both in
+    /// ``zone``. The parent is found as for a list, and inserted when it is new. The reference
+    /// keeps its action, and whether it is a parent, from the property.
+    ///
+    /// ```swift
+    /// context.insert(folder, into: note, at: \.folder)
+    /// ```
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable {
+        if openedDraft(Parent.self, id: parent.id) == nil { insert(parent) }
+        insert(child, into: parent.id, at: keyPath)
+    }
+
+    /// Inserts `child` and points the reference at `keyPath` of the parent with the id
+    /// `parentID` at it, both in ``zone``.
+    ///
+    /// ```swift
+    /// context.insert(folder, into: note.id, at: \Note.folder)
+    /// ```
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable {
+        insert(child)
+        guard let parent = openedDraft(Parent.self, id: parentID) else {
+            assertionFailure("There is no \(Parent.self) \(parentID) in \(zone.name) to insert into.")
+            return
+        }
+        do {
+            try parent.set(RecordReference(to: Child.self, id: child.id, zone: zone), at: RecordContainer.propertyName(of: keyPath).codingKey)
+        } catch {
+            assertionFailure("\(keyPath) is not a @Reference: \(error)")
+        }
+    }
+}
+
 private extension RecordContext {
     /// The open draft of the record of type `type` with the id `id`, or a new one opened from
     /// its saved value, or `nil` when it has neither.
@@ -120,7 +153,7 @@ private extension RecordContext {
     /// decoded with no relationships does not know its inverse.
     func relate<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Draft<Child>, to parent: Draft<Parent>, at keyPath: KeyPath<Parent, [Child.ID]>) throws where Parent.ID: Encodable, Child.ID: Codable {
         let parentProperty = try RecordContainer.propertyName(of: keyPath)
-        let parentKey = String(parentProperty.drop { $0 != "." }.dropFirst())
+        let parentKey = parentProperty.codingKey
         let childType = RecordContainer.recordType(of: Child.self) + "."
         let childKey = parent.inverse(ofListAt: parentKey).flatMap { $0.hasPrefix(childType) ? String($0.dropFirst(childType.count)) : nil }
             ?? child.key(ofListWithInverse: parentProperty)
@@ -136,6 +169,11 @@ private extension RecordContext {
         guard let name = try? RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: false) else { return nil }
         return RecordContainer.RowID(name: name, zone: zone)
     }
+}
+
+private extension String {
+    /// The coding key of a property name, `"photos"` for `"Album.photos"`.
+    var codingKey: String { String(drop { $0 != "." }.dropFirst()) }
 }
 
 extension RecordContainer {

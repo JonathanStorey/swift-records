@@ -73,7 +73,7 @@ extension Draft {
             var references = try json.map { try $0.decode([RecordReference].self) } ?? []
             if !references.contains(where: { $0.recordName == reference.recordName }) {
                 var reference = reference
-                reference.action = references.first?.action ?? reference.action
+                reference.action = wrapper(at: key)?.action ?? references.first?.action ?? reference.action
                 references.append(reference)
             }
             list = try JSONRepresentation(references)
@@ -81,4 +81,42 @@ extension Draft {
         if let index { object[index].value = list } else { object.append((key, list)) }
         ours = try JSONRepresentation.object(object).decode()
     }
+
+    /// Points the reference under the coding key `key` at the record `reference` names. The
+    /// action and whether it is a parent come from the property, or else from the reference
+    /// it replaces.
+    func set(_ reference: RecordReference, at key: String) throws {
+        guard case .object(var object) = try JSONRepresentation(ours) else { return }
+        let index = object.firstIndex { $0.key == key }
+        let current = index.flatMap { try? object[$0].value.decode(RecordReference.self) }
+        let wrapper = wrapper(at: key)
+        var reference = reference
+        if wrapper?.isParent ?? current?.isParent ?? false {
+            reference = RecordReference(parent: reference.recordName, zone: reference.zone, owner: reference.owner)
+        } else {
+            reference.action = wrapper?.action ?? current?.action ?? reference.action
+        }
+        let json = try JSONRepresentation(reference)
+        if let index { object[index].value = json } else { object.append((key, json)) }
+        ours = try JSONRepresentation.object(object).decode()
+    }
+
+    /// The reference wrapper under the coding key `key`, found by its property's name. Its
+    /// action survives here when the edit was built in code, though a nil reference or an
+    /// empty list loses it in JSON.
+    private func wrapper(at key: String) -> (any ReferenceAttributes)? {
+        Mirror(reflecting: ours).children.first { $0.label == "_" + key }?.value as? any ReferenceAttributes
+    }
+}
+
+/// What a reference wrapper was declared with.
+private protocol ReferenceAttributes {
+    var action: RecordReference.Action { get }
+    var isParent: Bool { get }
+}
+
+extension Reference: ReferenceAttributes {}
+
+extension References: ReferenceAttributes {
+    fileprivate var isParent: Bool { false }
 }

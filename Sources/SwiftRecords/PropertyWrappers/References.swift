@@ -117,10 +117,21 @@ extension RecordContainer {
     /// path on a placeholder `Root` whose lists each hold one unique marker id. It needs no
     /// runtime names, so it works in stripped builds and on Linux.
     static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
+        try propertyName(of: Root.self) { (root: Root) -> ID? in root[keyPath: keyPath].first }
+    }
+
+    /// The property name of a reference, `"Root.key"`, from a key path to it, such as
+    /// `"Note.folder"` for `\Note.folder`, found the same way.
+    static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, ID?>) throws -> String {
+        try propertyName(of: Root.self) { (root: Root) -> ID? in root[keyPath: keyPath] }
+    }
+
+    /// The property name of the reference whose marker id `marked` reads from a placeholder.
+    private static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of root: Root.Type, marked: (Root) -> ID?) throws -> String {
         let recorded = try JSONSchema.placeholder(for: Root.self)
-        guard let marked = recorded.value[keyPath: keyPath].first,
-              let key = recorded.markers.first(where: { ID.marked($0.key) == marked })?.value.first else {
-            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The key path does not lead to a reference list that \(Root.self) decodes, or \(ID.self) is not an id that encodes as a JSON string or number."))
+        guard let id = marked(recorded.value),
+              let key = recorded.markers.first(where: { ID.marked($0.key) == id })?.value.first else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The key path does not lead to a reference that \(Root.self) decodes, or \(ID.self) is not an id that encodes as a JSON string or number."))
         }
         return "\(RecordContainer.recordType(of: Root.self)).\(key)"
     }
@@ -135,7 +146,7 @@ extension References: JSONSchema.Markable {
     }
 }
 
-private extension Decodable {
+extension Decodable {
     /// An id of this type made from `marker`, decoded from a record name as an id is: the
     /// marker itself, its text, or a number from its first six bytes. `nil` for an id that
     /// encodes as neither a JSON string nor a number.
