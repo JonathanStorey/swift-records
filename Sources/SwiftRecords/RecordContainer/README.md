@@ -422,6 +422,7 @@ Every function below is internal to the module unless marked otherwise.
 | --- | --- |
 | `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The saved values of one type in one zone, filtered and sorted. |
 | `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The same, with the rows narrowed by `filter` first. |
+| `func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T?` | One row's saved value, with its relationship lists, or `nil` when it is missing, deleted or does not decode. |
 | `typealias SQLFilter = (clause: String, values: [Any?], isExact: Bool)` | A `WHERE` condition, its bound values, and whether it keeps exactly what its Swift source accepts. |
 | `static func filter<T: Decodable>(for predicate: Predicate<T>) -> SQLFilter?` | The part of a predicate SQLite can test. |
 | `static func Relationship.filter(type: String? = nil, among records: (clause: String, values: [Any?])?) -> SQLFilter?` | Relationships with a side of `type` and a side among `records`. |

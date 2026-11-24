@@ -54,4 +54,4 @@ Two mistakes in an app's code assert in a debug build: inserting a type the cont
 | --- | --- |
 | `public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable` | The open edit, or else the saved value, in `zone`. |
 | `func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID?` (private) | The row in `zone` for a type and id. |
-| `func saved<Record: Decodable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Record?` (private) | The row's saved value, with its relationship lists, or `nil`. |
+| `func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T?` on `RecordContainer` (internal) | One row's saved value, with its relationship lists, or `nil`. The context calls it with `try?`. |

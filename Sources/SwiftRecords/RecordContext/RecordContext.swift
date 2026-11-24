@@ -47,7 +47,7 @@ extension RecordContext {
         if let draft = drafts[id] as? Draft<Record> {
             draft.ours = record
         } else {
-            drafts[id] = Draft(record, base: saved(Record.self, at: id))
+            drafts[id] = Draft(record, base: try? container.fetch(Record.self, id: id))
         }
     }
 
@@ -63,7 +63,7 @@ extension RecordContext {
     public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
         guard let rowID = rowID(of: type, id: id) else { return nil }
         if let draft = drafts[rowID] as? Draft<Record> { return draft.ours }
-        return saved(type, at: rowID)
+        return try? container.fetch(type, id: rowID)
     }
 }
 
@@ -73,12 +73,6 @@ private extension RecordContext {
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {
         guard let name = try? RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: false) else { return nil }
         return RecordContainer.RowID(name: name, zone: zone)
-    }
-
-    /// The saved value of the row `id` as `type`, with its relationship lists filled, or `nil`
-    /// when there is none, it is deleted, it does not decode, or it cannot be read.
-    func saved<Record: Decodable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Record? {
-        try? container.fetch(type, in: id.zone, where: (clause: "id = ?", values: [id.name], isExact: true)).first
     }
 }
 

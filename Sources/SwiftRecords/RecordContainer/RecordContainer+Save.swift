@@ -303,6 +303,12 @@ extension RecordContainer {
         return order.isEmpty ? values : values.sorted(using: order)
     }
 
+    /// The saved value of the row `id` as `type`, its `ours ?? base` with its relationship
+    /// lists filled, or `nil` when there is no such row, it is deleted, or it does not decode.
+    func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T? {
+        try fetch(type, in: id.zone, where: (clause: "id = ?", values: [id.name], isExact: true)).first
+    }
+
     /// The connection's `PRAGMA data_version`, which changes only when another connection
     /// commits to the file, or 0 when it cannot be read.
     func currentDataVersion() -> Int64 {
