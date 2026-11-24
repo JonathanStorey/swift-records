@@ -131,8 +131,9 @@ extension RecordContainer {
     /// its zone across every type. ``id(_:fromRecordName:)`` reads the id back.
     ///
     /// Throws an `EncodingError` when the name would be longer than CloudKit's 255
-    /// characters, since a shortened name could not be read back as the id.
-    static func recordName(for id: any Encodable, type: String) throws -> String {
+    /// characters, since a shortened name could not be read back as the id, unless
+    /// `checkingLength` is `false`, for a draft whose save checks it.
+    static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String {
         if let id = id as? UUID { return id.uuidString }
         let text = try (id as? String) ?? JSONRepresentation(id).description
         let name = if type == recordType(of: Relationship.self) {
@@ -142,7 +143,7 @@ extension RecordContainer {
         } else {
             type + "::" + Data(text.utf8).base64URLEncoded
         }
-        guard name.utf8.count <= 255 else {
+        guard !checkingLength || name.utf8.count <= 255 else {
             throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id."))
         }
         return name

@@ -37,3 +37,11 @@ The container keeps its main context, and the context keeps its container. Once 
 | `func rebase(onto theirs: Record)` on `Draft` | Brings a new saved value in wherever the user did not change it, through `RecordMergeStrategy(favoring: .ours)`, and makes it `base`. |
 | `var hasChanges: Bool` on `Draft` | Whether `ours` differs from `base`, compared as JSON. |
 | `var drafts: [RecordContainer.RowID: AnyObject]` on `RecordContext` | The open drafts, each a `Draft` of its record's type. Internal. |
+| `public var zone: Zone = "Records"` on `RecordContext` | The zone `insert(_:)` puts a new record in. |
+| `public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Opens a draft for `record`, or replaces the edit of the one already open. |
+
+## Inserting
+
+`insert(_:)` writes nothing and never throws, like `ModelContext.insert(_:)`. It holds the Swift value in a `Draft`, so the record is not encoded until `save()`, which throws. The first insert of a record that is already saved reads its saved value, with its relationship lists, as the draft's `base`. If that read fails, `base` stays `nil` and the save merges two ways, so the edit is never lost. A second insert keeps the same `Draft` and replaces only `ours`, so a view watching it keeps watching it.
+
+Two mistakes in an app's code assert in a debug build: inserting a type the container did not register, and an id whose record name is longer than CloudKit's 255 characters. In a release build the draft is kept, and `save()` throws the error.

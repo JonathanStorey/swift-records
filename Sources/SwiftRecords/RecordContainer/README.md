@@ -411,7 +411,7 @@ Every function below is internal to the module unless marked otherwise.
 | `func register<Record: Codable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
 | `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name. `Relationship` is registered by default. |
 | `static func recordType(of type: Any.Type) -> String` | The record type name, the Swift type's name. |
-| `static func recordName(for id: any Encodable, type: String) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
+| `static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
 | `static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID?` | The id a record name was made from. |
 | `func storedSchema(named name: String) -> JSONSchema?` | The schema a record type was last registered with. |
 | `func store(_ schema: JSONSchema, named name: String)` | Saves a record type's schema. |
