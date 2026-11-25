@@ -174,7 +174,7 @@ Fields the Swift type does not declare are dropped from the merged result, becau
 
 ### The type's own merge
 
-Every registered type conforms to `Mergeable`. A plain `Codable` struct gets the default field-by-field merge with nothing to write. A type can also supply its own merge, by hand or with a strategy, as a counter does with `.rawValue(.sum())`.
+A registered type need only be `Codable`. It gets the default field-by-field merge with nothing to write. A type that also conforms to `Mergeable` can supply its own merge, by hand or with a strategy, as a counter does with `.rawValue(.sum())`, and `Relationship` does.
 
 The default merge encodes the three versions to JSON and merges them under the type's schema, with these rules.
 
@@ -191,7 +191,7 @@ The default merge encodes the three versions to JSON and merges them under the t
 
 ### Every merge settles
 
-`RecordMergeStrategy`, in its own file, is the one `MergeStrategy` the container uses for every record. It runs the type's own merge first, so a hand-written merge such as `Relationship`'s is kept. If that throws a conflict, it runs the merge again with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
+`RecordMergeStrategy`, in its own file, is the one `MergeStrategy` the container uses for every record. When the type is `Mergeable`, it runs the type's own merge first, so a hand-written merge such as `Relationship`'s is kept. A plain `Codable` type, or a `Mergeable` one whose merge throws a conflict, merges with `DefaultMergeStrategy(favoring:)`. This is the same smart merge with one difference. Every `Mergeable` property, `Identifiable` array and dictionary still merges by its own rules, and only a value that nothing settles keeps one side. The side comes from `favoring`.
 
 | `favoring` | At each conflicting value |
 | --- | --- |
@@ -408,7 +408,7 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func register<Record: Codable & Mergeable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
+| `func register<Record: Codable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
 | `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name. `Relationship` is registered by default. |
 | `static func recordType(of type: Any.Type) -> String` | The record type name, the Swift type's name. |
 | `static func recordName(for id: any Encodable, type: String) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
@@ -457,7 +457,7 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func merged<Record>(_ ours: JSONRepresentation, with theirs: JSONRepresentation, from base: JSONRepresentation?, as type: Record.Type, id: RowID, favoring side: KeepMerge<JSONRepresentation>) throws -> JSONRepresentation` | The one merge: decodes, merges by `RecordMergeStrategy`, re-encodes and stores assets. |
-| `struct RecordMergeStrategy<Value: Codable & Mergeable>: MergeStrategy`, `init(favoring side: KeepMerge<JSONRepresentation>)` | The type's own merge, then `DefaultMergeStrategy(favoring:)` where that conflicts. |
+| `struct RecordMergeStrategy<Value: Codable>: MergeStrategy`, `init(favoring side: KeepMerge<JSONRepresentation>)` | A `Mergeable` type's own merge, then `DefaultMergeStrategy(favoring:)` where that conflicts or the type has none. |
 | `func JSONRepresentation.decoded<T>(as:filling:) -> T?` (private) | Decodes as it is, or with missing keys filled from the other version. |
 | `func JSONRepresentation.filling(from:) -> JSONRepresentation` (private) | Adds each top-level key this object lacks from another. |
 
