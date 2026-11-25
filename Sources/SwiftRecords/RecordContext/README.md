@@ -27,18 +27,28 @@ The container keeps its main context, and the context keeps its container. Once 
 
 | Declaration | What it does |
 | --- | --- |
-| `public final class RecordContext` | The context. |
+| `@Observable public final class RecordContext` | The context. Observable, so a view reading through it sees records inserted and deleted. |
 | `public let container: RecordContainer` | The container it reads from and saves into. |
 | `init(_ container: RecordContainer)` | A new context with no edits. Internal. |
 | `@MainActor public var mainContext: RecordContext` on `RecordContainer` | The context views use, made once and kept. |
 | `@MainActor var storedMainContext: RecordContext?` on `RecordContainer` | Where the container keeps it. Internal. |
-| `@Observable final class Draft<Record: Codable>` | A record being edited and not saved. Internal. |
-| `var base: Record?`, `var ours: Record` on `Draft` | The saved value the edit started from, and the edit. |
-| `func rebase(onto theirs: Record)` on `Draft` | Brings a new saved value in wherever the user did not change it, through `RecordMergeStrategy(favoring: .ours)`, and makes it `base`. |
-| `var hasChanges: Bool` on `Draft` | Whether `ours` differs from `base`, compared as JSON. |
-| `var drafts: [RecordContainer.RowID: AnyObject]` on `RecordContext` | The open drafts, each a `Draft` of its record's type. Internal. |
+| `@Observable final class Draft<Record: Codable>` | A record being edited or deleted and not saved, one per record for the context's life. Internal, in `Drafts.swift`. |
+| `enum State { case inserted(Record), deleted }` on `Draft` | The edit, or deleted. A deleted record has no edit. |
+| `var base: Record?`, `fileprivate(set) var state: State` on `Draft` | The saved value the edit started from, and the state, which only `Drafts.swift` sets. |
+| `var ours: Record?`, `var isDeleted: Bool` on `Draft` | The edit, `nil` when deleted. |
+| `func update(_ record: Record)` on `Draft` | Replaces the edit, which also undoes a delete. |
+| `func rebase(onto theirs: Record)` on `Draft` | Brings a new saved value in wherever the user did not change it, through `RecordMergeStrategy(favoring: .ours)`, and makes it `base`. A deleted record only moves its `base`. |
+| `var hasChanges: Bool` on `Draft` | Whether a save has anything to write: a deleted saved record, or `ours` differing from `base` as JSON. |
+| `protocol DraftProtocol: AnyObject` | `isDeleted`, `hasChanges` and `removeReferences(to:)` for a draft of any type. |
+| `struct Drafts: Collection` | The open drafts by row, with elements `(key: RecordContainer.RowID, value: any DraftProtocol)`. Every change goes through it. |
+| `func draft<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Draft<Record>?` on `Drafts` | The row's draft, deleted or not. |
+| `mutating func insert<Record: Codable>(_ record: Record, at id: RecordContainer.RowID, base: () -> Record?)` on `Drafts` | Updates the open draft, or opens one, reading `base` only then. |
+| `mutating func open<Record: Codable>(_ saved: Record, at id: RecordContainer.RowID) -> Draft<Record>` on `Drafts` | Opens a draft on a saved value. |
+| `mutating func remove<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID)` on `Drafts` | Deletes the row and removes it from every other draft's relationship lists in its zone. |
+| `var drafts: Drafts` on `RecordContext` | The open drafts. Internal. |
 | `public var zone: Zone = "Records"` on `RecordContext` | The zone `insert(_:)` puts a new record in. |
-| `public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Opens a draft for `record`, or replaces the edit of the one already open. |
+| `public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Opens a draft for `record`, or replaces the edit of the one already open, undoing a delete. |
+| `public func delete<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Deletes `record` in `zone` until save. |
 
 ## Inserting
 
@@ -76,6 +86,14 @@ A key path to a to-one `@Reference` replaces the reference instead of appending.
 | `func key(ofListWithInverse property: String) -> String?` on `Draft` | The coding key of the relationship list paired with `property`. |
 | `func add(_ reference: RecordReference, toListAt key: String, inverse: String?) throws` on `Draft` | Adds a reference to a field list, or to a relationship list paired with `inverse`. |
 | `static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String` on `RecordContainer` | Moved from `References` and made internal, so the context can find a list's coding key. |
+
+## Deleting
+
+`delete(_:)` writes nothing and never throws, like `ModelContext.delete(_:)`. It goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.
+
+The draft stays in `drafts` after a delete, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id asserts, while inserting into it by value restores it.
+
+Field lists and to-one references to a deleted record are left alone, as CloudKit leaves them to dangle or to cascade through `.deleteSelf` on the server.
 
 ## Reading
 

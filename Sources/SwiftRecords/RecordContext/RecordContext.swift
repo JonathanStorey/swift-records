@@ -59,8 +59,8 @@ extension RecordContext {
     /// ```
     public func delete<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable {
         guard let id = rowID(of: Record.self, id: record.id) else { return }
-        if drafts.draft(Record.self, at: id) == nil, let saved = try? container.fetch(Record.self, id: id) {
-            drafts.open(saved, at: id)
+        if drafts.draft(Record.self, at: id) == nil {
+            drafts.insert(record, at: id) { try? container.fetch(Record.self, id: id) }
         }
         drafts.remove(Record.self, at: id)
     }
@@ -76,7 +76,7 @@ extension RecordContext {
     /// ```
     public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
         guard let rowID = rowID(of: type, id: id) else { return nil }
-        if let draft = drafts.draft(type, at: rowID) { return draft.isDeleted ? nil : draft.ours }
+        if let draft = drafts.draft(type, at: rowID) { return draft.ours }
         return try? container.fetch(type, id: rowID)
     }
 }
@@ -169,9 +169,10 @@ private extension RecordContext {
         let childType = RecordContainer.recordType(of: Child.self) + "."
         let childKey = parent.inverse(ofListAt: parentKey).flatMap { $0.hasPrefix(childType) ? String($0.dropFirst(childType.count)) : nil }
             ?? child.key(ofListWithInverse: parentProperty)
-        try parent.add(RecordReference(to: Child.self, id: child.ours.id, zone: zone), toListAt: parentKey, inverse: childKey.map { childType + $0 })
+        guard let childID = child.ours?.id, let parentID = parent.ours?.id else { return }
+        try parent.add(RecordReference(to: Child.self, id: childID, zone: zone), toListAt: parentKey, inverse: childKey.map { childType + $0 })
         if let childKey {
-            try child.add(RecordReference(to: Parent.self, id: parent.ours.id, zone: zone), toListAt: childKey, inverse: parentProperty)
+            try child.add(RecordReference(to: Parent.self, id: parentID, zone: zone), toListAt: childKey, inverse: parentProperty)
         }
     }
 

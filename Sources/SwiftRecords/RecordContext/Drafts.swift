@@ -2,43 +2,67 @@ import Foundation
 import Observation
 import Versioning
 
-/// A record being edited in a context and not saved yet, or deleted and not saved yet.
+/// A record being edited in a context, or deleted, and not saved yet.
 ///
-/// `base` is the saved value the edit started from, and `ours` is the edit. When the saved
+/// A context keeps one draft for each record it touches, for as long as it has it, so every
+/// view holding the draft sees each change, including a delete and an insert that undoes it.
+///
+/// `base` is the saved value the edit started from, and ``ours`` is the edit. When the saved
 /// value changes underneath, ``rebase(onto:)`` brings the change into `ours` everywhere the
-/// user did not change it. A view reads and writes `ours`, so every view on the same draft
-/// sees each edit as it is made.
+/// user did not change it.
 @Observable final class Draft<Record: Codable> {
+    /// Whether the record is edited or deleted. A deleted record has no edit.
+    enum State {
+        case inserted(Record)
+        case deleted
+    }
+
     /// The saved value the edit started from, or `nil` for a new record.
     var base: Record?
-    /// The user's edit.
-    var ours: Record
-    /// Whether the record is deleted. Only ``Drafts`` sets it, so a delete always removes
-    /// the record from other drafts' relationship lists too.
-    fileprivate(set) var isDeleted = false
+    /// The edit, or deleted. Only this file sets it, so a delete always goes through
+    /// ``Drafts/remove(_:at:)``, which also removes the record from other drafts' lists.
+    fileprivate(set) var state: State
 
     init(_ ours: Record, base: Record?) {
-        self.ours = ours
+        state = .inserted(ours)
         self.base = base
+    }
+
+    /// The user's edit, or `nil` when the record is deleted.
+    var ours: Record? {
+        guard case .inserted(let record) = state else { return nil }
+        return record
+    }
+
+    /// Whether the record is deleted.
+    var isDeleted: Bool { ours == nil }
+
+    /// Replaces the edit with `record`, which also undoes a delete.
+    func update(_ record: Record) {
+        state = .inserted(record)
     }
 
     /// Merges `theirs`, the record's new saved value, into the edit, and makes it the new
     /// `base`. A field only `theirs` changed comes in, and a field the user changed stays.
+    /// A deleted record stays deleted.
     func rebase(onto theirs: Record) {
+        defer { base = theirs }
+        guard let ours else { return }
         let strategy = RecordMergeStrategy<Record>(favoring: .ours)
         if let base {
-            ours = (try? strategy.merge(base: base, ours: ours, theirs: theirs)) ?? ours
+            state = .inserted((try? strategy.merge(base: base, ours: ours, theirs: theirs)) ?? ours)
         } else {
             // A new record that the saved value overtook: a two-way merge.
-            ours = (try? strategy.merge(ours: ours, theirs: theirs)) ?? ours
+            state = .inserted((try? strategy.merge(ours: ours, theirs: theirs)) ?? ours)
         }
-        base = theirs
     }
 
-    /// Whether the record is deleted, or the edit differs from `base`, compared as JSON,
-    /// since a record need not be `Equatable`.
+    /// Whether a save has anything to write: a delete of a saved record, or an edit that
+    /// differs from `base`, compared as JSON, since a record need not be `Equatable`. A
+    /// deleted record that was never saved has nothing.
     var hasChanges: Bool {
-        isDeleted || (try? JSONRepresentation(ours)) != base.flatMap { try? JSONRepresentation($0) }
+        guard let ours else { return base != nil }
+        return (try? JSONRepresentation(ours)) != base.flatMap { try? JSONRepresentation($0) }
     }
 }
 
@@ -63,7 +87,7 @@ extension Draft: DraftProtocol {
             isChanged = true
         }
         // A draft that never listed the record is left alone, so its views are not woken.
-        if isChanged, let edited: Record = try? JSONRepresentation.object(object).decode() { ours = edited }
+        if isChanged, let edited: Record = try? JSONRepresentation.object(object).decode() { state = .inserted(edited) }
     }
 }
 
@@ -91,8 +115,7 @@ struct Drafts: Collection {
     /// open, which reads `base` only then. A deleted draft is restored.
     mutating func insert<Record: Codable>(_ record: Record, at id: RecordContainer.RowID, base: () -> Record?) {
         if let draft = draft(Record.self, at: id) {
-            draft.ours = record
-            draft.isDeleted = false
+            draft.update(record)
         } else {
             storage[id] = Draft(record, base: base())
         }
@@ -106,13 +129,11 @@ struct Drafts: Collection {
         return draft
     }
 
-    /// Deletes the row `id`: a draft never saved is dropped, and any other is marked deleted
-    /// and keeps its `base` for the save. Every other draft in the row's zone drops the
-    /// record from its relationship lists, as its ``Relationship`` records go with it.
+    /// Deletes the row `id`. Its draft stays, so views holding it see the delete, and keeps
+    /// its `base` for the save. Every other draft in the row's zone drops the record from its
+    /// relationship lists, as its ``Relationship`` records go with it.
     mutating func remove<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID) {
-        if let draft = draft(type, at: id) {
-            if draft.base == nil { storage[id] = nil } else { draft.isDeleted = true }
-        }
+        draft(type, at: id)?.state = .deleted
         for (other, draft) in storage where other != id && other.zone == id.zone {
             draft.removeReferences(to: id.name)
         }
@@ -159,7 +180,7 @@ extension Draft {
             list = try JSONRepresentation(references)
         }
         if let index { object[index].value = list } else { object.append((key, list)) }
-        ours = try JSONRepresentation.object(object).decode()
+        state = .inserted(try JSONRepresentation.object(object).decode())
     }
 
     /// Points the reference under the coding key `key` at the record `reference` names. The
@@ -178,14 +199,14 @@ extension Draft {
         }
         let json = try JSONRepresentation(reference)
         if let index { object[index].value = json } else { object.append((key, json)) }
-        ours = try JSONRepresentation.object(object).decode()
+        state = .inserted(try JSONRepresentation.object(object).decode())
     }
 
     /// The reference wrapper under the coding key `key`, found by its property's name. Its
     /// action survives here when the edit was built in code, though a nil reference or an
     /// empty list loses it in JSON.
     private func wrapper(at key: String) -> (any ReferenceAttributes)? {
-        Mirror(reflecting: ours).children.first { $0.label == "_" + key }?.value as? any ReferenceAttributes
+        ours.flatMap { Mirror(reflecting: $0).children.first { $0.label == "_" + key }?.value as? any ReferenceAttributes }
     }
 }
 

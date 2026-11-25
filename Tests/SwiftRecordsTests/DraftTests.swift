@@ -37,13 +37,13 @@ private struct Counted: Codable {
     @Test func aRebaseKeepsBothSidesAdditionsToASet() {
         let draft = Draft(Card(tags: ["a", "mine"]), base: Card(tags: ["a"]))
         draft.rebase(onto: Card(tags: ["a", "theirs"]))
-        #expect(draft.ours.tags == ["a", "mine", "theirs"])
+        #expect(draft.ours?.tags == ["a", "mine", "theirs"])
     }
 
     @Test func aRebaseMergesAMergeablePropertyByItsOwnMerge() {
         let draft = Draft(Counted(hits: Hits(rawValue: 4)), base: Counted(hits: Hits(rawValue: 3)))
         draft.rebase(onto: Counted(hits: Hits(rawValue: 5)))
-        #expect(draft.ours.hits.rawValue == 6, "Both raised it, so it sums.")
+        #expect(draft.ours?.hits.rawValue == 6, "Both raised it, so it sums.")
     }
 
     @Test func aRebaseMovesTheBaseForward() throws {
@@ -56,7 +56,7 @@ private struct Counted: Codable {
     @Test func hasChangesComparesTheEditWithItsBase() {
         let draft = Draft(Card(), base: Card())
         #expect(!draft.hasChanges)
-        draft.ours.front = "Mine"
+        draft.update(Card(front: "Mine"))
         #expect(draft.hasChanges)
         #expect(Draft(Card(), base: nil).hasChanges, "A new record is a change.")
     }
@@ -65,7 +65,7 @@ private struct Counted: Codable {
         let draft = Draft(Card(), base: Card())
         nonisolated(unsafe) var changed = false
         withObservationTracking { _ = draft.ours } onChange: { changed = true }
-        draft.ours.front = "Mine"
+        draft.update(Card(front: "Mine"))
         #expect(changed)
     }
 }

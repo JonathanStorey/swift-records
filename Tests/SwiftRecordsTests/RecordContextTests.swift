@@ -67,7 +67,7 @@ private struct Page: Codable, Identifiable, Equatable {
 
         let draft = try #require(try draft(saved, in: context))
         #expect(draft.base == saved)
-        #expect(draft.ours.title == "Edited")
+        #expect(draft.ours?.title == "Edited")
     }
 
     @Test func insertingAgainKeepsTheDraftAndReplacesTheEdit() throws {
@@ -79,7 +79,7 @@ private struct Page: Codable, Identifiable, Equatable {
 
         let second = try #require(try draft(note, in: context))
         #expect(first === second, "A view watching the draft keeps watching it.")
-        #expect(second.ours.title == "Second")
+        #expect(second.ours?.title == "Second")
         #expect(second.base == nil)
     }
 
@@ -322,13 +322,36 @@ private struct Book: Codable, Identifiable {
         RecordContainer.RowID(name: try RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: R.self)), zone: "Records")
     }
 
-    @Test func aRecordNeverSavedIsDropped() {
+    @Test func aRecordNeverSavedKeepsItsDraftWithNothingToSave() throws {
         let context = RecordContext(container)
         let page = Page(id: "draft")
         context.insert(page)
+        let draft = try #require(context.drafts.draft(Page.self, at: rowID(Page.self, "draft")))
         context.delete(page)
         #expect(context.record(Page.self, id: "draft") == nil)
-        #expect(context.drafts.isEmpty, "There is nothing to delete in the database.")
+        #expect(context.drafts.draft(Page.self, at: try rowID(Page.self, "draft")) === draft, "Views holding the draft see the delete.")
+        #expect(draft.isDeleted && !draft.hasChanges, "There is nothing to delete in the database.")
+    }
+
+    @Test func deletingAndInsertingAgainKeepsTheSameDraftAndNotifiesIt() throws {
+        let context = RecordContext(container)
+        let page = Page(id: "draft")
+        context.insert(page)
+        let draft = try #require(context.drafts.draft(Page.self, at: rowID(Page.self, "draft")))
+        nonisolated(unsafe) var notified = 0
+        withObservationTracking { _ = draft.ours } onChange: { notified += 1 }
+        context.delete(page)
+        withObservationTracking { _ = draft.ours } onChange: { notified += 1 }
+        context.insert(Page(id: "draft", title: "Back"))
+        #expect(notified == 2)
+        #expect(draft.ours?.title == "Back")
+    }
+
+    @Test func deletingARecordNeverSeenLeavesADeletedDraftWithNothingToSave() {
+        let context = RecordContext(container)
+        context.delete(Page(id: "nowhere"))
+        #expect(context.drafts.count == 1)
+        #expect(context.drafts.allSatisfy { !$0.value.hasChanges }, "A delete of a record never saved has nothing to save.")
     }
 
     @Test func aSavedRecordIsMarkedDeletedUntilSave() throws {
@@ -364,7 +387,7 @@ private struct Book: Codable, Identifiable {
         #expect(context.record(Album.self, id: album.id)?.photos == [added.id])
         context.delete(added)
         #expect(context.record(Album.self, id: album.id)?.photos == [])
-        #expect(context.drafts.count == 2, "The album and the deleted saved photo. The new photo is dropped.")
+        #expect(context.drafts.count == 3, "The album and both photos, each deleted photo kept for views holding it.")
     }
 
     @Test func aDeletedParentCannotBeFoundButCanBeInsertedAgain() throws {
