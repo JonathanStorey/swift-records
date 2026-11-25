@@ -8,7 +8,7 @@ schemas and merges.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/JonathanStorey/swift-records", branch: "main")
+.package(url: "https://github.com/JonathanStorey/swift-records", from: "0.1.0")
 ```
 
 ```swift
