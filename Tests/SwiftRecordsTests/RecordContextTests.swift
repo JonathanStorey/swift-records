@@ -617,3 +617,48 @@ private struct Broken: Codable, Identifiable {
         #expect(try container.pendingRows().count == before)
     }
 }
+
+/// `rollback()` throws away every unsaved change and keeps the drafts.
+@Suite struct RecordContextRollbackTests {
+    private let container = RecordContainer.inMemory(Page.self, Broken.self)
+
+    @Test func editsDeletesAndInsertsAreUndone() throws {
+        try container.save(our: Page(id: "edited", title: "Saved"), zone: "Records")
+        try container.save(our: Page(id: "deleted", title: "Kept"), zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Page(id: "edited", title: "Typed"))
+        context.delete(Page.self, id: "deleted")
+        context.insert(Page(id: "new"))
+        context.rollback()
+
+        #expect(context.record(Page.self, id: "edited")?.title == "Saved")
+        #expect(context.record(Page.self, id: "deleted")?.title == "Kept")
+        #expect(context.record(Page.self, id: "new") == nil)
+        #expect(context.drafts.count == 3, "The drafts stay for views holding them.")
+        #expect(context.drafts.allSatisfy { !$0.value.hasChanges })
+        try context.save()
+        #expect(try container.pendingRows().count == 2, "Only the two saved records wait to upload.")
+    }
+
+    @Test func aRollbackClearsSaveErrors() {
+        let context = RecordContext(container)
+        context.insert(Broken())
+        #expect(throws: SaveError.self) { try context.save() }
+        #expect(context.error(Broken.self, id: "broken") != nil)
+        context.rollback()
+        #expect(context.error(Broken.self, id: "broken") == nil)
+        #expect(context.record(Broken.self, id: "broken") == nil)
+    }
+
+    @Test func aViewHoldingADraftSeesTheReset() throws {
+        try container.save(our: Page(id: "intro", title: "Saved"), zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Page(id: "intro", title: "Typed"))
+        let draft = try #require(context.drafts.draft(Page.self, at: RecordContainer.RowID(name: "Page:intro", zone: "Records")))
+        nonisolated(unsafe) var notified = false
+        withObservationTracking { _ = draft.ours } onChange: { notified = true }
+        context.rollback()
+        #expect(notified)
+        #expect(draft.ours?.title == "Saved")
+    }
+}

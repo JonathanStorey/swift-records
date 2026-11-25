@@ -85,6 +85,10 @@ protocol DraftProtocol: AnyObject {
     func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError)
     /// Makes what was written the draft's `base`, once the save commits.
     func didSave()
+    /// Throws away the unsaved change: the edit goes back to `base`, and a record never saved
+    /// is deleted. The error is cleared. A draft with neither is left alone, so its views are
+    /// not woken.
+    func revert()
     /// Removes the record named `recordName` from the edit's relationship lists.
     func removeReferences(to recordName: String)
 }
@@ -107,6 +111,12 @@ extension Draft: DraftProtocol {
 
     func didSave() {
         base = ours
+        error = nil
+    }
+
+    func revert() {
+        guard hasChanges || error != nil else { return }
+        state = base.map(State.inserted) ?? .deleted
         error = nil
     }
 

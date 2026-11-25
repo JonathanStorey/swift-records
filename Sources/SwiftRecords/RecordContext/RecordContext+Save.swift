@@ -53,6 +53,19 @@ extension RecordContext {
         if !failures.isEmpty { throw .unsaved(failures) }
     }
 
+    /// Throws away every change not saved, as `ModelContext.rollback()` does.
+    ///
+    /// Each edit goes back to the record's saved value, a deleted record comes back, and a
+    /// record never saved is deleted. Save errors are cleared. The drafts themselves stay, so
+    /// every view holding one sees it reset.
+    ///
+    /// ```swift
+    /// context.rollback()
+    /// ```
+    public func rollback() {
+        for (_, draft) in drafts { draft.revert() }
+    }
+
     /// Why the last ``save()`` could not write the record of type `type` with the id `id` in
     /// ``zone``, or `nil` when it was written, or has not been saved since it changed.
     public func error<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> RecordError? where Record.ID: Encodable {
