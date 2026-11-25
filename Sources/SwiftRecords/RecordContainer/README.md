@@ -409,7 +409,7 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func register<Record: Codable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
-| `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name. `Relationship` is registered by default. |
+| `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name, or `RecordError.notRegistered`. `Relationship` is registered by default. |
 | `static func recordType(of type: Any.Type) -> String` | The record type name, the Swift type's name. |
 | `static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
 | `static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID?` | The id a record name was made from. |
@@ -490,3 +490,23 @@ Every function below is internal to the module unless marked otherwise.
 | `func portable(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Rewrites the row's file URLs as relative names. |
 | `func resolved(_ json: JSONRepresentation, id: RowID) -> JSONRepresentation` | Turns relative names back into URLs. |
 | `var Mirror.properties: [(name: String, value: Any)]` | Each stored property, with a property wrapper under its own name. |
+
+## Errors
+
+Saving or deleting a record throws `RecordError`, a typed error with one case for each way it can fail, each naming the records and properties involved. `save(our:)` and `delete(our:)` are `throws(RecordError)`: the container's own checks throw their case, SQLite's failures become `.database`, and anything else the record's own encoding throws becomes `.unencodable`. Each case has a plain English `errorDescription` from `LocalizedError`, so every message lives in `RecordError.swift`.
+
+| Declaration | What it does |
+| --- | --- |
+| `public enum RecordError: Error, Equatable` | Why a record could not be saved. Also `LocalizedError` and `CustomStringConvertible`. |
+| `case notRegistered(type: String)` | A type not passed to `RecordContainer(for:)`. |
+| `case nameTooLong(name: String)` | A record name over CloudKit's 255 characters. |
+| `case referenceOutsideZone(reference: String, zone: Zone)` | A reference into another zone, which CloudKit cannot follow. |
+| `case missingInverse(property: String)` | A relationship list that does not name its inverse. |
+| `case mismatchedInverse(property: String, inverse: String, pairedWith: String)` | Two relationship lists that do not point at each other. |
+| `case unencodable(type: String, description: String)` | The record's own encoding threw. |
+| `case database(DatabaseError)` | SQLite failed. |
+| `init(_ error: any Error, type: String)` | Any error as a `RecordError` (internal). |
+| `func save<Record: Encodable>(our record: Record, at id: RowID) throws(RecordError)` | `save(our:id:zone:)` for a caller that has the row, as a context does. It checks the name's length and asserts on `@Encrypted` values in `Zone.public`. |
+| `func delete(_ id: RowID, type: String) throws(RecordError)` | `delete(our:id:zone:)` for a caller that has the row. |
+
+A failed `@Asset` copy does not throw: the record keeps the file's own URL, as before.

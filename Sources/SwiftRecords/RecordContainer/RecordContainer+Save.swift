@@ -51,28 +51,46 @@ extension RecordContainer {
     /// ```swift
     /// try container.save(our: page, id: \.slug, zone: "Pages")
     /// ```
-    func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
+    func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
+        let type = Self.recordType(of: Record.self)
+        let rowID: RowID
+        do {
+            rowID = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
+        } catch {
+            throw RecordError(error, type: type)
+        }
+        try save(our: record, at: rowID)
+    }
+
+    /// Saves `record` as this device's version in the row `id`, as
+    /// ``save(our:id:zone:)`` describes, for a caller that already has the row. The row's
+    /// name is checked against CloudKit's 255 characters here.
+    func save<Record: Encodable>(our record: Record, at id: RowID) throws(RecordError) {
+        let type = Self.recordType(of: Record.self), zone = id.zone
         assert(zone != .public || !Mirror(reflecting: record).properties.contains { $0.value is any EncryptedValue },
                "The public database cannot store @Encrypted values, so \(Record.self) cannot be saved to Zone.public.")
-        let type = Self.recordType(of: Record.self)
-        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
-        var json = try JSONRepresentation(record)
-        let lists = try json.removeRelationshipLists()
-        let ours = try Self.text(portable(storingAssets(of: record, in: json.placingReferences(in: zone), id: id), id: id))
-        let changes = try relationshipChanges(lists, of: id.name, type: type, zone: zone)
-        let relationshipType = Self.recordType(of: Relationship.self)
-        let saved = try changes.saved.map { relationship in
-            (id: RowID(name: relationship.id, zone: zone), ours: try Self.text(JSONRepresentation(relationship).placingReferences(in: zone)))
-        }
-        try transaction { () throws(DatabaseError) in
-            try write(ours: ours, id: id, type: type)
-            for relationship in saved { try write(ours: relationship.ours, id: relationship.id, type: relationshipType) }
-            for relationship in changes.deleted { try delete(id: RowID(name: relationship.id, zone: zone)) }
+        guard id.name.utf8.count <= 255 else { throw .nameTooLong(name: id.name) }
+        do {
+            var json = try JSONRepresentation(record)
+            let lists = try json.removeRelationshipLists()
+            let ours = try Self.text(portable(storingAssets(of: record, in: json.placingReferences(in: zone), id: id), id: id))
+            let changes = try relationshipChanges(lists, of: id.name, type: type, zone: zone)
+            let relationshipType = Self.recordType(of: Relationship.self)
+            let saved = try changes.saved.map { relationship in
+                (id: RowID(name: relationship.id, zone: zone), ours: try Self.text(JSONRepresentation(relationship).placingReferences(in: zone)))
+            }
+            try transaction { () throws(DatabaseError) in
+                try write(ours: ours, id: id, type: type)
+                for relationship in saved { try write(ours: relationship.ours, id: relationship.id, type: relationshipType) }
+                for relationship in changes.deleted { try delete(id: RowID(name: relationship.id, zone: zone)) }
+            }
+        } catch {
+            throw RecordError(error, type: type)
         }
     }
 
     /// Saves an `Identifiable` `record` as this device's version, identified by its `id`.
-    func save<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws where Record.ID: Encodable {
+    func save<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
         try save(our: record, id: \.id, zone: zone)
     }
 
@@ -101,18 +119,34 @@ extension RecordContainer {
     /// ```swift
     /// try container.delete(our: page, id: \.slug, zone: "Pages")
     /// ```
-    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
+    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
         let type = Self.recordType(of: Record.self)
-        let id = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
-        let relationships = Record.self == Relationship.self ? [] : try relationships(of: id.name, type: type, in: zone)
-        try transaction { () throws(DatabaseError) in
-            try delete(id: id)
-            for relationship in relationships { try delete(id: RowID(name: relationship.id, zone: zone)) }
+        let rowID: RowID
+        do {
+            rowID = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
+        } catch {
+            throw RecordError(error, type: type)
+        }
+        try delete(rowID, type: type)
+    }
+
+    /// Deletes the row `id` of a record of type `type`, as ``delete(our:id:zone:)`` describes,
+    /// for a caller that already has the row.
+    func delete(_ id: RowID, type: String) throws(RecordError) {
+        let zone = id.zone
+        do {
+            let relationships = type == Self.recordType(of: Relationship.self) ? [] : try relationships(of: id.name, type: type, in: zone)
+            try transaction { () throws(DatabaseError) in
+                try delete(id: id)
+                for relationship in relationships { try delete(id: RowID(name: relationship.id, zone: zone)) }
+            }
+        } catch {
+            throw RecordError(error, type: type)
         }
     }
 
     /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
-    func delete<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws where Record.ID: Encodable {
+    func delete<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
         try delete(our: record, id: \.id, zone: zone)
     }
 

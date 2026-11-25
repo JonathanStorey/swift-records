@@ -58,14 +58,14 @@ extension RecordContainer {
         for (key, list) in lists {
             let keyPath = type + "." + key
             guard let inverse = list.inverse else {
-                throw EncodingError.invalidValue(key, .init(codingPath: [], debugDescription: "The relationship list \(keyPath) does not name its inverse."))
+                throw RecordError.missingInverse(property: keyPath)
             }
             var existing: [String: Relationship] = [:]
             for relationship in all {
                 guard let side = relationship.side(of: name, keyPath: keyPath) else { continue }
                 let paired = relationship.keyPaths[1 - side]
                 guard paired == inverse else {
-                    throw EncodingError.invalidValue(key, .init(codingPath: [], debugDescription: "\(keyPath) names \(inverse) as its inverse, but it already has relationships with \(paired). The two key paths must point at each other."))
+                    throw RecordError.mismatchedInverse(property: keyPath, inverse: inverse, pairedWith: paired)
                 }
                 existing[relationship.target(from: name, keyPath: keyPath)] = relationship
             }
@@ -73,7 +73,7 @@ extension RecordContainer {
             for target in list.relationships.map(\.recordName) {
                 let current = existing.removeValue(forKey: target)
                 if current == nil, let paired = Self.pairing(of: target, in: inverse, among: all), paired != keyPath {
-                    throw EncodingError.invalidValue(key, .init(codingPath: [], debugDescription: "\(keyPath) names \(inverse) as its inverse, but \(inverse) already has relationships with \(paired). The two key paths must point at each other."))
+                    throw RecordError.mismatchedInverse(property: keyPath, inverse: inverse, pairedWith: paired)
                 }
                 var relationship = current ?? Relationship(between: (keyPath, name), and: (inverse, target))
                 if let order = relationship[orderIn: name, keyPath: keyPath], order > last ?? .min {
@@ -142,7 +142,8 @@ extension JSONRepresentation {
                 case (.string(zone.name)?, .string(zone.owner)):
                     break
                 default:
-                    throw EncodingError.invalidValue(self, .init(codingPath: [], debugDescription: "A reference points into another zone than \(zone.name). CloudKit follows a reference only within its record's zone."))
+                    let reference = if case .string(let name)? = self["recordName"] { name } else { "" }
+                    throw RecordError.referenceOutsideZone(reference: reference, zone: zone)
                 }
                 return .object(object)
             }
