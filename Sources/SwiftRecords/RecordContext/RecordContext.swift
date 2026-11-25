@@ -49,20 +49,40 @@ extension RecordContext {
         drafts.insert(record, at: id) { try? container.fetch(Record.self, id: id) }
     }
 
-    /// Deletes `record` in ``zone``, and removes it from the relationship lists of the other
-    /// records being edited, as its relationships are deleted with it.
-    ///
-    /// Nothing is written until `save()`. Inserting the record again undoes the delete.
+    /// Deletes `record` in ``zone``, as ``delete(_:id:)`` does by its id.
     ///
     /// ```swift
     /// context.delete(note)
     /// ```
-    public func delete<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable {
-        guard let id = rowID(of: Record.self, id: record.id) else { return }
-        if drafts.draft(Record.self, at: id) == nil {
-            drafts.insert(record, at: id) { try? container.fetch(Record.self, id: id) }
+    @discardableResult
+    public func delete<Record: Codable & Identifiable>(_ record: Record) -> Record? where Record.ID: Encodable {
+        delete(Record.self, id: record.id)
+    }
+
+    /// Deletes the record of type `type` with the id `id` in ``zone``, and removes it from the
+    /// relationship lists of the other records being edited, as its relationships are deleted
+    /// with it. Returns the record as it was, its open edit or else its saved value, or `nil`
+    /// when there was nothing to delete, as `Dictionary.removeValue(forKey:)` does.
+    ///
+    /// Nothing is written until `save()`. Inserting the record again undoes the delete.
+    ///
+    /// ```swift
+    /// context.delete(Note.self, id: noteID)
+    /// ```
+    @discardableResult
+    public func delete<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
+        guard let rowID = rowID(of: type, id: id) else { return nil }
+        let deleted: Record?
+        if let draft = drafts.draft(type, at: rowID) {
+            deleted = draft.ours
+        } else {
+            deleted = try? container.fetch(type, id: rowID)
+            if let deleted { drafts.open(deleted, at: rowID) }
         }
-        drafts.remove(Record.self, at: id)
+        // Already deleted, or never there: nothing changes.
+        guard deleted != nil else { return nil }
+        drafts.remove(type, at: rowID)
+        return deleted
     }
 
     /// The record of type `type` with the id `id` in ``zone``: the edit open for it, or else

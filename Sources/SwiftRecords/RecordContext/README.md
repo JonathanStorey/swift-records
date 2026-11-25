@@ -48,7 +48,8 @@ The container keeps its main context, and the context keeps its container. Once 
 | `var drafts: Drafts` on `RecordContext` | The open drafts. Internal. |
 | `public var zone: Zone = "Records"` on `RecordContext` | The zone `insert(_:)` puts a new record in. |
 | `public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Opens a draft for `record`, or replaces the edit of the one already open, undoing a delete. |
-| `public func delete<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Deletes `record` in `zone` until save. |
+| `@discardableResult public func delete<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable` | Deletes the record in `zone` until save, returning it as it was, or `nil` when there was nothing to delete. |
+| `@discardableResult public func delete<Record: Codable & Identifiable>(_ record: Record) -> Record? where Record.ID: Encodable` | The same by the record's id. |
 
 ## Inserting
 
@@ -89,7 +90,7 @@ A key path to a to-one `@Reference` replaces the reference instead of appending.
 
 ## Deleting
 
-`delete(_:)` writes nothing and never throws, like `ModelContext.delete(_:)`. It goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.
+`delete(_:)` and `delete(_:id:)` write nothing and never throw, like `ModelContext.delete(_:)`. Each returns the record as it was, its open edit or else its saved value, as `Dictionary.removeValue(forKey:)` returns what it removed. A record already deleted, or neither open nor saved, returns `nil` and changes nothing, so no draft is opened for it. A delete goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.
 
 The draft stays in `drafts` after a delete, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id asserts, while inserting into it by value restores it.
 

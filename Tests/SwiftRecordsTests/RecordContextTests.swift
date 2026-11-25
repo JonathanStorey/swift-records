@@ -347,11 +347,28 @@ private struct Book: Codable, Identifiable {
         #expect(draft.ours?.title == "Back")
     }
 
-    @Test func deletingARecordNeverSeenLeavesADeletedDraftWithNothingToSave() {
+    @Test func deletingARecordNeverSeenChangesNothing() {
         let context = RecordContext(container)
-        context.delete(Page(id: "nowhere"))
-        #expect(context.drafts.count == 1)
-        #expect(context.drafts.allSatisfy { !$0.value.hasChanges }, "A delete of a record never saved has nothing to save.")
+        #expect(context.delete(Page.self, id: "nowhere") == nil)
+        #expect(context.delete(Page(id: "nowhere")) == nil)
+        #expect(context.drafts.isEmpty)
+    }
+
+    @Test func aDeleteReturnsTheLatestEditOrTheSavedValue() throws {
+        let saved = Page(id: "saved", title: "Saved")
+        try container.save(our: saved, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.delete(Page.self, id: "saved") == saved)
+        context.insert(Page(id: "edited", title: "Typed"))
+        #expect(context.delete(Page(id: "edited", title: "Stale")) == Page(id: "edited", title: "Typed"), "The open edit, not the value passed in.")
+    }
+
+    @Test func deletingTwiceReturnsNilTheSecondTime() throws {
+        let page = Page(id: "intro")
+        try container.save(our: page, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.delete(page) == page)
+        #expect(context.delete(Page.self, id: "intro") == nil)
     }
 
     @Test func aSavedRecordIsMarkedDeletedUntilSave() throws {
