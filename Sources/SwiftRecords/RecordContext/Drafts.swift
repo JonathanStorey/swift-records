@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import Versioning
 
-/// A record being edited in a context and not saved yet.
+/// A record being edited in a context and not saved yet, or deleted and not saved yet.
 ///
 /// `base` is the saved value the edit started from, and `ours` is the edit. When the saved
 /// value changes underneath, ``rebase(onto:)`` brings the change into `ours` everywhere the
@@ -13,6 +13,9 @@ import Versioning
     var base: Record?
     /// The user's edit.
     var ours: Record
+    /// Whether the record is deleted. Only ``Drafts`` sets it, so a delete always removes
+    /// the record from other drafts' relationship lists too.
+    fileprivate(set) var isDeleted = false
 
     init(_ ours: Record, base: Record?) {
         self.ours = ours
@@ -32,10 +35,87 @@ import Versioning
         base = theirs
     }
 
-    /// Whether the edit differs from `base`, compared as JSON, since a record need not be
-    /// `Equatable`.
+    /// Whether the record is deleted, or the edit differs from `base`, compared as JSON,
+    /// since a record need not be `Equatable`.
     var hasChanges: Bool {
-        (try? JSONRepresentation(ours)) != base.flatMap { try? JSONRepresentation($0) }
+        isDeleted || (try? JSONRepresentation(ours)) != base.flatMap { try? JSONRepresentation($0) }
+    }
+}
+
+/// What every ``Draft`` offers, whatever its record's type.
+protocol DraftProtocol: AnyObject {
+    var isDeleted: Bool { get }
+    var hasChanges: Bool { get }
+    /// Removes the record named `recordName` from the edit's relationship lists.
+    func removeReferences(to recordName: String)
+}
+
+extension Draft: DraftProtocol {
+    func removeReferences(to recordName: String) {
+        guard case .object(var object) = try? JSONRepresentation(ours) else { return }
+        var isChanged = false
+        for index in object.indices where RelationshipList.isEncoded(object[index].value) {
+            guard var list = try? object[index].value.decode(RelationshipList.self),
+                  list.relationships.contains(where: { $0.recordName == recordName }) else { continue }
+            list.relationships.removeAll { $0.recordName == recordName }
+            guard let json = try? JSONRepresentation(list) else { continue }
+            object[index].value = json
+            isChanged = true
+        }
+        // A draft that never listed the record is left alone, so its views are not woken.
+        if isChanged, let edited: Record = try? JSONRepresentation.object(object).decode() { ours = edited }
+    }
+}
+
+/// A context's open drafts, by the row each edits.
+///
+/// Every change goes through it, so the rules hold together: an insert undoes a delete, and
+/// a delete removes the record from every other draft's relationship lists.
+struct Drafts: Collection {
+    typealias Element = (key: RecordContainer.RowID, value: any DraftProtocol)
+    typealias Index = [RecordContainer.RowID: any DraftProtocol].Index
+
+    private var storage: [RecordContainer.RowID: any DraftProtocol] = [:]
+
+    var startIndex: Index { storage.startIndex }
+    var endIndex: Index { storage.endIndex }
+    subscript(position: Index) -> Element { storage[position] }
+    func index(after index: Index) -> Index { storage.index(after: index) }
+
+    /// The open draft of the row `id`, deleted or not.
+    func draft<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID) -> Draft<Record>? {
+        storage[id] as? Draft<Record>
+    }
+
+    /// Sets the edit of the row `id` to `record`, opening a draft on `base` when none is
+    /// open, which reads `base` only then. A deleted draft is restored.
+    mutating func insert<Record: Codable>(_ record: Record, at id: RecordContainer.RowID, base: () -> Record?) {
+        if let draft = draft(Record.self, at: id) {
+            draft.ours = record
+            draft.isDeleted = false
+        } else {
+            storage[id] = Draft(record, base: base())
+        }
+    }
+
+    /// A new draft of the row `id`, opened on its saved value.
+    @discardableResult
+    mutating func open<Record: Codable>(_ saved: Record, at id: RecordContainer.RowID) -> Draft<Record> {
+        let draft = Draft(saved, base: saved)
+        storage[id] = draft
+        return draft
+    }
+
+    /// Deletes the row `id`: a draft never saved is dropped, and any other is marked deleted
+    /// and keeps its `base` for the save. Every other draft in the row's zone drops the
+    /// record from its relationship lists, as its ``Relationship`` records go with it.
+    mutating func remove<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID) {
+        if let draft = draft(type, at: id) {
+            if draft.base == nil { storage[id] = nil } else { draft.isDeleted = true }
+        }
+        for (other, draft) in storage where other != id && other.zone == id.zone {
+            draft.removeReferences(to: id.name)
+        }
     }
 }
 

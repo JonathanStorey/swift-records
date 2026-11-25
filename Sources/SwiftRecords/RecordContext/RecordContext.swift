@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// The place an app reads and edits records, as `ModelContext` is in SwiftData.
 ///
@@ -11,11 +12,12 @@ import Foundation
 /// ```
 ///
 /// Like `ModelContext`, a context is not `Sendable`. It stays on the actor that created it.
-public final class RecordContext {
+/// It is `@Observable`, so a view that reads through it sees records inserted and deleted.
+@Observable public final class RecordContext {
     /// The container this context reads from and saves into.
     public let container: RecordContainer
     /// The open drafts, each a ``Draft`` of its record's type, by the row they edit.
-    var drafts: [RecordContainer.RowID: AnyObject] = [:]
+    var drafts = Drafts()
     /// The zone that ``insert(_:)`` puts a new record in. An existing record keeps its own
     /// zone, so changing this never moves one.
     public var zone: Zone = "Records"
@@ -44,11 +46,23 @@ extension RecordContext {
             return
         }
         assert(id.name.utf8.count <= 255, "The record name \(id.name) is longer than CloudKit's 255 characters. Use a shorter id.")
-        if let draft = drafts[id] as? Draft<Record> {
-            draft.ours = record
-        } else {
-            drafts[id] = Draft(record, base: try? container.fetch(Record.self, id: id))
+        drafts.insert(record, at: id) { try? container.fetch(Record.self, id: id) }
+    }
+
+    /// Deletes `record` in ``zone``, and removes it from the relationship lists of the other
+    /// records being edited, as its relationships are deleted with it.
+    ///
+    /// Nothing is written until `save()`. Inserting the record again undoes the delete.
+    ///
+    /// ```swift
+    /// context.delete(note)
+    /// ```
+    public func delete<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable {
+        guard let id = rowID(of: Record.self, id: record.id) else { return }
+        if drafts.draft(Record.self, at: id) == nil, let saved = try? container.fetch(Record.self, id: id) {
+            drafts.open(saved, at: id)
         }
+        drafts.remove(Record.self, at: id)
     }
 
     /// The record of type `type` with the id `id` in ``zone``: the edit open for it, or else
@@ -62,7 +76,7 @@ extension RecordContext {
     /// ```
     public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
         guard let rowID = rowID(of: type, id: id) else { return nil }
-        if let draft = drafts[rowID] as? Draft<Record> { return draft.ours }
+        if let draft = drafts.draft(type, at: rowID) { return draft.isDeleted ? nil : draft.ours }
         return try? container.fetch(type, id: rowID)
     }
 }
@@ -138,14 +152,12 @@ extension RecordContext {
 
 private extension RecordContext {
     /// The open draft of the record of type `type` with the id `id`, or a new one opened from
-    /// its saved value, or `nil` when it has neither.
+    /// its saved value, or `nil` when it has neither or is deleted.
     func openedDraft<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Draft<Record>? where Record.ID: Encodable {
         guard let rowID = rowID(of: type, id: id) else { return nil }
-        if let draft = drafts[rowID] as? Draft<Record> { return draft }
+        if let draft = drafts.draft(type, at: rowID) { return draft.isDeleted ? nil : draft }
         guard let saved = try? container.fetch(type, id: rowID) else { return nil }
-        let draft = Draft(saved, base: saved)
-        drafts[rowID] = draft
-        return draft
+        return drafts.open(saved, at: rowID)
     }
 
     /// Adds `child` to the list at `keyPath` of `parent`. For a relationship list, also adds

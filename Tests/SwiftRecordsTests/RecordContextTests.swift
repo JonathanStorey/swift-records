@@ -1,3 +1,4 @@
+import Observation
 import Foundation
 import Testing
 @testable import SwiftRecords
@@ -44,7 +45,7 @@ private struct Page: Codable, Identifiable, Equatable {
 
     private func draft<R: Codable & Identifiable>(_ record: R, in context: RecordContext, zone: Zone = "Records") throws -> Draft<R>? where R.ID: Encodable {
         let name = try RecordContainer.recordName(for: record.id, type: RecordContainer.recordType(of: R.self))
-        return context.drafts[RecordContainer.RowID(name: name, zone: zone)] as? Draft<R>
+        return context.drafts.draft(R.self, at: RecordContainer.RowID(name: name, zone: zone))
     }
 
     @Test func aNewRecordOpensADraftWithNoBase() throws {
@@ -310,5 +311,79 @@ private struct Book: Codable, Identifiable {
         #expect(read.shelf == shelf.id)
         #expect(read.$shelf.action == .deleteSelf)
         #expect(RecordContext(container).record(Book.self, id: book.id)?.shelf == old.id, "Nothing is saved yet.")
+    }
+}
+
+/// `delete(_:)` deletes through ``Drafts``, so other drafts drop the record too.
+@Suite struct RecordContextDeleteTests {
+    private let container = RecordContainer.inMemory(Page.self, Album.self, Photo.self)
+
+    private func rowID<R>(_ type: R.Type, _ id: some Encodable) throws -> RecordContainer.RowID {
+        RecordContainer.RowID(name: try RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: R.self)), zone: "Records")
+    }
+
+    @Test func aRecordNeverSavedIsDropped() {
+        let context = RecordContext(container)
+        let page = Page(id: "draft")
+        context.insert(page)
+        context.delete(page)
+        #expect(context.record(Page.self, id: "draft") == nil)
+        #expect(context.drafts.isEmpty, "There is nothing to delete in the database.")
+    }
+
+    @Test func aSavedRecordIsMarkedDeletedUntilSave() throws {
+        let page = Page(id: "intro", title: "Hello")
+        try container.save(our: page, zone: "Records")
+        let context = RecordContext(container)
+        context.delete(page)
+        #expect(context.record(Page.self, id: "intro") == nil)
+        let draft = try #require(context.drafts.draft(Page.self, at: rowID(Page.self, "intro")))
+        #expect(draft.isDeleted && draft.hasChanges)
+        #expect(draft.base == page, "The base is kept for the save.")
+        #expect(RecordContext(container).record(Page.self, id: "intro") == page, "Nothing is saved yet.")
+    }
+
+    @Test func insertingAgainUndoesTheDelete() throws {
+        let page = Page(id: "intro", title: "Hello")
+        try container.save(our: page, zone: "Records")
+        let context = RecordContext(container)
+        context.delete(page)
+        context.insert(Page(id: "intro", title: "Back"))
+        #expect(context.record(Page.self, id: "intro")?.title == "Back")
+        #expect(context.drafts.draft(Page.self, at: try rowID(Page.self, "intro"))?.isDeleted == false)
+    }
+
+    @Test func otherDraftsDropTheRecordFromTheirRelationshipLists() throws {
+        let kept = Photo(), album = Album(name: "Trip", photos: [kept.id])
+        try container.save(our: kept, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        let added = Photo()
+        context.insert(added, into: album.id, at: \Album.photos)
+        context.delete(kept)
+        #expect(context.record(Album.self, id: album.id)?.photos == [added.id])
+        context.delete(added)
+        #expect(context.record(Album.self, id: album.id)?.photos == [])
+        #expect(context.drafts.count == 2, "The album and the deleted saved photo. The new photo is dropped.")
+    }
+
+    @Test func aDeletedParentCannotBeFoundButCanBeInsertedAgain() throws {
+        let album = Album(name: "Trip")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        context.delete(album)
+        let photo = Photo()
+        context.insert(photo, into: album, at: \.photos)
+        #expect(context.record(Album.self, id: album.id)?.photos == [photo.id], "Inserting into a deleted parent by value restores it.")
+    }
+
+    @Test func aDeleteNotifiesViewsReadingTheContext() {
+        let context = RecordContext(container)
+        let page = Page(id: "draft")
+        context.insert(page)
+        nonisolated(unsafe) var notified = false
+        withObservationTracking { _ = context.record(Page.self, id: "draft") } onChange: { notified = true }
+        context.delete(page)
+        #expect(notified)
     }
 }
