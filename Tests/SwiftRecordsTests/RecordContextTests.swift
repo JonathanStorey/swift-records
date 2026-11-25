@@ -207,6 +207,27 @@ private struct Photo: Codable, Identifiable {
         #expect(context.record(Album.self, id: album.id)?.name == "New")
     }
 
+    @Test func anUnknownParentIdInsertsNothingAndReturnsNil() {
+        let context = RecordContext(container)
+        #expect(context.insert(Photo(), into: UUID(), at: \Album.photos) == nil)
+        #expect(context.drafts.isEmpty, "The child is not inserted either.")
+    }
+
+    @Test func aDeletedParentIdReturnsNil() throws {
+        let album = Album(name: "Gone")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        context.delete(album)
+        #expect(context.insert(Photo(), into: album.id, at: \Album.photos) == nil)
+    }
+
+    @Test func insertingByIdReturnsTheParentAsItNowIs() throws {
+        let album = Album(name: "Trip")
+        try container.save(our: album, zone: "Records")
+        let photo = Photo()
+        #expect(RecordContext(container).insert(photo, into: album.id, at: \Album.photos)?.photos == [photo.id])
+    }
+
     @Test func aSavedParentWithNoChildrenLearnsItsInverseFromTheChild() throws {
         let album = Album(name: "Empty")
         try container.save(our: album, zone: "Records")
@@ -298,6 +319,12 @@ private struct Book: Codable, Identifiable {
         let read = try #require(context.record(Book.self, id: book.id))
         #expect(read.home == shelf.id)
         #expect(read.$home.isParent)
+    }
+
+    @Test func anUnknownParentIdReturnsNil() {
+        let context = RecordContext(container)
+        #expect(context.insert(Shelf(), into: UUID(), at: \Book.shelf) == nil)
+        #expect(context.drafts.isEmpty)
     }
 
     @Test func aSavedReferenceIsReplacedKeepingItsAction() throws {

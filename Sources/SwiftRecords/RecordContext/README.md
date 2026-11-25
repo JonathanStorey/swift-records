@@ -59,7 +59,7 @@ Two mistakes in an app's code assert in a debug build: inserting a type the cont
 
 ### Inserting into a list
 
-`insert(_:into:at:)` inserts a child and adds it to a parent's `@References` list, in `zone`. The parent is a value, of which only the id is read when it already has an open edit or a saved value, or an id, which asserts when it has neither.
+`insert(_:into:at:)` inserts a child and adds it to a parent's `@References` list, in `zone`. The parent is a value, of which only the id is read when it already has an open edit or a saved value, or an id. An id with no parent, as when another device deleted it, inserts nothing and returns `nil`, since that is a state of the data, not a mistake in the code.
 
 ```swift
 context.insert(tag, into: note, at: \.tags)
@@ -73,9 +73,9 @@ A key path to a to-one `@Reference` replaces the reference instead of appending.
 | Declaration | What it does |
 | --- | --- |
 | `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable` | Inserts `child` into `parent`'s list, inserting `parent` too when it is new. |
-| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id. |
+| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id, `@discardableResult`. Returns the parent as it now is, or `nil`, inserting nothing, when there is no such parent. |
 | `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parent: Parent, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable` | Inserts `child` and points `parent`'s to-one `@Reference` at it. |
-| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id. |
+| `public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable` | The same by the parent's id, returning the parent or `nil` the same way. |
 | `func set(_ reference: RecordReference, at key: String) throws` on `Draft` | Points the to-one reference under `key` at a new target. |
 | `func wrapper(at key: String) -> (any ReferenceAttributes)?` on `Draft` (private) | The property's wrapper, read with `Mirror`, for its declared action and parent flag. |
 | `private protocol ReferenceAttributes` | `action` and `isParent`, adopted by `Reference` and `References`. |
@@ -92,7 +92,7 @@ A key path to a to-one `@Reference` replaces the reference instead of appending.
 
 `delete(_:)` and `delete(_:id:)` write nothing and never throw, like `ModelContext.delete(_:)`. Each returns the record as it was, its open edit or else its saved value, as `Dictionary.removeValue(forKey:)` returns what it removed. A record already deleted, or neither open nor saved, returns `nil` and changes nothing, so no draft is opened for it. A delete goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.
 
-The draft stays in `drafts` after a delete, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id asserts, while inserting into it by value restores it.
+The draft stays in `drafts` after a delete, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id returns `nil`, while inserting into it by value restores it.
 
 Field lists and to-one references to a deleted record are left alone, as CloudKit leaves them to dangle or to cascade through `.deleteSelf` on the server.
 

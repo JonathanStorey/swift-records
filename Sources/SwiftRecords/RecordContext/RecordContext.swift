@@ -119,21 +119,23 @@ extension RecordContext {
 
     /// Inserts `child` and adds it to the list at `keyPath` of the parent with the id
     /// `parentID`, both in ``zone``. The parent's open edit is used, or else its saved value.
+    /// Returns the parent as it now is, or `nil`, inserting nothing, when there is no such
+    /// parent, as when another device deleted it.
     ///
     /// ```swift
     /// context.insert(tag, into: note.id, at: \Note.tags)
     /// ```
-    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) where Parent.ID: Encodable, Child.ID: Codable {
+    @discardableResult
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        guard let parent = openedDraft(Parent.self, id: parentID) else { return nil }
         insert(child)
-        guard let parent = openedDraft(Parent.self, id: parentID), let child = openedDraft(Child.self, id: child.id) else {
-            assertionFailure("There is no \(Parent.self) \(parentID) in \(zone.name) to insert into.")
-            return
-        }
+        guard let child = openedDraft(Child.self, id: child.id) else { return nil }
         do {
             try relate(child, to: parent, at: keyPath)
         } catch {
             assertionFailure("\(keyPath) is not a @References list: \(error)")
         }
+        return parent.ours
     }
 }
 
@@ -151,22 +153,22 @@ extension RecordContext {
     }
 
     /// Inserts `child` and points the reference at `keyPath` of the parent with the id
-    /// `parentID` at it, both in ``zone``.
+    /// `parentID` at it, both in ``zone``. Returns the parent as it now is, or `nil`,
+    /// inserting nothing, when there is no such parent.
     ///
     /// ```swift
     /// context.insert(folder, into: note.id, at: \Note.folder)
     /// ```
-    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) where Parent.ID: Encodable, Child.ID: Codable {
+    @discardableResult
+    public func insert<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, into parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        guard let parent = openedDraft(Parent.self, id: parentID) else { return nil }
         insert(child)
-        guard let parent = openedDraft(Parent.self, id: parentID) else {
-            assertionFailure("There is no \(Parent.self) \(parentID) in \(zone.name) to insert into.")
-            return
-        }
         do {
             try parent.set(RecordReference(to: Child.self, id: child.id, zone: zone), at: RecordContainer.propertyName(of: keyPath).codingKey)
         } catch {
             assertionFailure("\(keyPath) is not a @Reference: \(error)")
         }
+        return parent.ours
     }
 }
 
