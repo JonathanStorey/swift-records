@@ -46,6 +46,9 @@ private struct Unencodable: Codable, Identifiable {
     @Test func anyErrorBecomesARecordError() {
         #expect(RecordError(RecordError.nameTooLong(name: "n"), type: "Note") == .nameTooLong(name: "n"))
         #expect(RecordError(DatabaseError(code: 13, description: "full"), type: "Note") == .database(DatabaseError(code: 13, description: "full")))
-        #expect(RecordError(CocoaError(.fileNoSuchFile), type: "Note") == .unencodable(type: "Note", description: "\(CocoaError(.fileNoSuchFile))"))
+        // Described as the existential, as the initializer sees it, since macOS prints a
+        // CocoaError differently when it is held as `any Error`.
+        let other: any Error = CocoaError(.fileNoSuchFile)
+        #expect(RecordError(other, type: "Note") == .unencodable(type: "Note", description: "\(other)"))
     }
 }
