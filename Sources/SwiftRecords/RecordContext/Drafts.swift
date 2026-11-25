@@ -97,7 +97,7 @@ extension Draft: DraftProtocol {
     func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError) {
         let type = RecordContainer.recordType(of: Record.self)
         guard (try? container.registeredType(named: type)) != nil else { throw .notRegistered(type: type) }
-        guard let ours else {
+        guard !isDeleted else {
             if base != nil { try container.delete(id, type: type) }
             return
         }

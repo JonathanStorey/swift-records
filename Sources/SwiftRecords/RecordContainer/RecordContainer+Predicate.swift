@@ -69,14 +69,20 @@ private struct PredicateSchema {
     /// value cannot be told apart, or is not stored where the placeholder holds it.
     func operand(_ keyPath: some PlaceholderReading) -> (clause: String, values: [Any?])? {
         guard keyPath.isStored else { return nil }
-        if let read = keyPath.read(value), let json = JSONRepresentation(encoding: read),
+        return operand(reading: keyPath.read)
+    }
+
+    /// The SQL that reads the stored value `read` takes from the placeholder, or `nil` when
+    /// its value cannot be told apart, or is not stored where the placeholder holds it.
+    func operand(reading read: (Any) -> Any?) -> (clause: String, values: [Any?])? {
+        if let read = read(value), let json = JSONRepresentation(encoding: read),
            let path = scalars[json], self.json[path] == json {
             return path.sqlite.map { ("json_extract(COALESCE(ours, base), ?)", [$0]) }
         }
         // A `Bool` or enum reads differently only on the copy in which its own value changed.
-        guard let plain = keyPath.read(value).flatMap(JSONRepresentation.init(encoding:)) else { return nil }
+        guard let plain = read(value).flatMap(JSONRepresentation.init(encoding:)) else { return nil }
         for flag in flags {
-            guard let changed = keyPath.read(flag.value).flatMap(JSONRepresentation.init(encoding:)), changed != plain else { continue }
+            guard let changed = read(flag.value).flatMap(JSONRepresentation.init(encoding:)), changed != plain else { continue }
             guard flag.json[flag.path] == changed, json[flag.path] == plain else { return nil }
             return flag.path.sqlite.map { ("json_extract(COALESCE(ours, base), ?)", [$0]) }
         }
@@ -273,4 +279,59 @@ extension PredicateExpressions.SequenceContains: SQLCondition {
               let target = (element as? PredicateExpressions.Value<RHS.Output>)?.value as? any Encodable else { return nil }
         return schema.contains(keyPath, target)
     }
+}
+
+// MARK: - Sort order
+
+extension RecordContainer {
+    /// The SQL `ORDER BY` terms that sort rows exactly as `order` sorts their values, or `nil`
+    /// when any descriptor cannot be matched exactly.
+    ///
+    /// A descriptor translates when its key path leads through stored properties to a number,
+    /// a `Date`, or a `String`, optional or not. A `String` compared by its own `<` or
+    /// `.lexical` sorts by its UTF-8 bytes, as SQLite's `BINARY` does, and one compared
+    /// `.localizedStandard` or `.localized` sorts through the collation of the same name,
+    /// which calls Foundation's own comparison. Any other type, such as an enum with its own
+    /// `<`, has no SQL equal, so the caller sorts in Swift.
+    static func orderBy<T: Decodable>(_ order: [SortDescriptor<T>]) -> (clause: String, values: [Any?])? {
+        guard let schema = PredicateSchema(T.self) else { return nil }
+        var terms: [String] = [], values: [Any?] = []
+        for descriptor in order {
+            guard let keyPath = descriptor.keyPath, MemoryLayout<T>.offset(of: keyPath) != nil,
+                  let collation = collation(for: descriptor, of: type(of: keyPath).valueType),
+                  let operand = schema.operand(reading: { ($0 as? T)?[keyPath: keyPath] }) else { return nil }
+            // SQLite puts NULL first going up and last going down, as Swift puts `nil`.
+            terms.append("\(operand.clause)\(collation) \(descriptor.order == .forward ? "ASC" : "DESC")")
+            values += operand.values
+        }
+        return (terms.joined(separator: ", "), values)
+    }
+
+    /// The `COLLATE` clause that compares values of `type` as `descriptor` does, empty for a
+    /// number or `Date`, or `nil` when SQL cannot.
+    private static func collation<T>(for descriptor: SortDescriptor<T>, of type: Any.Type) -> String? {
+        let type = (type as? any OptionalType.Type)?.wrappedType ?? type
+        guard type == String.self else {
+            let isNumeric = type is any BinaryInteger.Type || type is any BinaryFloatingPoint.Type || type == Date.self
+            return isNumeric && descriptor.stringComparator == nil ? "" : nil
+        }
+        switch descriptor.stringComparator {
+        case nil, String.StandardComparator.lexical?: return " COLLATE BINARY"
+        // Only Apple's Foundation has the localized comparators.
+        #if canImport(Darwin)
+        case String.StandardComparator.localizedStandard?: return " COLLATE \(Collation.localizedStandard.rawValue)"
+        case String.StandardComparator.localized?: return " COLLATE \(Collation.localized.rawValue)"
+        #endif
+        default: return nil
+        }
+    }
+}
+
+/// An `Optional` type, so its wrapped type can be read from a metatype.
+private protocol OptionalType {
+    static var wrappedType: Any.Type { get }
+}
+
+extension Optional: OptionalType {
+    fileprivate static var wrappedType: Any.Type { Wrapped.self }
 }

@@ -510,3 +510,29 @@ Saving or deleting a record throws `RecordError`, a typed error with one case fo
 | `func delete(_ id: RowID, type: String) throws(RecordError)` | `delete(our:id:zone:)` for a caller that has the row. |
 
 A failed `@Asset` copy does not throw: the record keeps the file's own URL, as before.
+
+## Fetching with a descriptor
+
+`RecordDescriptor<Record: Codable>` mirrors SwiftData's `FetchDescriptor`: `predicate`, `sortBy`, `fetchLimit`, `fetchOffset` and `includePendingChanges`, which only a context uses. `fetch(_:in:excluding:)` picks the cheapest exact way to run it.
+
+1. **SQLite does everything** when the predicate translates exactly and every sort translates. The query sorts, skips `fetchOffset` and stops at `fetchLimit`, and only the rows returned are decoded, with only their relationship lists.
+2. **SQLite sorts and Swift finishes the filter** when every sort translates but the predicate does not fully. Rows arrive in order, and decoding stops once the offset and limit are filled.
+3. **Swift sorts** when any sort cannot translate. Every match is decoded and sorted, then the offset and limit are applied.
+
+Ties are broken by record name in SQL. `excluding` leaves out rows by record name, as a context does for records it has open.
+
+A sort translates when its key path runs through stored properties to a number, a `Date` or a `String`, optional or not. SQLite and Swift then agree exactly, including `nil`, which sorts first going up and last going down in both:
+
+- A number or `Date` compares as stored, since `Date` is stored as seconds.
+- A `String` compared by `<` or `.lexical` sorts by its UTF-8 bytes, which is SQLite's `BINARY`.
+- A `String` compared `.localizedStandard`, the default for a `String` on Apple platforms, or `.localized`, sorts through the collation of the same name. `registerCollations(on:)` adds both to each connection when it opens, and SQLite calls Foundation's own `localizedStandardCompare(_:)` or `localizedCompare(_:)` for each comparison. Foundation on Linux has no localized comparators, so a `String` sort there is always lexical.
+
+Anything else, such as an enum with its own `<`, sorts in Swift. `RecordDescriptorTests` checks each path against sorting every record in Swift, with offsets, limits, `nil` values and non-ASCII text.
+
+| Declaration | What it does |
+| --- | --- |
+| `public struct RecordDescriptor<Record: Codable>` | Which records to fetch, in what order, and how many. |
+| `func fetch<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> [T]` | The saved records the descriptor describes, as above. |
+| `static func orderBy<T: Decodable>(_ order: [SortDescriptor<T>]) -> (clause: String, values: [Any?])?` | The `ORDER BY` terms that sort as `order` does, or `nil` when any cannot. |
+| `enum Collation: String, CaseIterable` | `LOCALIZED_STANDARD` and `LOCALIZED`. |
+| `static func registerCollations(on connection: OpaquePointer)` | Adds each collation to a connection. |

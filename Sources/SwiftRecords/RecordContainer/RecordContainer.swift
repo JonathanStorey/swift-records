@@ -97,6 +97,7 @@ public final class RecordContainer: @unchecked Sendable {
             throw error
         }
         self.connection = connection
+        Self.registerCollations(on: connection)
         self.url = url
         assets = url.map { $0.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent + ".assets", isDirectory: true) }
             ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
