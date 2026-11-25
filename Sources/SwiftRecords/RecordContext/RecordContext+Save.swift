@@ -53,6 +53,15 @@ extension RecordContext {
         if !failures.isEmpty { throw .unsaved(failures) }
     }
 
+    /// Whether the context has changes ``save()`` would write, as `ModelContext.hasChanges`.
+    ///
+    /// ```swift
+    /// if context.hasChanges { try context.save() }
+    /// ```
+    public var hasChanges: Bool {
+        drafts.contains { $0.value.hasChanges }
+    }
+
     /// Throws away every change not saved, as `ModelContext.rollback()` does.
     ///
     /// Each edit goes back to the record's saved value, a deleted record comes back, and a

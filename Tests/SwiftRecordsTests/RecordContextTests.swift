@@ -600,6 +600,22 @@ private struct Broken: Codable, Identifiable {
         #expect(Set(saved.photos) == [first.id, theirs.id, ours.id])
     }
 
+    @Test func hasChangesFollowsEditsSavesAndRollbacks() throws {
+        try container.save(our: Page(id: "intro", title: "Saved"), zone: "Records")
+        let context = RecordContext(container)
+        #expect(!context.hasChanges)
+        context.insert(Page(id: "intro", title: "Saved"))
+        #expect(!context.hasChanges, "Inserting the saved value changes nothing.")
+        context.insert(Page(id: "intro", title: "Typed"))
+        #expect(context.hasChanges)
+        try context.save()
+        #expect(!context.hasChanges, "The kept draft is clean after a save.")
+        context.delete(Page.self, id: "intro")
+        #expect(context.hasChanges)
+        context.rollback()
+        #expect(!context.hasChanges)
+    }
+
     @Test func aDeletedRecordNeverSavedWritesNothing() throws {
         let context = RecordContext(container)
         context.insert(Page(id: "brief"))

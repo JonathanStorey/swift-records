@@ -132,6 +132,7 @@ Drafts stay in the context after a save, because views may hold them. An edit cl
 | `var error: RecordError?` on `Draft` | The record's last save error, observable, cleared by an edit or a save that writes it. |
 | `func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError)` on `DraftProtocol` | Rebases and writes one draft, leaving `base` alone until the commit. |
 | `func didSave()` on `DraftProtocol` | Makes what was written the draft's `base`. |
+| `public var hasChanges: Bool` | Whether `save()` would write anything, as `ModelContext.hasChanges`. A draft kept after a save has `base` equal to its edit, so it does not count. |
 | `public func rollback()` | Throws away every unsaved change, as `ModelContext.rollback()` does. |
 | `func revert()` on `DraftProtocol` | Puts the edit back to `base`, deletes a record never saved, and clears the error. A draft with neither is left alone. |
 
