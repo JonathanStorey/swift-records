@@ -526,3 +526,94 @@ private struct Book: Codable, Identifiable {
         #expect(context.record(Photo.self, id: photo.id)?.albums == [])
     }
 }
+
+private struct Broken: Codable, Identifiable {
+    var id = "broken"
+    var fixed = false
+
+    func encode(to encoder: any Encoder) throws {
+        guard fixed else { throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "Not fixed.")) }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(fixed, forKey: .fixed)
+    }
+}
+
+/// `save()` writes every change in one transaction, and keeps a record it cannot write open.
+@Suite struct RecordContextSaveTests {
+    private let container = RecordContainer.inMemory(Page.self, Album.self, Photo.self, Broken.self)
+
+    @Test func insertsEditsAndDeletesAreWritten() throws {
+        try container.save(our: Page(id: "edited", title: "Old"), zone: "Records")
+        try container.save(our: Page(id: "deleted"), zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Page(id: "new", title: "New"))
+        context.insert(Page(id: "edited", title: "Edited"))
+        context.delete(Page.self, id: "deleted")
+        try context.save()
+
+        let saved = RecordContext(container)
+        #expect(saved.record(Page.self, id: "new")?.title == "New")
+        #expect(saved.record(Page.self, id: "edited")?.title == "Edited")
+        #expect(saved.record(Page.self, id: "deleted") == nil)
+        #expect(context.drafts.allSatisfy { !$0.value.hasChanges }, "Every draft is clean after a save.")
+    }
+
+    @Test func oneRecordThatCannotBeWrittenLeavesTheOthersSaved() throws {
+        let context = RecordContext(container)
+        context.insert(Page(id: "fine", title: "Fine"))
+        context.insert(Broken())
+        // `#require(throws:)` returns the error only from Swift 6.1, and CI also runs 6.0.
+        var thrown: SaveError?
+        do throws(SaveError) { try context.save() } catch { thrown = error }
+        let error = try #require(thrown)
+        guard case .unsaved(let failures) = error, case .unencodable(let type, _)? = failures["Broken:broken"] else {
+            Issue.record("Expected Broken to be unsaved, got \(error)")
+            return
+        }
+        #expect(type == "Broken" && failures.count == 1)
+        #expect(RecordContext(container).record(Page.self, id: "fine")?.title == "Fine")
+        #expect(context.error(Broken.self, id: "broken") != nil)
+        #expect(context.error(Page.self, id: "fine") == nil)
+
+        context.insert(Broken(fixed: true))
+        #expect(context.error(Broken.self, id: "broken") == nil, "An edit clears the error.")
+        try context.save()
+        #expect(RecordContext(container).record(Broken.self, id: "broken")?.fixed == true)
+    }
+
+    @Test func aRelationshipSavedSinceTheEditBeganSurvives() throws {
+        let first = Photo(), album = Album(name: "Trip", photos: [first.id])
+        try container.save(our: first, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        let ours = Photo()
+        context.insert(ours, into: album.id, at: \Album.photos)
+
+        // Another device adds a photo, which reaches the database before this save.
+        let theirs = Photo()
+        try container.save(our: theirs, zone: "Records")
+        try container.save(our: Album(id: album.id, name: "Trip", photos: [first.id, theirs.id]), zone: "Records")
+
+        try context.save()
+        let saved = try #require(RecordContext(container).record(Album.self, id: album.id))
+        #expect(Set(saved.photos) == [first.id, theirs.id, ours.id])
+    }
+
+    @Test func aDeletedRecordNeverSavedWritesNothing() throws {
+        let context = RecordContext(container)
+        context.insert(Page(id: "brief"))
+        context.delete(Page.self, id: "brief")
+        try context.save()
+        #expect(try container.zones().isEmpty)
+    }
+
+    @Test func aSaveWithNothingChangedWritesNothing() throws {
+        try container.save(our: Page(id: "intro"), zone: "Records")
+        let context = RecordContext(container)
+        context.insert(Page(id: "intro"))
+        let before = try container.pendingRows().count
+        try context.save()
+        #expect(try container.pendingRows().count == before)
+    }
+}

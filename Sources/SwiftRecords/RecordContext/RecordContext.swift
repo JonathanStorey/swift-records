@@ -272,7 +272,9 @@ private extension RecordContext {
         let parentName = try RecordContainer.recordName(for: parentID, type: RecordContainer.recordType(of: Parent.self))
         draft.removeReference(named: parentName, at: inverse.codingKey)
     }
+}
 
+extension RecordContext {
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
     /// cannot be encoded. Its name's length is checked at save.
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {

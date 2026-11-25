@@ -22,6 +22,9 @@ import Versioning
     /// The edit, or deleted. Only this file sets it, so a delete always goes through
     /// ``Drafts/remove(_:at:)``, which also removes the record from other drafts' lists.
     fileprivate(set) var state: State
+    /// Why the last save could not write this record, or `nil`. An edit clears it, since the
+    /// edit may fix it, and so does a save that writes it.
+    var error: RecordError?
 
     init(_ ours: Record, base: Record?) {
         state = .inserted(ours)
@@ -40,6 +43,7 @@ import Versioning
     /// Replaces the edit with `record`, which also undoes a delete.
     func update(_ record: Record) {
         state = .inserted(record)
+        error = nil
     }
 
     /// Merges `theirs`, the record's new saved value, into the edit, and makes it the new
@@ -58,11 +62,15 @@ import Versioning
     }
 
     /// Whether a save has anything to write: a delete of a saved record, or an edit that
-    /// differs from `base`, compared as JSON, since a record need not be `Equatable`. A
-    /// deleted record that was never saved has nothing.
+    /// differs from `base`, compared as JSON, since a record need not be `Equatable`. A new
+    /// record, or an edit that cannot be encoded, is a change. A deleted record that was
+    /// never saved has nothing.
     var hasChanges: Bool {
         guard let ours else { return base != nil }
-        return (try? JSONRepresentation(ours)) != base.flatMap { try? JSONRepresentation($0) }
+        guard let base else { return true }
+        // An edit that cannot be encoded is a change, so the save reports why.
+        guard let mine = try? JSONRepresentation(ours) else { return true }
+        return mine != (try? JSONRepresentation(base))
     }
 }
 
@@ -70,11 +78,38 @@ import Versioning
 protocol DraftProtocol: AnyObject {
     var isDeleted: Bool { get }
     var hasChanges: Bool { get }
+    var error: RecordError? { get set }
+    /// Writes the draft to the row `id` of `container`, first rebasing an edit onto the row's
+    /// saved value, so a change saved since `base` is merged in, not overwritten. Leaves the
+    /// draft's `base` alone, since the transaction may still roll back.
+    func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError)
+    /// Makes what was written the draft's `base`, once the save commits.
+    func didSave()
     /// Removes the record named `recordName` from the edit's relationship lists.
     func removeReferences(to recordName: String)
 }
 
 extension Draft: DraftProtocol {
+    func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError) {
+        let type = RecordContainer.recordType(of: Record.self)
+        guard (try? container.registeredType(named: type)) != nil else { throw .notRegistered(type: type) }
+        guard let ours else {
+            if base != nil { try container.delete(id, type: type) }
+            return
+        }
+        if let saved = try? container.fetch(Record.self, id: id),
+           (try? JSONRepresentation(saved)) != base.flatMap({ try? JSONRepresentation($0) }) {
+            rebase(onto: saved)
+        }
+        guard hasChanges, let ours = self.ours else { return }
+        try container.save(our: ours, at: id)
+    }
+
+    func didSave() {
+        base = ours
+        error = nil
+    }
+
     func removeReferences(to recordName: String) {
         removeReferences(to: recordName) { _, json in RelationshipList.isEncoded(json) }
     }

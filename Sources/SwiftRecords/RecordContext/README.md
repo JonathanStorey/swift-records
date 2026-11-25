@@ -113,6 +113,26 @@ The draft stays in `drafts` after a delete, even for a record never saved, becau
 
 Field lists and to-one references to a deleted record are left alone, as CloudKit leaves them to dangle or to cascade through `.deleteSelf` on the server.
 
+## Saving
+
+`save()` writes every changed draft in one container transaction. It never lets one record stop the others.
+
+1. Each changed draft is written in turn. An edit is first rebased onto the record's current saved value, so a change saved since the edit began, such as a relationship another device added, is merged in rather than overwritten. A delete removes the record and its relationships. A deleted draft that was never saved has nothing to write.
+2. A record that cannot be written keeps its draft open, with its `RecordError` in `error`, and the loop goes on. The container encodes a record fully before it writes anything, so a failure leaves nothing half written.
+3. A database error stops the loop and rolls the transaction back, so nothing is written, and `save()` throws `.database`.
+4. Once the transaction commits, each written draft's `base` becomes what was written, so it has no changes. Then `save()` throws `.unsaved` if any record failed.
+
+Drafts stay in the context after a save, because views may hold them. An edit clears a draft's error, since the edit may fix it.
+
+| Declaration | What it does |
+| --- | --- |
+| `public enum SaveError: Error, Equatable` | `.database(DatabaseError)`, when nothing was written, or `.unsaved([String: RecordError])`, the records not written by record name, when everything else was. |
+| `public func save() throws(SaveError)` | Writes every change, as above. |
+| `public func error<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> RecordError? where Record.ID: Encodable` | Why the last save could not write the record, or `nil`. |
+| `var error: RecordError?` on `Draft` | The record's last save error, observable, cleared by an edit or a save that writes it. |
+| `func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError)` on `DraftProtocol` | Rebases and writes one draft, leaving `base` alone until the commit. |
+| `func didSave()` on `DraftProtocol` | Makes what was written the draft's `base`. |
+
 ## Reading
 
 `record(_:id:)` returns the open edit for a record if there is one, and otherwise its saved value, `ours ?? base`, with its relationship lists filled. Every view on a context therefore agrees with what is being edited, as with `ModelContext.model(for:)`. Another context sees only what is saved. It returns `nil` for a record that is missing, deleted, in another zone, or saved in a shape the type cannot decode.
@@ -120,5 +140,5 @@ Field lists and to-one references to a deleted record are left alone, as CloudKi
 | Declaration | What it does |
 | --- | --- |
 | `public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable` | The open edit, or else the saved value, in `zone`. |
-| `func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID?` (private) | The row in `zone` for a type and id. |
+| `func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID?` (internal) | The row in `zone` for a type and id. |
 | `func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T?` on `RecordContainer` (internal) | One row's saved value, with its relationship lists, or `nil`. The context calls it with `try?`. |
