@@ -113,6 +113,16 @@ The draft stays in `drafts` after a delete, even for a record never saved, becau
 
 Field lists and to-one references to a deleted record are left alone, as CloudKit leaves them to dangle or to cascade through `.deleteSelf` on the server.
 
+## Fetching
+
+`fetch(_:)` takes a `RecordDescriptor`, as `ModelContext.fetch(_:)` takes a `FetchDescriptor`, and returns the records in `zone`. With `includePendingChanges`, the default, open edits replace their saved values, deleted records are left out, and new records are included, all before the offset and limit apply. Without it, only saved values return.
+
+The database never loads more than the page needs. Every open draft of the type is excluded from the SQL, which then stops at `fetchOffset + fetchLimit` rows with no offset. That margin is exact rather than a guess: whatever the edits are, the page can only hold those saved rows and the edits that match. The matching edits are sorted in with them in Swift, and only then are the offset and limit taken. When no edit matches, the descriptor goes to SQL unchanged, offset included.
+
+| Member | What it is |
+|---|---|
+| `public func fetch<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> [Record]` | The records `descriptor` describes in `zone`, with open edits applied. Throws what the container's fetch or the predicate throws. |
+
 ## Saving
 
 `save()` writes every changed draft in one container transaction. It never lets one record stop the others.

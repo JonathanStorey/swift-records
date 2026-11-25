@@ -25,7 +25,7 @@ struct DescriptorItem: Codable, Identifiable, Equatable {
 /// returns, whether SQLite sorts or Swift does.
 @Suite struct RecordDescriptorTests {
     private static let words = ["file10", "File2", "file2", "éclair", "Eclair", "zebra", "Apple", "apple", "ä", "a", "b", "", "Zoë", "zoe", "Ångström", "angstrom", "item 9", "item 10", "ß", "ss"]
-    private static let items: [DescriptorItem] = (0..<120).map(item)
+    static let items: [DescriptorItem] = (0..<120).map(item)
 
     private static func item(_ index: Int) -> DescriptorItem {
         let title = words[(index * 7) % words.count]
