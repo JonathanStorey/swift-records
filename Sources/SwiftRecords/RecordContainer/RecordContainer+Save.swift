@@ -353,14 +353,9 @@ extension RecordContainer {
     func fetch<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> [T] {
         let recordType = Self.recordType(of: T.self)
         let predicate = descriptor.predicate
-        let narrowing = predicate.flatMap(Self.filter(for:))
-        let isExact = predicate == nil || narrowing?.isExact == true
-        var filter: SQLFilter = (narrowing?.clause ?? "1", narrowing?.values ?? [], isExact)
-        if !excluded.isEmpty {
-            filter.clause += " AND id NOT IN (SELECT value FROM json_each(?))"
-            filter.values.append(JSONRepresentation.array(excluded.map(JSONRepresentation.string)).description)
-        }
-        let offset = max(descriptor.fetchOffset ?? 0, 0), limit = descriptor.fetchLimit.map { max($0, 0) }
+        let filter = Self.filter(for: predicate, excluding: excluded)
+        let isExact = filter.isExact
+        let offset = descriptor.offset, limit = descriptor.limit
         let order = descriptor.sortBy.isEmpty ? (clause: "", values: []) : Self.orderBy(descriptor.sortBy)
         guard let order else {
             // No SQL sort: every match, sorted in Swift.
@@ -405,6 +400,36 @@ extension RecordContainer {
         }
         if let failure { throw failure }
         return found
+    }
+
+    /// How many records `fetch(_:in:excluding:)` would return, counted by SQLite when the
+    /// predicate translates exactly, so nothing is read or decoded. A row that does not decode
+    /// is still counted then.
+    func fetchCount<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> Int {
+        let filter = Self.filter(for: descriptor.predicate, excluding: excluded)
+        guard filter.isExact else {
+            return descriptor.count(ofPageIn: try fetch(T.self, in: zone, where: filter, predicate: descriptor.predicate).count)
+        }
+        var count = 0
+        try run("""
+            SELECT COUNT(*) FROM record
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)
+            """, values: [Self.recordType(of: T.self), zone.name, zone.owner] + filter.values) { (statement) throws(DatabaseError) in
+            count = Int(sqlite3_column_int64(statement, 0))
+        }
+        return descriptor.count(ofPageIn: count)
+    }
+
+    /// The rows `predicate` keeps, in SQL as far as it translates, leaving out the rows
+    /// named in `excluded`.
+    private static func filter<T: Decodable>(for predicate: Predicate<T>?, excluding excluded: [String]) -> SQLFilter {
+        let narrowing = predicate.flatMap(Self.filter(for:))
+        var filter: SQLFilter = (narrowing?.clause ?? "1", narrowing?.values ?? [], predicate == nil || narrowing?.isExact == true)
+        if !excluded.isEmpty {
+            filter.clause += " AND id NOT IN (SELECT value FROM json_each(?))"
+            filter.values.append(JSONRepresentation.array(excluded.map(JSONRepresentation.string)).description)
+        }
+        return filter
     }
 
     /// The saved value of the row `id` as `type`, its `ours ?? base` with its relationship

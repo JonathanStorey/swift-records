@@ -122,6 +122,8 @@ The database never loads more than the page needs. Every open draft of the type 
 | Member | What it is |
 |---|---|
 | `public func fetch<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> [Record]` | The records `descriptor` describes in `zone`, with open edits applied. Throws what the container's fetch or the predicate throws. |
+| `public func fetchCount<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> Int` | How many records `fetch(_:)` would return: the saved count, excluding open drafts, plus the matching edits, then the offset and limit. SQLite counts the saved ones without decoding when the predicate translates exactly. |
+| `private func pendingChanges<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> (excluded: [String], pending: [Record])` | The open row names to leave out of SQL, and the edits the predicate matches. |
 
 ## Saving
 

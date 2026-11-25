@@ -31,3 +31,12 @@ public struct RecordDescriptor<Record: Codable> {
         self.sortBy = sortBy
     }
 }
+
+extension RecordDescriptor {
+    /// `fetchOffset`, with `nil` and below zero as zero.
+    var offset: Int { max(fetchOffset ?? 0, 0) }
+    /// `fetchLimit`, with below zero as zero.
+    var limit: Int? { fetchLimit.map { max($0, 0) } }
+    /// How many of `total` matching records the offset and limit leave.
+    func count(ofPageIn total: Int) -> Int { min(max(total - offset, 0), limit ?? .max) }
+}

@@ -93,4 +93,19 @@ import Testing
         saved.includePendingChanges = false
         #expect(try context.fetch(saved).map(\.id) == before.map(\.id))
     }
+
+    @Test(arguments: [(nil, nil), (5, 20), (125, 50), (200, 10)] as [(Int?, Int?)])
+    func countMatchesFetch(offset: Int?, limit: Int?) throws {
+        let (context, _) = try editedContext()
+        let exact = #Predicate<DescriptorItem> { $0.rank > 0 }
+        let inexact = #Predicate<DescriptorItem> { $0.title.count > 5 }
+        for predicate in [nil, exact, inexact] {
+            var page = RecordDescriptor<DescriptorItem>(predicate: predicate)
+            page.fetchOffset = offset
+            page.fetchLimit = limit
+            #expect(try context.fetchCount(page) == context.fetch(page).count)
+            page.includePendingChanges = false
+            #expect(try context.fetchCount(page) == context.fetch(page).count)
+        }
+    }
 }

@@ -533,6 +533,9 @@ Anything else, such as an enum with its own `<`, sorts in Swift. `RecordDescript
 | --- | --- |
 | `public struct RecordDescriptor<Record: Codable>` | Which records to fetch, in what order, and how many. |
 | `func fetch<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> [T]` | The saved records the descriptor describes, as above. |
+| `func fetchCount<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> Int` | How many records `fetch` would return. With an exact predicate it is one `SELECT COUNT(*)` that decodes nothing, so a row that does not decode is still counted. |
+| `private static func filter<T: Decodable>(for predicate: Predicate<T>?, excluding excluded: [String]) -> SQLFilter` | The SQL filter both share, with the excluded names. |
+| `var offset: Int`, `var limit: Int?` and `func count(ofPageIn total: Int) -> Int` on `RecordDescriptor` (internal) | The offset and limit clamped at zero, and how many of `total` matches a page holds. |
 | `static func orderBy<T: Decodable>(_ order: [SortDescriptor<T>]) -> (clause: String, values: [Any?])?` | The `ORDER BY` terms that sort as `order` does, or `nil` when any cannot. |
 | `enum Collation: String, CaseIterable` | `LOCALIZED_STANDARD` and `LOCALIZED`. |
 | `static func registerCollations(on connection: OpaquePointer)` | Adds each collation to a connection. |
