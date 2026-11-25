@@ -179,3 +179,19 @@ private struct Note: Codable, Identifiable, Mergeable {
         #expect(try container.fetch(Note.self, in: notes).isEmpty)
     }
 }
+
+private struct Memo: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var text = ""
+}
+
+@Suite struct RecordContainerFetchOneTests {
+    @Test func oneRowReadsBackByItsKeyAndNoOther() throws {
+        let container = RecordContainer.inMemory(Memo.self)
+        let memo = Memo(text: "Hello")
+        try container.save(our: memo, zone: "Memos")
+        try container.save(our: Memo(text: "Other"), zone: "Memos")
+        #expect(try container.fetch(Memo.self, id: RecordContainer.RowID(name: memo.id.uuidString, zone: "Memos")) == memo)
+        #expect(try container.fetch(Memo.self, id: RecordContainer.RowID(name: memo.id.uuidString, zone: "Elsewhere")) == nil)
+    }
+}

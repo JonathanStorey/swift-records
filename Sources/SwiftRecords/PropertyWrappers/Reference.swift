@@ -1,4 +1,5 @@
 import Foundation
+import Versioning
 
 /// A read-only reference to another record in the same zone, held as the target's own id.
 ///
@@ -107,6 +108,15 @@ extension KeyedEncodingContainer {
     public mutating func encode<Target>(_ value: Reference<Target>, forKey key: Key) throws {
         guard value.wrappedValue != nil else { return }
         try encodeIfPresent(Optional(value), forKey: key)
+    }
+}
+
+// The schema placeholder gives each reference one unique marker id, so a key path to it can
+// be traced back to its coding key.
+extension Reference: JSONSchema.Markable {
+    public mutating func mark(_ marker: UUID) {
+        guard let id = Target.ID.marked(marker) else { return }
+        self = Reference(id, action: action, isParent: isParent, zone: zone)
     }
 }
 

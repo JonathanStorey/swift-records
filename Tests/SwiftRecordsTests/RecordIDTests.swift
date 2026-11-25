@@ -37,6 +37,6 @@ private struct Page: Codable {
     }
 
     @Test func anIdTooLongForCloudKitThrows() {
-        #expect(throws: EncodingError.self) { try RecordID(Page(slug: String(repeating: "a", count: 300)), id: \.slug, zone: "Pages") }
+        #expect(throws: RecordError.self) { try RecordID(Page(slug: String(repeating: "a", count: 300)), id: \.slug, zone: "Pages") }
     }
 }

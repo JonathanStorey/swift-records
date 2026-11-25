@@ -104,7 +104,7 @@ extension RecordContainer {
     /// The registered Swift type for the record type named `type`.
     func registeredType(named type: String) throws -> RecordType {
         guard let registered = locked({ registrations[type] }) else {
-            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The record type \(type) is not registered."))
+            throw RecordError.notRegistered(type: type)
         }
         return registered
     }
@@ -130,9 +130,10 @@ extension RecordContainer {
     /// save one record. The type is part of the name because a record name is unique in
     /// its zone across every type. ``id(_:fromRecordName:)`` reads the id back.
     ///
-    /// Throws an `EncodingError` when the name would be longer than CloudKit's 255
-    /// characters, since a shortened name could not be read back as the id.
-    static func recordName(for id: any Encodable, type: String) throws -> String {
+    /// Throws ``RecordError/nameTooLong(name:)`` when the name would be longer than CloudKit's 255
+    /// characters, since a shortened name could not be read back as the id, unless
+    /// `checkingLength` is `false`, for a draft whose save checks it.
+    static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String {
         if let id = id as? UUID { return id.uuidString }
         let text = try (id as? String) ?? JSONRepresentation(id).description
         let name = if type == recordType(of: Relationship.self) {
@@ -142,8 +143,8 @@ extension RecordContainer {
         } else {
             type + "::" + Data(text.utf8).base64URLEncoded
         }
-        guard name.utf8.count <= 255 else {
-            throw EncodingError.invalidValue(id, .init(codingPath: [], debugDescription: "The record name \(name) is longer than CloudKit's 255 characters. Use a shorter id."))
+        guard !checkingLength || name.utf8.count <= 255 else {
+            throw RecordError.nameTooLong(name: name)
         }
         return name
     }

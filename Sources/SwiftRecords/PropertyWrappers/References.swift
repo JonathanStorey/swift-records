@@ -85,7 +85,7 @@ public struct References<Target: Identifiable>: Sendable where Target.ID: Codabl
     /// A list stored as ``Relationship`` records, read back by the target's list at
     /// `inverse`, which names this list in turn.
     public init<SourceID: Codable & Hashable>(wrappedValue: [Target.ID] = [], inverse: KeyPath<Target, [SourceID]> & Sendable) where Target: Decodable {
-        self.init(wrappedValue, action: .none, zone: nil, storage: .relationships, inverse: { try Self.propertyName(of: inverse) })
+        self.init(wrappedValue, action: .none, zone: nil, storage: .relationships, inverse: { try RecordContainer.propertyName(of: inverse) })
     }
 }
 
@@ -109,18 +109,29 @@ struct RelationshipList: Codable, Hashable {
     }
 }
 
-extension References {
+extension RecordContainer {
     /// The property name of a reference list, `"Root.key"`, from a key path to it, such as
     /// `"Note.tags"` for `\Note.tags`.
     ///
     /// The key is the coding key `Root` decodes the property from, found by reading the key
     /// path on a placeholder `Root` whose lists each hold one unique marker id. It needs no
     /// runtime names, so it works in stripped builds and on Linux.
-    fileprivate static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
+    static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String {
+        try propertyName(of: Root.self) { (root: Root) -> ID? in root[keyPath: keyPath].first }
+    }
+
+    /// The property name of a reference, `"Root.key"`, from a key path to it, such as
+    /// `"Note.folder"` for `\Note.folder`, found the same way.
+    static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, ID?>) throws -> String {
+        try propertyName(of: Root.self) { (root: Root) -> ID? in root[keyPath: keyPath] }
+    }
+
+    /// The property name of the reference whose marker id `marked` reads from a placeholder.
+    private static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of root: Root.Type, marked: (Root) -> ID?) throws -> String {
         let recorded = try JSONSchema.placeholder(for: Root.self)
-        guard let marked = recorded.value[keyPath: keyPath].first,
-              let key = recorded.markers.first(where: { ID.marked($0.key) == marked })?.value.first else {
-            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The key path does not lead to a reference list that \(Root.self) decodes, or \(ID.self) is not an id that encodes as a JSON string or number."))
+        guard let id = marked(recorded.value),
+              let key = recorded.markers.first(where: { ID.marked($0.key) == id })?.value.first else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "The key path does not lead to a reference that \(Root.self) decodes, or \(ID.self) is not an id that encodes as a JSON string or number."))
         }
         return "\(RecordContainer.recordType(of: Root.self)).\(key)"
     }
@@ -135,7 +146,7 @@ extension References: JSONSchema.Markable {
     }
 }
 
-private extension Decodable {
+extension Decodable {
     /// An id of this type made from `marker`, decoded from a record name as an id is: the
     /// marker itself, its text, or a number from its first six bytes. `nil` for an id that
     /// encodes as neither a JSON string nor a number.

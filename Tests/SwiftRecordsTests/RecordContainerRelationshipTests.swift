@@ -199,7 +199,7 @@ private struct Book: Codable, Identifiable, Mergeable {
         let note = Note(title: "Hello", tags: [swift.id])
         try container.save(our: note, zone: notes)
 
-        #expect(throws: EncodingError.self, "Tag.notes points back at Note.tags, so Note.archived cannot also claim it.") {
+        #expect(throws: RecordError.self, "Tag.notes points back at Note.tags, so Note.archived cannot also claim it.") {
             try container.save(our: Note(id: note.id, title: "Hello", tags: [swift.id], archived: [swift.id]), zone: notes)
         }
         #expect(try relationships().count == 1, "Nothing is saved.")
@@ -211,7 +211,7 @@ private struct Book: Codable, Identifiable, Mergeable {
         // As left by an earlier version of the app that named another inverse.
         try container.save(our: Relationship(between: ("Note.archived", note.id.uuidString), and: ("Tag.labels", swift.id.uuidString)), zone: notes)
 
-        #expect(throws: EncodingError.self, "Note.archived already pairs with Tag.labels, not Tag.notes.") {
+        #expect(throws: RecordError.self, "Note.archived already pairs with Tag.labels, not Tag.notes.") {
             try container.save(our: Note(id: note.id, title: "Hello", archived: [sql.id]), zone: notes)
         }
         #expect(try relationships().count == 1, "Nothing is saved.")
@@ -225,7 +225,7 @@ private struct Book: Codable, Identifiable, Mergeable {
         object.append(("tags", ["$relationships": [["recordName": .string(swift.id.uuidString), "action": "none"]]]))
         let damaged = try JSONRepresentation.object(object).decode(Note.self)
 
-        #expect(throws: EncodingError.self) { try container.save(our: damaged, zone: notes) }
+        #expect(throws: RecordError.self) { try container.save(our: damaged, zone: notes) }
         #expect(try relationships().isEmpty)
     }
 
@@ -276,7 +276,7 @@ private struct Book: Codable, Identifiable, Mergeable {
         try container.save(our: Note(title: "Filed", folder: "inbox"), zone: notes)
         let fetched = try #require(try container.fetch(Note.self, in: notes).first)
 
-        #expect(throws: EncodingError.self) { try container.save(our: fetched, zone: "Other") }
+        #expect(throws: RecordError.referenceOutsideZone(reference: "Folder:inbox", zone: "Other")) { try container.save(our: fetched, zone: "Other") }
         #expect(try container.fetch(Note.self, in: "Other").isEmpty)
     }
 }
