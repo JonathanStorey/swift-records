@@ -16,8 +16,8 @@ let package = Package(
         .library(name: "SwiftRecords", targets: ["SwiftRecords"]),
     ],
     dependencies: [
-        // Tracks main so each resolve picks up the newest swift-versioning. Package.resolved is ignored for the same reason.
-        .package(url: "https://github.com/JonathanStorey/swift-versioning", branch: "main"),
+        // Any release from 0.3.0 up to 1.0.0. Package.resolved is ignored, as a library's should be, so each resolve takes the newest.
+        .package(url: "https://github.com/JonathanStorey/swift-versioning", from: "0.3.0"),
     ],
     targets: [
         .target(
