@@ -376,7 +376,7 @@ extension RecordContainer {
         var rows: [(name: String, json: JSONRepresentation)] = []
         if isExact {
             // SQLite does all of it, so only the rows returned are read.
-            try run(sql + " LIMIT ? OFFSET ?", values: bound + [Int64(limit ?? -1), Int64(offset)]) { (statement) throws(DatabaseError) in
+            try run(sql + " LIMIT ? OFFSET ?", values: bound + [limit ?? -1, offset]) { (statement) throws(DatabaseError) in
                 guard let name = statement.text(at: 0), let json = (try? statement.json(at: 1)) ?? nil else { return }
                 rows.append((name, json))
             }
@@ -508,6 +508,7 @@ private extension RecordContainer {
             case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
             case let flag as Bool: sqlite3_bind_int(statement, index, flag ? 1 : 0)
             case let integer as Int64: sqlite3_bind_int64(statement, index, integer)
+            case let integer as Int: sqlite3_bind_int64(statement, index, Int64(integer))
             case let number as Double: sqlite3_bind_double(statement, index, number)
             default: sqlite3_bind_null(statement, index)
             }
