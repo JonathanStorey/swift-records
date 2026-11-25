@@ -172,6 +172,66 @@ extension RecordContext {
     }
 }
 
+extension RecordContext {
+    /// Removes `child` from the list at `keyPath` of `parent` in ``zone``, as
+    /// removing by the parent's id does.
+    ///
+    /// ```swift
+    /// context.remove(tag, from: note, at: \.tags)
+    /// ```
+    @discardableResult
+    public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parent: Parent, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        remove(child, from: parent.id, at: keyPath)
+    }
+
+    /// Removes `child` from the list at `keyPath` of the parent with the id `parentID` in
+    /// ``zone``. The child itself stays. For a relationship list, the parent leaves the
+    /// child's own list too, so saving either side removes the relationship. Returns the
+    /// parent as it now is, or `nil`, changing nothing, when there is no such parent.
+    ///
+    /// ```swift
+    /// context.remove(tag, from: note.id, at: \Note.tags)
+    /// ```
+    @discardableResult
+    public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        guard let parent = openedDraft(Parent.self, id: parentID) else { return nil }
+        do {
+            try unrelate(child, from: parent, at: RecordContainer.propertyName(of: keyPath))
+        } catch {
+            assertionFailure("\(keyPath) is not a @References list: \(error)")
+        }
+        return parent.ours
+    }
+
+    /// Clears the reference at `keyPath` of `parent` in ``zone`` when it points at `child`.
+    ///
+    /// ```swift
+    /// context.remove(folder, from: note, at: \.folder)
+    /// ```
+    @discardableResult
+    public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parent: Parent, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        remove(child, from: parent.id, at: keyPath)
+    }
+
+    /// Clears the reference at `keyPath` of the parent with the id `parentID` in ``zone``
+    /// when it points at `child`, and leaves one pointing elsewhere. Returns the parent as it
+    /// now is, or `nil`, changing nothing, when there is no such parent.
+    ///
+    /// ```swift
+    /// context.remove(folder, from: note.id, at: \Note.folder)
+    /// ```
+    @discardableResult
+    public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent? where Parent.ID: Encodable, Child.ID: Codable {
+        guard let parent = openedDraft(Parent.self, id: parentID) else { return nil }
+        do {
+            try unrelate(child, from: parent, at: RecordContainer.propertyName(of: keyPath))
+        } catch {
+            assertionFailure("\(keyPath) is not a @Reference: \(error)")
+        }
+        return parent.ours
+    }
+}
+
 private extension RecordContext {
     /// The open draft of the record of type `type` with the id `id`, or a new one opened from
     /// its saved value, or `nil` when it has neither or is deleted.
@@ -196,6 +256,21 @@ private extension RecordContext {
         if let childKey {
             try child.add(RecordReference(to: Parent.self, id: parentID, zone: zone), toListAt: childKey, inverse: parentProperty)
         }
+    }
+
+    /// Removes `child` from the list or reference `property` of `parent`, as in
+    /// `"Album.photos"`. For a relationship list, also removes `parent` from the child's list
+    /// on the other side, opening the child's draft when it is saved, so its save cannot
+    /// bring the relationship back.
+    func unrelate<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parent: Draft<Parent>, at property: String) throws where Parent.ID: Encodable, Child.ID: Codable {
+        guard let parentID = parent.ours?.id else { return }
+        let key = property.codingKey
+        let childType = RecordContainer.recordType(of: Child.self)
+        let inverse = parent.inverse(ofListAt: key)
+        parent.removeReference(named: try RecordContainer.recordName(for: child.id, type: childType), at: key)
+        guard let inverse, inverse.hasPrefix(childType + "."), let draft = openedDraft(Child.self, id: child.id) else { return }
+        let parentName = try RecordContainer.recordName(for: parentID, type: RecordContainer.recordType(of: Parent.self))
+        draft.removeReference(named: parentName, at: inverse.codingKey)
     }
 
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id

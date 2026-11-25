@@ -76,18 +76,46 @@ protocol DraftProtocol: AnyObject {
 
 extension Draft: DraftProtocol {
     func removeReferences(to recordName: String) {
+        removeReferences(to: recordName) { _, json in RelationshipList.isEncoded(json) }
+    }
+
+    /// Removes the record named `recordName` from the list or reference under the coding key
+    /// `key`: from a relationship list or a field list, or a to-one reference that points at
+    /// it becomes `nil`.
+    func removeReference(named recordName: String, at key: String) {
+        removeReferences(to: recordName) { candidate, _ in candidate == key }
+    }
+
+    /// Removes the record named `recordName` from each list or reference `includes` picks, by
+    /// its coding key and JSON, in one edit. A draft that never referenced the record is left
+    /// alone, so its views are not woken.
+    private func removeReferences(to recordName: String, in includes: (String, JSONRepresentation) -> Bool) {
         guard case .object(var object) = try? JSONRepresentation(ours) else { return }
         var isChanged = false
-        for index in object.indices where RelationshipList.isEncoded(object[index].value) {
-            guard var list = try? object[index].value.decode(RelationshipList.self),
-                  list.relationships.contains(where: { $0.recordName == recordName }) else { continue }
-            list.relationships.removeAll { $0.recordName == recordName }
-            guard let json = try? JSONRepresentation(list) else { continue }
-            object[index].value = json
+        for index in object.indices where includes(object[index].key, object[index].value) {
+            guard let removed = Self.removing(recordName, from: object[index].value) else { continue }
+            object[index].value = removed
             isChanged = true
         }
-        // A draft that never listed the record is left alone, so its views are not woken.
         if isChanged, let edited: Record = try? JSONRepresentation.object(object).decode() { state = .inserted(edited) }
+    }
+
+    /// The encoded list or reference `json` without the record named `recordName`, or `nil`
+    /// when it does not name it. A to-one reference becomes `null`.
+    private static func removing(_ recordName: String, from json: JSONRepresentation) -> JSONRepresentation? {
+        let named = { (reference: RecordReference) in reference.recordName == recordName }
+        if RelationshipList.isEncoded(json) {
+            guard var list = try? json.decode(RelationshipList.self), list.relationships.contains(where: named) else { return nil }
+            list.relationships.removeAll(where: named)
+            return try? JSONRepresentation(list)
+        }
+        if case .array = json {
+            guard var references = try? json.decode([RecordReference].self), references.contains(where: named) else { return nil }
+            references.removeAll(where: named)
+            return try? JSONRepresentation(references)
+        }
+        guard let reference = try? json.decode(RecordReference.self), named(reference) else { return nil }
+        return .null
     }
 }
 

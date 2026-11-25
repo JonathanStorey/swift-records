@@ -88,6 +88,23 @@ A key path to a to-one `@Reference` replaces the reference instead of appending.
 | `func add(_ reference: RecordReference, toListAt key: String, inverse: String?) throws` on `Draft` | Adds a reference to a field list, or to a relationship list paired with `inverse`. |
 | `static func propertyName<Root: Decodable, ID: Decodable & Hashable>(of keyPath: KeyPath<Root, [ID]>) throws -> String` on `RecordContainer` | Moved from `References` and made internal, so the context can find a list's coding key. |
 
+### Removing from a list
+
+`remove(_:from:at:)` undoes `insert(_:into:at:)`, with the same four shapes: a list or a to-one reference, and the parent as a value or an id. Each returns the parent as it now is, `@discardableResult`, or `nil`, changing nothing, when the parent is neither open nor saved, or is deleted. Unlike insert, a new parent passed by value is not added, since there is nothing to remove from it.
+
+The child itself is never deleted. From a relationship list, the parent also leaves the child's own list, opening the child's draft when it is saved, so saving either side removes the `Relationship`. From a field list, the child is untouched. A to-one reference becomes `nil` only when it points at the child. A child that is not there changes nothing, and a draft that does not change is not rewritten, so its views are not woken.
+
+| Declaration | What it does |
+| --- | --- |
+| `public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parent: Parent, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent?` | Removes `child` from `parent`'s list. |
+| `public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parentID: Parent.ID, at keyPath: KeyPath<Parent, [Child.ID]>) -> Parent?` | The same by the parent's id. |
+| `public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parent: Parent, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent?` | Clears `parent`'s to-one reference when it points at `child`. |
+| `public func remove<Parent: Codable & Identifiable, Child: Codable & Identifiable>(_ child: Child, from parentID: Parent.ID, at keyPath: KeyPath<Parent, Child.ID?>) -> Parent?` | The same by the parent's id. |
+| `func unrelate<Parent, Child>(_ child: Child, from parent: Draft<Parent>, at property: String) throws` (private) | Removes each side from the other's list. |
+| `func removeReference(named recordName: String, at key: String)` on `Draft` | Removes a record from the list or reference under `key`. `removeReferences(to:)`, which delete uses, shares its edit. |
+
+All four take `where Parent.ID: Encodable, Child.ID: Codable` and are `@discardableResult`.
+
 ## Deleting
 
 `delete(_:)` and `delete(_:id:)` write nothing and never throw, like `ModelContext.delete(_:)`. Each returns the record as it was, its open edit or else its saved value, as `Dictionary.removeValue(forKey:)` returns what it removed. A record already deleted, or neither open nor saved, returns `nil` and changes nothing, so no draft is opened for it. A delete goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.

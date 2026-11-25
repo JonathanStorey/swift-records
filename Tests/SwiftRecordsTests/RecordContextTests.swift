@@ -454,3 +454,75 @@ private struct Book: Codable, Identifiable {
         #expect(notified)
     }
 }
+
+/// `remove(_:from:at:)` undoes `insert(_:into:at:)`, leaving the child.
+@Suite struct RecordContextRemoveTests {
+    private let container = RecordContainer.inMemory(Album.self, Photo.self, Shelf.self, Book.self)
+
+    @Test func removingFromARelationshipListUpdatesBothSides() throws {
+        let photo = Photo(), other = Photo(), album = Album(name: "Trip", photos: [photo.id, other.id])
+        try container.save(our: photo, zone: "Records")
+        try container.save(our: other, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.remove(photo, from: album.id, at: \Album.photos)?.photos == [other.id])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [], "The child's draft is opened and drops the parent.")
+        #expect(context.record(Photo.self, id: photo.id) != nil, "The child itself stays.")
+    }
+
+    @Test func savingEitherSideAfterARemoveKeepsTheRelationshipGone() throws {
+        let photo = Photo(), album = Album(name: "Trip", photos: [photo.id])
+        try container.save(our: photo, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        context.remove(photo, from: album, at: \.photos)
+        try container.save(our: try #require(context.record(Photo.self, id: photo.id)), zone: "Records")
+        try container.save(our: try #require(context.record(Album.self, id: album.id)), zone: "Records")
+        let saved = RecordContext(container)
+        #expect(saved.record(Album.self, id: album.id)?.photos == [])
+        #expect(saved.record(Photo.self, id: photo.id)?.albums == [])
+    }
+
+    @Test func removingFromAFieldListLeavesTheChildAlone() throws {
+        let photo = Photo(), album = Album(name: "Trip", covers: [photo.id])
+        try container.save(our: photo, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.remove(photo, from: album.id, at: \Album.covers)?.covers == [])
+        #expect(context.drafts.count == 1, "Only the album is opened.")
+    }
+
+    @Test func aChildNotInTheListReturnsTheParentUnchanged() throws {
+        let kept = Photo(), album = Album(name: "Trip", photos: [kept.id])
+        try container.save(our: kept, zone: "Records")
+        try container.save(our: album, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.remove(Photo(), from: album.id, at: \Album.photos)?.photos == [kept.id])
+    }
+
+    @Test func anUnknownParentReturnsNilAndChangesNothing() {
+        let context = RecordContext(container)
+        #expect(context.remove(Photo(), from: UUID(), at: \Album.photos) == nil)
+        #expect(context.remove(Photo(), from: Album(), at: \.photos) == nil, "Unlike insert, a new parent is not added.")
+        #expect(context.drafts.isEmpty)
+    }
+
+    @Test func aToOneReferenceIsClearedOnlyWhenItPointsAtTheChild() throws {
+        let shelf = Shelf(), book = Book(shelf: shelf.id)
+        try container.save(our: shelf, zone: "Records")
+        try container.save(our: book, zone: "Records")
+        let context = RecordContext(container)
+        #expect(context.remove(Shelf(), from: book.id, at: \Book.shelf)?.shelf == shelf.id, "It points elsewhere, so it stays.")
+        #expect(context.remove(shelf, from: book, at: \.shelf)?.shelf == nil)
+        #expect(context.record(Shelf.self, id: shelf.id) != nil)
+    }
+
+    @Test func aRemoveUndoesAnInsert() {
+        let context = RecordContext(container)
+        let album = Album(name: "New"), photo = Photo()
+        context.insert(photo, into: album, at: \.photos)
+        context.remove(photo, from: album, at: \.photos)
+        #expect(context.record(Album.self, id: album.id)?.photos == [])
+        #expect(context.record(Photo.self, id: photo.id)?.albums == [])
+    }
+}
