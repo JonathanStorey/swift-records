@@ -337,6 +337,101 @@ extension RecordContainer {
         return order.isEmpty ? values : values.sorted(using: order)
     }
 
+    /// The saved records `descriptor` describes in `zone`, leaving out the rows named in
+    /// `excluded`, such as the ones a context has open.
+    ///
+    /// The work depends on how much SQL can do:
+    /// - When the predicate translates exactly and every sort translates, SQLite filters,
+    ///   sorts, skips the offset and stops at the limit, and only the rows returned are read
+    ///   and decoded, with only their relationship lists.
+    /// - When the sort translates but the predicate does not fully, rows arrive in order and
+    ///   stop being decoded once the offset and limit are filled.
+    /// - Otherwise every match is decoded and sorted in Swift.
+    ///
+    /// Ties are broken by record name in SQL, so the order is the same every time. A row that
+    /// does not decode is skipped, so a limited fetch can return fewer than its limit.
+    func fetch<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> [T] {
+        let recordType = Self.recordType(of: T.self)
+        let predicate = descriptor.predicate
+        let filter = Self.filter(for: predicate, excluding: excluded)
+        let isExact = filter.isExact
+        let offset = descriptor.offset, limit = descriptor.limit
+        let order = descriptor.sortBy.isEmpty ? (clause: "", values: []) : Self.orderBy(descriptor.sortBy)
+        guard let order else {
+            // No SQL sort: every match, sorted in Swift.
+            let all = try fetch(T.self, in: zone, where: filter, predicate: predicate, order: descriptor.sortBy)
+            return Array(all.dropFirst(offset).prefix(limit ?? .max))
+        }
+        let sql = """
+            SELECT id, COALESCE(ours, base) FROM record
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)
+            ORDER BY \(order.clause.isEmpty ? "" : order.clause + ", ")id
+            """
+        let bound: [Any?] = [recordType, zone.name, zone.owner] + filter.values + order.values
+        var rows: [(name: String, json: JSONRepresentation)] = []
+        if isExact {
+            // SQLite does all of it, so only the rows returned are read.
+            try run(sql + " LIMIT ? OFFSET ?", values: bound + [limit ?? -1, offset]) { (statement) throws(DatabaseError) in
+                guard let name = statement.text(at: 0), let json = (try? statement.json(at: 1)) ?? nil else { return }
+                rows.append((name, json))
+            }
+            let names = JSONRepresentation.array(rows.map { .string($0.name) }).description
+            let lists = recordType == Self.recordType(of: Relationship.self) ? [:]
+                : try relationshipLists(in: zone, type: recordType, where: ("id IN (SELECT value FROM json_each(?))", [names], true))
+            return rows.compactMap { row in
+                try? resolved(row.json.relating(lists[row.name]), id: RowID(name: row.name, zone: zone)).decode(T.self)
+            }
+        }
+        // Rows arrive in order, so decoding stops once the offset and limit are filled.
+        let lists = try relationshipLists(in: zone, type: recordType, where: filter)
+        var found: [T] = [], skipped = 0, failure: (any Error)?
+        try run(sql, values: bound) { (statement) throws(DatabaseError) in
+            guard failure == nil, found.count < limit ?? .max,
+                  let name = statement.text(at: 0),
+                  let json = (try? statement.json(at: 1))??.relating(lists[name]),
+                  let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(T.self) else { return }
+            do {
+                guard try predicate?.evaluate(value) ?? true else { return }
+            } catch {
+                failure = error
+                return
+            }
+            if skipped < offset { skipped += 1 } else { found.append(value) }
+        }
+        if let failure { throw failure }
+        return found
+    }
+
+    /// How many records `fetch(_:in:excluding:)` would return, counted by SQLite when the
+    /// predicate translates exactly, so nothing is read or decoded. A row that does not decode
+    /// is still counted then.
+    func fetchCount<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> Int {
+        let filter = Self.filter(for: descriptor.predicate, excluding: excluded)
+        guard filter.isExact else {
+            return descriptor.count(ofPageIn: try fetch(T.self, in: zone, where: filter, predicate: descriptor.predicate).count)
+        }
+        var count = 0
+        try run("""
+            SELECT COUNT(*) FROM record
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)
+            """, values: [Self.recordType(of: T.self), zone.name, zone.owner] + filter.values) { (statement) throws(DatabaseError) in
+            count = Int(sqlite3_column_int64(statement, 0))
+        }
+        return descriptor.count(ofPageIn: count)
+    }
+
+    /// The rows `predicate` keeps, in SQL as far as it translates, leaving out the rows
+    /// named in `excluded`.
+    private static func filter<T: Decodable>(for predicate: Predicate<T>?, excluding excluded: [String]) -> SQLFilter {
+        let narrowing = predicate.flatMap(Self.filter(for:))
+        var filter: SQLFilter = (narrowing?.clause ?? "1", narrowing?.values ?? [], predicate == nil || narrowing?.isExact == true)
+        if !excluded.isEmpty {
+            filter.clause += " AND id NOT IN (SELECT value FROM json_each(?))"
+            filter.values.append(JSONRepresentation.array(excluded.map(JSONRepresentation.string)).description)
+        }
+        return filter
+    }
+
     /// The saved value of the row `id` as `type`, its `ours ?? base` with its relationship
     /// lists filled, or `nil` when there is no such row, it is deleted, or it does not decode.
     func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T? {
@@ -438,6 +533,7 @@ private extension RecordContainer {
             case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
             case let flag as Bool: sqlite3_bind_int(statement, index, flag ? 1 : 0)
             case let integer as Int64: sqlite3_bind_int64(statement, index, integer)
+            case let integer as Int: sqlite3_bind_int64(statement, index, Int64(integer))
             case let number as Double: sqlite3_bind_double(statement, index, number)
             default: sqlite3_bind_null(statement, index)
             }
