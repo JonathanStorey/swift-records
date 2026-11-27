@@ -53,8 +53,9 @@ import Versioning
         defer { base = theirs }
         guard let ours else { return }
         let strategy = RecordMergeStrategy<Record>(favoring: .ours)
+        let theirs = Self.aligned(theirs, with: ours)
         if let base {
-            state = .inserted((try? strategy.merge(base: base, ours: ours, theirs: theirs)) ?? ours)
+            state = .inserted((try? strategy.merge(base: Self.aligned(base, with: ours), ours: ours, theirs: theirs)) ?? ours)
         } else {
             // A new record that the saved value overtook: a two-way merge.
             state = .inserted((try? strategy.merge(ours: ours, theirs: theirs)) ?? ours)
@@ -70,7 +71,25 @@ import Versioning
         guard let base else { return true }
         // An edit that cannot be encoded is a change, so the save reports why.
         guard let mine = try? JSONRepresentation(ours) else { return true }
-        return mine != (try? JSONRepresentation(base))
+        return mine != (try? JSONRepresentation(Self.aligned(base, with: ours)))
+    }
+
+    /// `saved` with an empty relationship list wherever `ours` has one and `saved` has none.
+    ///
+    /// A saved record with no relationships has no list in its JSON, and decodes to a list
+    /// that encodes as nothing, while a record built in code encodes its empty list. Without
+    /// this, an untouched record would look edited, and its empty list would win a merge
+    /// over relationships saved elsewhere.
+    private static func aligned(_ saved: Record, with ours: Record) -> Record {
+        guard case .object(var object) = try? JSONRepresentation(saved),
+              case .object(let edited) = try? JSONRepresentation(ours) else { return saved }
+        let missing = edited.filter { key, json in
+            RelationshipList.isEncoded(json) && (try? json.decode(RelationshipList.self))?.relationships.isEmpty == true
+                && !object.contains { $0.key == key }
+        }
+        guard !missing.isEmpty else { return saved }
+        object += missing
+        return (try? JSONRepresentation.object(object).decode()) ?? saved
     }
 }
 
@@ -91,6 +110,10 @@ protocol DraftProtocol: AnyObject {
     func revert()
     /// Removes the record named `recordName` from the edit's relationship lists.
     func removeReferences(to recordName: String)
+    /// Catches up with the row `id` of `container` after something else saved it: an edit
+    /// rebases onto a new saved value, and a deleted row deletes an unchanged draft, while an
+    /// edited one keeps its edit as a new record.
+    func refresh(from container: RecordContainer, at id: RecordContainer.RowID)
 }
 
 extension Draft: DraftProtocol {
@@ -122,6 +145,19 @@ extension Draft: DraftProtocol {
 
     func removeReferences(to recordName: String) {
         removeReferences(to: recordName) { _, json in RelationshipList.isEncoded(json) }
+    }
+
+    func refresh(from container: RecordContainer, at id: RecordContainer.RowID) {
+        guard let saved = try? container.fetch(Record.self, id: id) else {
+            // Deleted elsewhere. A record never saved has nothing underneath to lose.
+            guard base != nil else { return }
+            // Losing someone's typing is worse than bringing back a deleted record.
+            if !hasChanges || isDeleted { state = .deleted }
+            base = nil
+            return
+        }
+        guard (try? JSONRepresentation(saved)) != base.flatMap({ try? JSONRepresentation($0) }) else { return }
+        rebase(onto: saved)
     }
 
     /// Removes the record named `recordName` from the list or reference under the coding key

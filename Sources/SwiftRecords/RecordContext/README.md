@@ -159,3 +159,27 @@ Drafts stay in the context after a save, because views may hold them. An edit cl
 | `public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable` | The open edit, or else the saved value, in `zone`. |
 | `func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID?` (internal) | The row in `zone` for a type and id. |
 | `func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T?` on `RecordContainer` (internal) | One row's saved value, with its relationship lists, or `nil`. The context calls it with `try?`. |
+
+## Staying current
+
+A draft would otherwise only catch up with the database at `save()`. Instead, `mainContext` listens to its container's `transactions()` from the moment it is made, on the main actor, and applies each one. Any other context is brought up to date by calling `apply(_:)` with a transaction, which keeps each context on its own actor.
+
+For every open draft of a record the transaction changed, the context reads the saved value again:
+
+- **Saved elsewhere.** An unchanged draft takes the new value. An edited one rebases onto it, so a field only the other side changed comes in and a field the user changed stays.
+- **Deleted elsewhere.** An unchanged draft becomes deleted, so views drop it. An edited draft keeps the edit, and its `base` becomes `nil`, so the next save writes it as a new record. Losing someone's typing is worse than bringing back a record someone else deleted.
+- **Another process.** A transaction by `RecordContainer.externalAuthor` does not say what changed, so every draft checks.
+- **Its own saves.** These come back too, and do nothing, since the saved value already equals `base`.
+
+A relationship saved elsewhere reports both of its records as updated, so an open draft's relationship list follows. A saved record with no relationships has no list in its JSON, while one built in code encodes its empty list, so a draft compares and merges with the saved value's missing lists filled in as empty. Without that, an untouched record would look edited, and its empty list would win a merge over relationships saved elsewhere.
+
+Each transaction also bumps `revision`, which `fetch(_:)`, `fetchCount(_:)` and `record(_:id:)` read. A view that fetched through the context is therefore redrawn when the container changes, even for records with no draft.
+
+| Declaration | What it does |
+| --- | --- |
+| `func apply(_ transaction: RecordTransaction)` (internal) | Refreshes the drafts the transaction changed, or all of them for another process's, and bumps `revision`. |
+| `private(set) var revision: Int` (internal) | Counts the transactions applied. Observable, and read by every read. |
+| `@ObservationIgnored var listening: Task<Void, Never>?` (internal) | The task applying `transactions()`, cancelled in `deinit`, which ends the stream. |
+| `@MainActor func listen()` (internal) | Starts that task once. `mainContext` calls it. |
+| `func refresh(from container: RecordContainer, at id: RecordContainer.RowID)` on `DraftProtocol` | Catches one draft up with its saved row, by the rules above. |
+| `private static func aligned(_ saved: Record, with ours: Record) -> Record` on `Draft` | A saved value with empty relationship lists wherever the edit has one and it has none. |
