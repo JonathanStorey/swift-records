@@ -114,6 +114,9 @@ extension RecordContainer {
         String(describing: type)
     }
 
+    /// The record type of ``Relationship``.
+    static let relationshipType = recordType(of: Relationship.self)
+
     /// The row's id and the record's name for the id `id` of a record of type `type`: a
     /// `UUID` id as it is, or, for any other id, the type and the id's text, a `String` id as
     /// it is and any other id as its JSON:
@@ -136,7 +139,7 @@ extension RecordContainer {
     static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String {
         if let id = id as? UUID { return id.uuidString }
         let text = try (id as? String) ?? JSONRepresentation(id).description
-        let name = if type == recordType(of: Relationship.self) {
+        let name = if type == relationshipType {
             text   // already a record name, and one no other record can have
         } else if text.unicodeScalars.allSatisfy(Unicode.Scalar.isPlainRecordName) {
             type + ":" + text

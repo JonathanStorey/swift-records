@@ -32,7 +32,7 @@ The container keeps its main context, and the context keeps its container. Once 
 | `init(_ container: RecordContainer)` | A new context with no edits. Internal. |
 | `@MainActor public var mainContext: RecordContext` on `RecordContainer` | The context views use, made once and kept. |
 | `@MainActor var storedMainContext: RecordContext?` on `RecordContainer` | Where the container keeps it. Internal. |
-| `@Observable final class Draft<Record: Codable>` | A record being edited or deleted and not saved, one per record for the context's life. Internal, in `Drafts.swift`. |
+| `@Observable final class Draft<Record: Codable>` | A record being edited or deleted and not saved, one per record until a save leaves it clean. Internal, in `Drafts.swift`. |
 | `enum State { case inserted(Record), deleted }` on `Draft` | The edit, or deleted. A deleted record has no edit. |
 | `var base: Record?`, `fileprivate(set) var state: State` on `Draft` | The saved value the edit started from, and the state, which only `Drafts.swift` sets. |
 | `var ours: Record?`, `var isDeleted: Bool` on `Draft` | The edit, `nil` when deleted. |
@@ -45,6 +45,7 @@ The container keeps its main context, and the context keeps its container. Once 
 | `mutating func insert<Record: Codable>(_ record: Record, at id: RecordContainer.RowID, base: () -> Record?)` on `Drafts` | Updates the open draft, or opens one, reading `base` only then. |
 | `mutating func open<Record: Codable>(_ saved: Record, at id: RecordContainer.RowID) -> Draft<Record>` on `Drafts` | Opens a draft on a saved value. |
 | `mutating func remove<Record: Codable>(_ type: Record.Type, at id: RecordContainer.RowID)` on `Drafts` | Deletes the row and removes it from every other draft's relationship lists in its zone. |
+| `mutating func removeAll(where isClosed: (Element) -> Bool)` on `Drafts` | Closes each draft `isClosed` accepts, as a save does for clean drafts. |
 | `var drafts: Drafts` on `RecordContext` | The open drafts. Internal. |
 | `public var zone: Zone = "Records"` on `RecordContext` | The zone `insert(_:)` puts a new record in. |
 | `public func insert<Record: Codable & Identifiable>(_ record: Record) where Record.ID: Encodable` | Opens a draft for `record`, or replaces the edit of the one already open, undoing a delete. |
@@ -109,7 +110,7 @@ All four take `where Parent.ID: Encodable, Child.ID: Codable` and are `@discarda
 
 `delete(_:)` and `delete(_:id:)` write nothing and never throw, like `ModelContext.delete(_:)`. Each returns the record as it was, its open edit or else its saved value, as `Dictionary.removeValue(forKey:)` returns what it removed. A record already deleted, or neither open nor saved, returns `nil` and changes nothing, so no draft is opened for it. A delete goes through `Drafts.remove`, the only code that can mark a draft deleted, so a delete always does two things together. It sets the record's draft to `.deleted`, opening one with the saved value as `base` if none is open. It also removes the record from the relationship lists of every other draft in its zone, so a Tag being edited cannot recreate the `Relationship` the delete removes.
 
-The draft stays in `drafts` after a delete, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id returns `nil`, while inserting into it by value restores it.
+The draft stays in `drafts` after a delete until a save, even for a record never saved, because a view may hold it. Inserting the record again flips the same draft back to `.inserted`, so every view holding it is told. A deleted draft with no `base` has nothing to save. `record(_:id:)` returns `nil` for a deleted record, and inserting into a deleted parent by its id returns `nil`, while inserting into it by value restores it.
 
 Field lists and to-one references to a deleted record are left alone, as CloudKit leaves them to dangle or to cascade through `.deleteSelf` on the server.
 
@@ -132,9 +133,10 @@ The database never loads more than the page needs. Every open draft of the type 
 1. Each changed draft is written in turn. An edit is first rebased onto the record's current saved value, so a change saved since the edit began, such as a relationship another device added, is merged in rather than overwritten. A delete removes the record and its relationships. A deleted draft that was never saved has nothing to write.
 2. A record that cannot be written keeps its draft open, with its `RecordError` in `error`, and the loop goes on. The container encodes a record fully before it writes anything, so a failure leaves nothing half written.
 3. A database error stops the loop and rolls the transaction back, so nothing is written, and `save()` throws `.database`.
-4. Once the transaction commits, each written draft's `base` becomes what was written, so it has no changes. Then `save()` throws `.unsaved` if any record failed.
+4. Once the transaction commits, each written draft's `base` becomes what was written, so it has no changes. Each failure, kept by row while the loop runs, is set on its draft. Then `save()` throws `.unsaved`, by record name, if any record failed.
+5. Every draft left with no changes and no error is closed. It holds nothing the container does not, so later fetches and transactions have fewer drafts to look through, and the context does not grow for as long as the app runs. A failed draft stays open with its error. A view still holding a closed draft keeps a value that matches the saved one, and the next edit of that record opens a new draft.
 
-Drafts stay in the context after a save, because views may hold them. An edit clears a draft's error, since the edit may fix it.
+An edit clears a draft's error, since the edit may fix it.
 
 | Declaration | What it does |
 | --- | --- |
@@ -144,7 +146,7 @@ Drafts stay in the context after a save, because views may hold them. An edit cl
 | `var error: RecordError?` on `Draft` | The record's last save error, observable, cleared by an edit or a save that writes it. |
 | `func write(to container: RecordContainer, at id: RecordContainer.RowID) throws(RecordError)` on `DraftProtocol` | Rebases and writes one draft, leaving `base` alone until the commit. |
 | `func didSave()` on `DraftProtocol` | Makes what was written the draft's `base`. |
-| `public var hasChanges: Bool` | Whether `save()` would write anything, as `ModelContext.hasChanges`. A draft kept after a save has `base` equal to its edit, so it does not count. |
+| `public var hasChanges: Bool` | Whether `save()` would write anything, as `ModelContext.hasChanges`. A save closes every clean draft, so only failed drafts remain, and those do count. |
 | `public func rollback()` | Throws away every unsaved change, as `ModelContext.rollback()` does. |
 | `func revert()` on `DraftProtocol` | Puts the edit back to `base`, deletes a record never saved, and clears the error. A draft with neither is left alone. |
 

@@ -4,7 +4,7 @@ import Versioning
 
 /// A record being edited in a context, or deleted, and not saved yet.
 ///
-/// A context keeps one draft for each record it touches, for as long as it has it, so every
+/// A context keeps one draft for each record it touches until a save leaves it clean, so every
 /// view holding the draft sees each change, including a delete and an insert that undoes it.
 ///
 /// `base` is the saved value the edit started from, and ``ours`` is the edit. When the saved
@@ -124,8 +124,7 @@ extension Draft: DraftProtocol {
             if base != nil { try container.delete(id, type: type) }
             return
         }
-        if let saved = try? container.fetch(Record.self, id: id),
-           (try? JSONRepresentation(saved)) != base.flatMap({ try? JSONRepresentation($0) }) {
+        if let saved = try? container.fetch(Record.self, id: id), differsFromBase(saved) {
             rebase(onto: saved)
         }
         guard hasChanges, let ours = self.ours else { return }
@@ -147,6 +146,12 @@ extension Draft: DraftProtocol {
         removeReferences(to: recordName) { _, json in RelationshipList.isEncoded(json) }
     }
 
+    /// Whether `saved`, the row's saved value now, is not the `base` the edit started from,
+    /// compared as JSON, since a record need not be `Equatable`.
+    private func differsFromBase(_ saved: Record) -> Bool {
+        (try? JSONRepresentation(saved)) != base.flatMap { try? JSONRepresentation($0) }
+    }
+
     func refresh(from container: RecordContainer, at id: RecordContainer.RowID) {
         guard let saved = try? container.fetch(Record.self, id: id) else {
             // Deleted elsewhere. A record never saved has nothing underneath to lose.
@@ -156,7 +161,7 @@ extension Draft: DraftProtocol {
             base = nil
             return
         }
-        guard (try? JSONRepresentation(saved)) != base.flatMap({ try? JSONRepresentation($0) }) else { return }
+        guard differsFromBase(saved) else { return }
         rebase(onto: saved)
     }
 
@@ -236,6 +241,11 @@ struct Drafts: Collection {
         let draft = Draft(saved, base: saved)
         storage[id] = draft
         return draft
+    }
+
+    /// Closes every draft `isClosed` picks.
+    mutating func removeAll(where isClosed: (Element) -> Bool) {
+        storage = storage.filter { !isClosed($0) }
     }
 
     /// Deletes the row `id`. Its draft stays, so views holding it see the delete, and keeps

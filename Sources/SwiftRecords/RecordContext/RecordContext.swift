@@ -315,8 +315,7 @@ extension RecordContext {
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
     /// cannot be encoded. Its name's length is checked at save.
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {
-        guard let name = try? RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: false) else { return nil }
-        return RecordContainer.RowID(name: name, zone: zone)
+        try? RecordContainer.RowID(type, id: id, zone: zone, checkingLength: false)
     }
 }
 

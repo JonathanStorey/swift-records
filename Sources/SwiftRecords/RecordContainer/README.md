@@ -56,7 +56,7 @@ With every record type registered, `.conflict` never happens, because a register
 
 ### Saving locally
 
-`save(our:id:zone:)` encodes the value to JSON and writes it into `ours` in one `INSERT … ON CONFLICT DO UPDATE` statement. A new id or zone adds a row. An existing id in the same zone replaces `ours`, clears `isDeleted` and `error`, and leaves `base`, `theirs` and `metadata` as they were. Saving the same record to another zone adds a second row and leaves the first alone.
+`save(our:at:)` encodes the value to JSON and writes it into `ours` in one `INSERT … ON CONFLICT DO UPDATE` statement. A new id or zone adds a row. An existing id in the same zone replaces `ours`, clears `isDeleted` and `error`, and leaves `base`, `theirs` and `metadata` as they were. Saving the same record to another zone adds a second row and leaves the first alone.
 
 The row's id comes from `recordName(for:type:)`. A `UUID` id is used as it is, as its `uuidString`. Any other id becomes the record type and the id's text, a `String` id as it is and any other id as its JSON. Text of only ASCII letters, digits, `-`, `_` and `.` follows one colon, as in `Page:intro` or `Invoice:42`, so the name reads as the id. Any other text is Base64URL-encoded without padding after two colons, as in `Page::Y2Fmw6k` for `café`. Neither form contains a character that needs escaping in a URL or a Dashboard search, and both stay within CloudKit's ASCII. Two devices that create the same id independently therefore write the same record, and the type is part of the name because a record name must be unique in its zone across every type. The zone is not part of the name, so a copy of a record in another zone keeps its name.
 
@@ -120,7 +120,7 @@ The retryable failures are a missing zone, a failed batch, network failures, an 
 - A record with no `metadata` and no `base` has never been uploaded, so its row is removed at once.
 - Any other record is marked `isDeleted`, and its `ours`, `theirs` and `error` are dropped. The delete then waits to upload.
 
-Saving the record again before the delete uploads undoes the delete, because `save(our:)` clears `is_deleted`.
+Saving the record again before the delete uploads undoes the delete, because `save(our:at:)` clears `is_deleted`.
 
 `save(deleted:)` handles the server reporting that a record is gone, whether because this device's delete was confirmed or because another device deleted it. The row is removed, unless this device has unsent changes and did not itself delete the record. Those changes win. The row forgets the server's version and keeps only `ours`, so the next send creates the record again. A user's edit is never silently lost to someone else's delete.
 
@@ -305,7 +305,7 @@ An `@Encrypted` property is stored on the server's encrypted side. In the contai
 
 `send(id:)` encodes the full value into a scratch record and copies over only the changed keys. A changed key goes to the encrypted side if the new value's encoding put it there. A cleared key is on neither side of the new encoding, so the container also encodes `base` into a second scratch record and checks which side that key was on before. Both checks use the keys the encoder actually wrote, so a custom `CodingKeys` works here too.
 
-A record with an `@Encrypted` value cannot be saved to `Zone.public`, because the public database has no encrypted side. `save(our:)` asserts on this.
+A record with an `@Encrypted` value cannot be saved to `Zone.public`, because the public database has no encrypted side. `save(our:at:)` asserts on this.
 
 ## Fetching
 
@@ -337,22 +337,23 @@ A `@References(inverse:)` list is stored as `Relationship` rows, never on its re
 
 When the list encodes, it writes a `RelationshipList` instead of an array: its references and the other side's property, under keys that start with `$` so no model's property reads as one. A list built in code finds the other side's property from its key path, by decoding a placeholder of the other type in which each list holds one marker id and reading which coding key the marker came back from. A decoded list keeps the name it was decoded with.
 
-`save(our:)` takes each top-level `RelationshipList` out of the record's JSON, then `relationshipChanges(_:of:type:zone:)` compares it with the zone's relationships. A list owns the relationships with a side that is the record in its property. A target with no relationship gets one, a relationship whose target left the list is deleted, and a relationship is saved only when it changes, so an unchanged list writes nothing. Orders are kept while they still increase along the list, so removing a target renumbers nothing. A property already paired with another property, on the record or on a new target, throws, because the two key paths do not point at each other. The record and its relationships are written in one transaction.
+`save(our:at:)` takes each top-level `RelationshipList` out of the record's JSON, then `relationshipChanges(_:of:type:zone:)` compares it with the zone's relationships. A list owns the relationships with a side that is the record in its property. A target with no relationship gets one, a relationship whose target left the list is deleted, and a relationship is saved only when it changes, so an unchanged list writes nothing. Orders are kept while they still increase along the list, so removing a target renumbers nothing. A property already paired with another property, on the record or on a new target, throws, because the two key paths do not point at each other. The record and its relationships are written in one transaction.
 
 `fetch(_:in:predicate:order:)` reads the relationships once with `relationshipLists(in:type:where:)`, only those with a side of the fetched type, and, with a translated predicate, only those with a side among the rows it keeps. Relationship ids begin with their properties, as in `Note.tags~Tag.notes:`, so `instr` finds a type's relationships without decoding the rest. `relationshipLists` groups each side by record and coding key, sorts each list by its side's order with unplaced relationships last, and puts each `RelationshipList` into its record's JSON before decoding, so the predicate sees the full list. A record in its own symmetric list is listed once. A record with no relationships has no list to put in, so it decodes from a missing key with no storage, and saving it leaves every relationship alone.
 
-`delete(our:id:zone:)` deletes every relationship the record is a side of, found by `relationships(of:type:in:)`, in the same transaction as the record. A `Relationship` merges each side's order on its own, so two devices that reorder opposite sides both keep their change. Its id is already a record name, so `recordName(for:type:)` uses it as it is.
+`delete(_:type:)` deletes every relationship the record is a side of, found by `relationships(of:type:in:)`, in the same transaction as the record. A `Relationship` merges each side's order on its own, so two devices that reorder opposite sides both keep their change. Its id is already a record name, so `recordName(for:type:)` uses it as it is.
 
-`save(our:)` also places every reference. `placingReferences(in:)` gives each `RecordReference` with no zone the record's zone and owner, and throws for one that names another zone, since CloudKit follows a reference only within its record's zone.
+`save(our:at:)` also places every reference. `placingReferences(in:)` gives each `RecordReference` with no zone the record's zone and owner, and throws for one that names another zone, since CloudKit follows a reference only within its record's zone.
 
 ## Change reporting
 
 Every write to the `record` table runs inside `transaction(author:_:)`. While a transaction is open, each write adds a `RecordTransaction.Change` to the private `transactionChanges` array through `log(_:)`:
 
-- `write(_:isNew:)` logs `inserted` for a new row, `updated` for an existing one, and `deleted` for a row marked deleted.
-- `remove(id:type:)` logs `deleted`.
-- The upsert in `save(our:)` checks `contains(_:)` first, to tell an insert from an update.
-- `clear()` and `clear(in:)` read each row's id and type before removing it.
+- `write(_:replacing:isBookkeeping:)` logs `inserted` when there was no previous row, `updated` for an existing one, and `deleted` for a row marked deleted.
+- A sync engine write that only keeps books, as `update(id:inserting:_:)` does when it stores metadata or a confirmed `base`, passes `isBookkeeping: true` and logs nothing unless the row's `visible` value changed. An upload confirmed with nothing new is silent, so no context refetches for it.
+- `remove(id:type:)` logs `deleted`, and for a `Relationship` reads the row first so each side is reported.
+- The upsert in `write(ours:id:type:)` runs `SELECT 1` first, to tell an insert from an update.
+- `clear()` and `clear(in:)` read each row's id and type before removing it, and run as `syncAuthor`, since only the sync engine clears.
 
 After `COMMIT`, `report(_:author:)` wraps the changes in one `RecordTransaction`, numbered from 1, and yields it to every `transactions()` stream. A rollback drops the array, so nothing is reported. A transaction with no changes reports nothing. Writes by the sync engine are authored `syncAuthor`.
 
@@ -371,11 +372,13 @@ The notification exists only where the `notify` module does, so Linux skips it. 
 
 ## Concurrency
 
-The connection is opened with `SQLITE_OPEN_FULLMUTEX`, so SQLite serializes every call on it. That alone is not enough, because many operations read a row, change it in Swift, and write it back. A recursive lock (`locked(_:)`) wraps each such read-and-write, along with registration, so no other thread can slip in between.
+The connection is opened with `SQLITE_OPEN_FULLMUTEX`, so SQLite serializes every call on it. That alone is not enough, because many operations read a row, change it in Swift, and write it back. A recursive lock (`locked(_:)`) wraps each such read-and-write, along with registration and every write outside a transaction, so no other thread can slip in between.
+
+A file container also opens a second, read-only connection, `reader`. In WAL mode it sees only the last committed snapshot. `run(_:values:each:)` sends a read to `reader` when the calling thread does not hold the lock, so a fetch on the main thread never sees a transaction another thread has open, and never waits for it. A read by the thread holding the lock goes to the writer, so a transaction sees its own writes. `locked(_:)` counts its depth in the thread's `threadDictionary`, under a key unique to the container, and `holdsLock` reads it. An in-memory container has no `reader`, since a second connection would open a different database, so every read there takes the lock.
 
 `transaction(author:_:)` takes the same lock and runs its body between `BEGIN IMMEDIATE` and `COMMIT`, rolling back if the body throws. A transaction inside another one joins it. Every write to the `record` table runs in one. Because the lock is recursive, the saves inside a transaction take it again without deadlocking. Batches of incoming records, confirmations and deletions each run as one transaction, so a batch lands whole or not at all.
 
-`favoring`, `registrations` and `assetsToSweep` are only touched under the lock.
+`favoring`, `registrations` and `assetsToSweep` are only touched under the lock. `save(our:at:)` and `delete(_:type:)` hold it for their whole read-compare-write, so the relationships they compare against cannot change underneath them.
 
 ## Internal reference
 
@@ -391,7 +394,9 @@ Every function below is internal to the module unless marked otherwise.
 | `var assets: URL` | The folder holding every row's asset folder. |
 | `var favoring: KeepMerge<JSONRepresentation>` | The side kept at values the type's own merge cannot settle. |
 | `var assetsToSweep: Set<UUID>?` (private) | Rows whose asset cleanup waits for the current transaction, or `nil` outside one. |
-| `func locked<T, Failure>(_ body: () throws(Failure) -> T) throws(Failure) -> T` | Runs `body` under the container's recursive lock. |
+| `var reader: OpaquePointer?` (private(set)) | A read-only connection that sees the last commit, or `nil` in memory. |
+| `func locked<T, Failure>(_ body: () throws(Failure) -> T) throws(Failure) -> T` | Runs `body` under the container's recursive lock, counting its depth on the thread. |
+| `var holdsLock: Bool` | Whether the calling thread holds the lock. |
 | `func transaction<T>(author: String? = nil, _ body: () throws(DatabaseError) -> T) throws(DatabaseError) -> T` | Runs `body` as one SQLite transaction, or joins the one already open, reports its changes by `author`, then sweeps assets. |
 | `static let syncAuthor: String` | `"sync"`, the author of the sync engine's writes. |
 | `func transactions() -> AsyncStream<RecordTransaction>` (public) | A stream of every transaction committed from now on. |
@@ -402,7 +407,10 @@ Every function below is internal to the module unless marked otherwise.
 | `func sweepAssets(of row: Row)` | Removes a written row's unused files, now or after the current transaction. |
 | `func sweepAssets(id: RowID)` | Removes a removed row's folder, now or after the current transaction. |
 | `func execute(_ sql: String) throws(DatabaseError)` | Runs SQL that returns no rows. |
-| `func run(_ sql: String, _ values: Any?..., each body:)` (private) | Prepares, binds and steps a statement, handing each result row to `body`. |
+| `func run(_ sql: String, _ values: Any?..., each body:)` | Runs a statement on `reader` outside the lock, or on the writer under it, handing each result row to `body`. |
+| `func run(_ sql: String, values: [Any?], each body:)` | The same, with the values as an array. |
+| `func run(_ sql: String, _ values: Any?..., on connection: OpaquePointer, each body:)` | Prepares, binds and steps a statement on `connection`. |
+| `func run(_ sql: String, values: [Any?], on connection: OpaquePointer, each body:)` | The same, with the values as an array. |
 
 ### Registering and identity
 
@@ -411,6 +419,8 @@ Every function below is internal to the module unless marked otherwise.
 | `func register<Record: Codable>(_ type: Record.Type)` | Registers a type for merging, stores its schema, and asserts on a breaking change. |
 | `func registeredType(named type: String) throws -> RecordType` | The registered type for a record type name, or `RecordError.notRegistered`. `Relationship` is registered by default. |
 | `static func recordType(of type: Any.Type) -> String` | The record type name, the Swift type's name. |
+| `static let relationshipType: String` | The record type of `Relationship`. |
+| `RowID.init<Value>(_ type: Value.Type, id: some Encodable, zone: Zone, checkingLength: Bool = true) throws` | The row of a record of `type` with `id` in `zone`. |
 | `static func recordName(for id: any Encodable, type: String, checkingLength: Bool = true) throws -> String` | A `UUID` id as it is, or the type and any other id, plain after `:` or Base64URL after `::`. |
 | `static func id<ID: Decodable>(_ type: ID.Type, fromRecordName name: String) -> ID?` | The id a record name was made from. |
 | `func storedSchema(named name: String) -> JSONSchema?` | The schema a record type was last registered with. |
@@ -421,7 +431,10 @@ Every function below is internal to the module unless marked otherwise.
 | Declaration | What it does |
 | --- | --- |
 | `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The saved values of one type in one zone, filtered and sorted. |
-| `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T]` | The same, with the rows narrowed by `filter` first. |
+| `func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, orderBy order: SQLOrder? = nil, offset: Int = 0, limit: Int? = nil) throws -> [T]` | The one streaming fetch: rows narrowed by `filter` and sorted by `order` in SQL, the predicate applied in Swift, and decoding stopped once `offset` and `limit` are filled. |
+| `typealias SQLOrder = (clause: String, values: [Any?])` | An `ORDER BY` clause and its bound values. |
+| `func select(where filter: SQLFilter?, orderBy order: SQLOrder? = nil) -> String` (private) | The `SELECT` every fetch and count shares. |
+| `func value<T: Decodable>(of name: String, json: JSONRepresentation, in zone: Zone, lists:) -> T?` (private) | A row's value with its relationship lists put in, decoded, or `nil`. |
 | `func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T?` | One row's saved value, with its relationship lists, or `nil` when it is missing, deleted or does not decode. |
 | `typealias SQLFilter = (clause: String, values: [Any?], isExact: Bool)` | A `WHERE` condition, its bound values, and whether it keeps exactly what its Swift source accepts. |
 | `static func filter<T: Decodable>(for predicate: Predicate<T>) -> SQLFilter?` | The part of a predicate SQLite can test. |
@@ -431,8 +444,10 @@ Every function below is internal to the module unless marked otherwise.
 | `func relationships(of name: String, type: String, in zone: Zone) throws -> [Relationship]` | Every relationship a record is a side of. |
 | `func row(id: RowID) throws(DatabaseError) -> Row?` | Reads a row, resolving its asset paths. |
 | `func update(id: RowID, inserting new: Row?, _ change: (inout Row) -> Void) throws(DatabaseError)` | Reads, changes and writes a row under the lock, inserting `new` when there is none. |
-| `func write(_ row: Row) throws(DatabaseError)` (private) | Writes every column with portable asset paths, then sweeps the row's assets. |
-| `func remove(id: RowID) throws(DatabaseError)` (private) | Deletes a row and sweeps its folder. |
+| `func write(_ row: Row, replacing previous: Row?, isBookkeeping: Bool = false) throws(DatabaseError)` | Writes every column with portable asset paths, logs the change unless it only keeps books, then sweeps the row's assets. |
+| `var Row.visible: JSONRepresentation?` | What a fetch sees: `ours`, else `base`, or `nil` when deleted. |
+| `var Row.content: JSONRepresentation?` | The row's latest JSON on any side, as a removed `Relationship` reports its records from. |
+| `func remove(id: RowID, type: String) throws(DatabaseError)` | Deletes a row, logs it, and sweeps its folder. |
 | `mutating func Row.receive(_ theirs:merging:)` | Takes an incoming version as `base`, merging it into `ours` first when there is one. |
 | `mutating func Row.confirm(_ sent:)` | Takes a confirmed upload as `base`, keeping later local changes in `ours`. |
 | `var Row.status: Row.Status` | The computed sync status. |
@@ -443,14 +458,13 @@ Every function below is internal to the module unless marked otherwise.
 
 | Declaration | What it does |
 | --- | --- |
-| `func save<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | Saves a local version into `ours`, with its relationships, and places its references. |
-| `func save<Record: Identifiable>(our record: Record, zone: Zone) throws` | The same, identified by `id`. |
+| `func save<Record: Encodable>(our record: Record, at id: RowID) throws(RecordError)` | Saves a local version into `ours`, with its relationships, and places its references, all under the lock. A context saves through it. |
 | `func save(their json: JSONRepresentation, id: String, zone: Zone, type: String, metadata: Data?) throws(DatabaseError)` | Saves an incoming version, merging when needed. |
 | `func delete(id: RowID) throws(DatabaseError)` | Removes a never-uploaded row, or marks the row deleted. |
-| `func delete<Record, ID>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws` | The same, by a record's id. |
+| `func delete(_ id: RowID, type: String) throws(RecordError)` | Deletes a record and every relationship it is a side of, under the lock. |
 | `func save(deleted id: RowID) throws(DatabaseError)` | Removes a row the server no longer has, unless unsent changes should recreate it. |
-| `func clear() throws(DatabaseError)` | Removes every row, the sync state and every asset. |
-| `func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError)` | Removes a zone's rows, or rebuilds them as new records. |
+| `func clear() throws(DatabaseError)` | Removes every row and the sync state in one transaction, then every asset. |
+| `func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError)` | Removes a zone's rows, or rebuilds them as new records, in one transaction. |
 | `var engineStateData: Data?` | The opaque sync state blob. Reading and writing never throw. |
 
 ### Merging
@@ -493,7 +507,7 @@ Every function below is internal to the module unless marked otherwise.
 
 ## Errors
 
-Saving or deleting a record throws `RecordError`, a typed error with one case for each way it can fail, each naming the records and properties involved. `save(our:)` and `delete(our:)` are `throws(RecordError)`: the container's own checks throw their case, SQLite's failures become `.database`, and anything else the record's own encoding throws becomes `.unencodable`. Each case has a plain English `errorDescription` from `LocalizedError`, so every message lives in `RecordError.swift`.
+Saving or deleting a record throws `RecordError`, a typed error with one case for each way it can fail, each naming the records and properties involved. `save(our:at:)` and `delete(_:type:)` are `throws(RecordError)`: the container's own checks throw their case, SQLite's failures become `.database`, and anything else the record's own encoding throws becomes `.unencodable`. Each case has a plain English `errorDescription` from `LocalizedError`, so every message lives in `RecordError.swift`.
 
 | Declaration | What it does |
 | --- | --- |
@@ -506,8 +520,8 @@ Saving or deleting a record throws `RecordError`, a typed error with one case fo
 | `case unencodable(type: String, description: String)` | The record's own encoding threw. |
 | `case database(DatabaseError)` | SQLite failed. |
 | `init(_ error: any Error, type: String)` | Any error as a `RecordError` (internal). |
-| `func save<Record: Encodable>(our record: Record, at id: RowID) throws(RecordError)` | `save(our:id:zone:)` for a caller that has the row, as a context does. It checks the name's length and asserts on `@Encrypted` values in `Zone.public`. |
-| `func delete(_ id: RowID, type: String) throws(RecordError)` | `delete(our:id:zone:)` for a caller that has the row. |
+
+The tests save and delete by key path or by `Identifiable` id through overloads in `TestSupport.swift`, which build the `RowID` and call these.
 
 A failed `@Asset` copy does not throw: the record keeps the file's own URL, as before.
 

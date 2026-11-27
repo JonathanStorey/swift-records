@@ -6,6 +6,9 @@ import Versioning
 /// came from accepts, and `false` when it may keep more.
 typealias SQLFilter = (clause: String, values: [Any?], isExact: Bool)
 
+/// The terms of a SQL `ORDER BY`, with the values its `?` placeholders bind in order.
+typealias SQLOrder = (clause: String, values: [Any?])
+
 extension RecordContainer {
     /// A SQL condition that keeps every row whose value `predicate` accepts, and usually far
     /// fewer of the others, or `nil` when no part of `predicate` translates.
@@ -108,7 +111,7 @@ private struct PredicateSchema {
                 OR EXISTS (SELECT 1 FROM record AS other WHERE other.type = ? AND other.zone = record.zone \
                 AND other.owner = record.owner AND other.is_deleted = 0 AND (instr(other.id, ?) = 1 OR instr(other.id, ?) > 0) \
                 AND ((\(side(0)) = record.id AND \(side(1)) = ?) OR (\(side(1)) = record.id AND \(side(0)) = ?))))
-                """, [path, target, RecordContainer.recordType(of: Relationship.self), property + "~", "~" + property + ":", target, target], false)
+                """, [path, target, RecordContainer.relationshipType, property + "~", "~" + property + ":", target, target], false)
         }
         return nil
     }
@@ -293,7 +296,7 @@ extension RecordContainer {
     /// `.localizedStandard` or `.localized` sorts through the collation of the same name,
     /// which calls Foundation's own comparison. Any other type, such as an enum with its own
     /// `<`, has no SQL equal, so the caller sorts in Swift.
-    static func orderBy<T: Decodable>(_ order: [SortDescriptor<T>]) -> (clause: String, values: [Any?])? {
+    static func orderBy<T: Decodable>(_ order: [SortDescriptor<T>]) -> SQLOrder? {
         guard let schema = PredicateSchema(T.self) else { return nil }
         var terms: [String] = [], values: [Any?] = []
         for descriptor in order {

@@ -29,7 +29,7 @@ extension RecordContext {
     public func save() throws(SaveError) {
         let changed = drafts.filter { $0.value.hasChanges }
         guard !changed.isEmpty else { return }
-        var written: [any DraftProtocol] = [], failures: [String: RecordError] = [:]
+        var written: [any DraftProtocol] = [], failures: [RecordContainer.RowID: RecordError] = [:]
         do throws(DatabaseError) {
             try container.transaction { () throws(DatabaseError) in
                 for (id, draft) in changed {
@@ -38,7 +38,7 @@ extension RecordContext {
                         written.append(draft)
                     } catch {
                         guard case .database(let error) = error else {
-                            failures[id.name] = error
+                            failures[id] = error
                             continue
                         }
                         throw error
@@ -49,8 +49,13 @@ extension RecordContext {
             throw .database(error)
         }
         for draft in written { draft.didSave() }
-        for (id, draft) in changed { if let error = failures[id.name] { draft.error = error } }
-        if !failures.isEmpty { throw .unsaved(failures) }
+        for (id, draft) in changed { if let error = failures[id] { draft.error = error } }
+        // A clean draft holds nothing the container does not, so the context lets it go,
+        // and later fetches and transactions have fewer drafts to look through.
+        drafts.removeAll { !$0.value.hasChanges && $0.value.error == nil }
+        if !failures.isEmpty {
+            throw .unsaved(Dictionary(failures.map { ($0.key.name, $0.value) }) { first, _ in first })
+        }
     }
 
     /// Whether the context has changes ``save()`` would write, as `ModelContext.hasChanges`.
