@@ -281,7 +281,8 @@ reported. On Linux, install SQLite's headers first
 
 `recordContainer(_:)` puts a container's `mainContext` in the environment,
 as `modelContainer(_:)` does in SwiftData, and `@Records` lists records
-through it, as `@Query` does. A list takes a `RecordDescriptor`, or a
+through it, as `@Query` does. A list takes a `RecordDescriptor`, read in
+the context's zone or in one passed with `in:`, or a
 reference list's projected value, which lists its targets in order whether
 it is a field list or a relationship list.
 

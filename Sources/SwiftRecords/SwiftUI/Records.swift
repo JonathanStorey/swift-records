@@ -10,6 +10,7 @@ import SwiftUI
 /// ```swift
 /// @Records var notes: [Note]
 /// @Records(RecordDescriptor(predicate: #Predicate { !$0.isArchived })) var active: [Note]
+/// @Records(in: "Shared") var shared: [Note]
 /// @Records(note.$tags) var tags: [Tag]
 /// ```
 ///
@@ -33,6 +34,12 @@ public struct Records<Record: Codable>: DynamicProperty {
     /// The records `descriptor` describes, every record of the type by default.
     public init(_ descriptor: RecordDescriptor<Record> = RecordDescriptor()) {
         fetch = { try $0.fetch(descriptor) }
+    }
+
+    /// The records `descriptor` describes in `zone`, rather than the context's own
+    /// ``RecordContext/zone``.
+    public init(_ descriptor: RecordDescriptor<Record> = RecordDescriptor(), in zone: Zone) {
+        fetch = { try $0.fetch(descriptor, in: zone) }
     }
 
     /// The records `references` lists, in its order, without the ones deleted or not yet

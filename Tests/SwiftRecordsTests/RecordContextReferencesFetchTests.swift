@@ -88,3 +88,28 @@ private struct Photo: Codable, Identifiable {
         #expect(RecordContext(container).fetch(Album().$photos).isEmpty)
     }
 }
+
+/// `fetch(_:in:)` and `fetchCount(_:in:)` read another zone than the context's own, with the
+/// context's edits in that zone.
+@Suite struct RecordContextZoneFetchTests {
+    private let container = RecordContainer.inMemory(Album.self, Photo.self)
+
+    @Test func anotherZoneReturnsItsOwnRecordsAndEdits() throws {
+        try container.save(our: Photo(caption: "home"), zone: "Records")
+        let away = Photo(caption: "away")
+        try container.save(our: away, zone: "Shared")
+        let context = RecordContext(container)
+        context.zone = "Shared"
+        var edited = away
+        edited.caption = "edited"
+        context.insert(edited)
+        context.insert(Photo(caption: "new"))
+        context.zone = "Records"
+
+        let descriptor = RecordDescriptor<Photo>(sortBy: [SortDescriptor(\.caption)])
+        #expect(try context.fetch(descriptor, in: "Shared").map(\.caption) == ["edited", "new"])
+        #expect(try context.fetchCount(descriptor, in: "Shared") == 2)
+        #expect(try context.fetch(descriptor).map(\.caption) == ["home"], "The context's own zone is unchanged.")
+        #expect(try context.fetchCount(descriptor) == 1)
+    }
+}
