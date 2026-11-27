@@ -131,8 +131,14 @@ extension RecordContext {
     /// let note = context.record(Note.self, id: noteID)
     /// ```
     public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
+        record(type, id: id, in: zone)
+    }
+
+    /// The record of type `type` with the id `id` in `zone`, as ``record(_:id:)`` finds it in
+    /// ``zone``.
+    func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID, in zone: Zone) -> Record? where Record.ID: Encodable {
         _ = revision
-        guard let rowID = rowID(of: type, id: id) else { return nil }
+        guard let rowID = rowID(of: type, id: id, in: zone) else { return nil }
         if let draft = drafts.draft(type, at: rowID) { return draft.ours }
         return try? container.fetch(type, id: rowID)
     }
@@ -315,6 +321,11 @@ extension RecordContext {
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
     /// cannot be encoded. Its name's length is checked at save.
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {
+        rowID(of: type, id: id, in: zone)
+    }
+
+    /// The row in `zone` for the record of type `type` with the id `id`.
+    func rowID<Record>(of type: Record.Type, id: some Encodable, in zone: Zone) -> RecordContainer.RowID? {
         try? RecordContainer.RowID(type, id: id, zone: zone, checkingLength: false)
     }
 }
