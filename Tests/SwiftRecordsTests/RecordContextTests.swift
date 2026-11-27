@@ -543,6 +543,18 @@ private struct Broken: Codable, Identifiable {
 @Suite struct RecordContextSaveTests {
     private let container = RecordContainer.inMemory(Page.self, Album.self, Photo.self, Broken.self)
 
+    @Test func aSaveClosesCleanDraftsAndKeepsFailedOnes() throws {
+        let context = RecordContext(container)
+        let page = Page(id: "intro", title: "Intro")
+        context.insert(page)
+        context.insert(Broken())
+        _ = try? context.save()
+
+        #expect(context.drafts.count == 1, "Only the record that failed keeps its draft.")
+        #expect(context.drafts.first?.value.error != nil)
+        #expect(context.record(Page.self, id: "intro") == page, "A closed draft reads from the container.")
+    }
+
     @Test func insertsEditsAndDeletesAreWritten() throws {
         try container.save(our: Page(id: "edited", title: "Old"), zone: "Records")
         try container.save(our: Page(id: "deleted"), zone: "Records")

@@ -43,6 +43,19 @@ extension RecordContainer.Row {
 }
 
 extension RecordContainer.Row {
+    /// What a fetch reads from this row: this device's version, or else the server's, or
+    /// `nil` when it is deleted.
+    var visible: JSONRepresentation? {
+        isDeleted ? nil : ours ?? base
+    }
+
+    /// Any version of the row's content, for a ``Relationship`` whose sides a change reports.
+    var content: JSONRepresentation? {
+        ours ?? base ?? theirs
+    }
+}
+
+extension RecordContainer.Row {
     enum Status: Equatable, Sendable {
         case synced
         case waitingToUpload

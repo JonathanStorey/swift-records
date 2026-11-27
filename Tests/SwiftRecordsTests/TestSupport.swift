@@ -2,6 +2,44 @@ import Foundation
 @testable import SwiftRecords
 import Versioning
 
+/// Saves and deletes by a record's own id, which the context does by row, for tests that
+/// write to the container directly.
+extension RecordContainer {
+    /// Saves `record` as this device's version in `zone`, identified by the value at `id`.
+    func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
+        let type = Self.recordType(of: Record.self)
+        let rowID: RowID
+        do {
+            rowID = try RowID(Record.self, id: record[keyPath: id], zone: zone)
+        } catch {
+            throw RecordError(error, type: type)
+        }
+        try save(our: record, at: rowID)
+    }
+
+    /// Saves an `Identifiable` `record` as this device's version, identified by its `id`.
+    func save<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
+        try save(our: record, id: \.id, zone: zone)
+    }
+
+    /// Deletes `record` in `zone` on this device, identified by the value at `id`.
+    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
+        let type = Self.recordType(of: Record.self)
+        let rowID: RowID
+        do {
+            rowID = try RowID(Record.self, id: record[keyPath: id], zone: zone)
+        } catch {
+            throw RecordError(error, type: type)
+        }
+        try delete(rowID, type: type)
+    }
+
+    /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
+    func delete<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
+        try delete(our: record, id: \.id, zone: zone)
+    }
+}
+
 extension RecordContainer {
     /// An in-memory container with `types` registered. Opening one in memory cannot fail.
     static func inMemory(_ types: [any Codable.Type]) -> RecordContainer {

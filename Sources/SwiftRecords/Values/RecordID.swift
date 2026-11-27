@@ -26,12 +26,21 @@ public struct RecordID<Record>: Hashable, Codable, Sendable {
 extension RecordID {
     /// The id of `record`, identified by the property at `id`.
     public init<ID: Encodable>(_ record: Record, id: KeyPath<Record, ID>, zone: Zone) throws {
-        let name = try RecordContainer.recordName(for: record[keyPath: id], type: RecordContainer.recordType(of: Record.self))
-        self.init(name: name, zone: zone)
+        try self.init(Record.self, id: record[keyPath: id], zone: zone)
     }
 
     /// The id of an `Identifiable` `record`.
     public init(_ record: Record, zone: Zone) throws where Record: Identifiable, Record.ID: Encodable {
         try self.init(record, id: \.id, zone: zone)
+    }
+}
+
+extension RecordID {
+    /// The id of the record of type `type` with the id `id` in `zone`, named by
+    /// ``RecordContainer/recordName(for:type:checkingLength:)``, which throws when the name is
+    /// longer than CloudKit allows, unless `checkingLength` is `false`.
+    init<Value>(_ type: Value.Type, id: some Encodable, zone: Zone, checkingLength: Bool = true) throws {
+        let name = try RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: checkingLength)
+        self.init(name: name, zone: zone)
     }
 }

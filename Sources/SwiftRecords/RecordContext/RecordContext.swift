@@ -21,10 +21,46 @@ import Observation
     /// The zone that ``insert(_:)`` puts a new record in. An existing record keeps its own
     /// zone, so changing this never moves one.
     public var zone: Zone = "Records"
+    /// Counts the container's transactions this context has applied. Reading records reads
+    /// it, so a view that fetched redraws when the container changes.
+    private(set) var revision = 0
+    /// The task applying the container's transactions, for ``RecordContainer/mainContext``.
+    @ObservationIgnored var listening: Task<Void, Never>?
 
     /// A new context on `container`, with no edits.
     init(_ container: RecordContainer) {
         self.container = container
+    }
+
+    deinit {
+        listening?.cancel()
+    }
+}
+
+extension RecordContext {
+    /// Brings the context up to date with `transaction`, which its container committed. Each
+    /// open draft of a record it changed catches up with the saved value, and every draft
+    /// does for another process's transaction, which does not say what it changed.
+    func apply(_ transaction: RecordTransaction) {
+        let isExternal = transaction.author == RecordContainer.externalAuthor
+        let changed = Set(transaction.changes.map(\.id))
+        for (id, draft) in drafts where isExternal || changed.contains(id) {
+            draft.refresh(from: container, at: id)
+        }
+        revision += 1
+    }
+
+    /// Applies each transaction the container commits from now on, on the main actor, until
+    /// the context is released.
+    @MainActor func listen() {
+        guard listening == nil else { return }
+        let transactions = container.transactions()
+        listening = Task { @MainActor [weak self] in
+            for await transaction in transactions {
+                guard let self else { return }
+                self.apply(transaction)
+            }
+        }
     }
 }
 
@@ -95,6 +131,7 @@ extension RecordContext {
     /// let note = context.record(Note.self, id: noteID)
     /// ```
     public func record<Record: Codable & Identifiable>(_ type: Record.Type, id: Record.ID) -> Record? where Record.ID: Encodable {
+        _ = revision
         guard let rowID = rowID(of: type, id: id) else { return nil }
         if let draft = drafts.draft(type, at: rowID) { return draft.ours }
         return try? container.fetch(type, id: rowID)
@@ -278,8 +315,7 @@ extension RecordContext {
     /// The row in ``zone`` for the record of type `type` with the id `id`, or `nil` when the id
     /// cannot be encoded. Its name's length is checked at save.
     func rowID<Record>(of type: Record.Type, id: some Encodable) -> RecordContainer.RowID? {
-        guard let name = try? RecordContainer.recordName(for: id, type: RecordContainer.recordType(of: type), checkingLength: false) else { return nil }
-        return RecordContainer.RowID(name: name, zone: zone)
+        try? RecordContainer.RowID(type, id: id, zone: zone, checkingLength: false)
     }
 }
 
@@ -296,6 +332,7 @@ extension RecordContainer {
     @MainActor public var mainContext: RecordContext {
         if let context = storedMainContext { return context }
         let context = RecordContext(self)
+        context.listen()
         storedMainContext = context
         return context
     }

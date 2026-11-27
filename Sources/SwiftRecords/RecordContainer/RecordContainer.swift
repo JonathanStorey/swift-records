@@ -18,11 +18,18 @@ public final class RecordContainer: @unchecked Sendable {
     /// The database file, or `nil` when the container is in memory.
     let url: URL?
 
-    // Opened with SQLITE_OPEN_FULLMUTEX, so SQLite serializes every call on it.
+    // Opened with SQLITE_OPEN_FULLMUTEX, so SQLite serializes every call on it. Every write,
+    // and every read while this thread holds the lock, uses it.
     let connection: OpaquePointer
+    /// A read-only connection to the same file for reads outside the lock. WAL gives it the
+    /// last committed state, so a read never sees an open transaction's writes and never
+    /// waits for one. `nil` in memory, where reads take the lock instead.
+    private(set) var reader: OpaquePointer?
     // Serializes registering, a read of a row with the write that follows it, and a
     // transaction with the saves inside it, which take the lock again.
     private let lock = NSRecursiveLock()
+    /// The key under which each thread counts how deep it holds `lock`.
+    private let lockKey = "SwiftRecords.lock." + UUID().uuidString
     /// The folder holding each row's asset files: beside the database file, or, in memory,
     /// a new folder in the temporary directory, removed with the container.
     let assets: URL
@@ -107,6 +114,17 @@ public final class RecordContainer: @unchecked Sendable {
         sqlite3_busy_timeout(connection, 5000)
         try execute(Self.createTable)
         dataVersion = currentDataVersion()
+        if url != nil {
+            var reader: OpaquePointer?
+            if sqlite3_open_v2(path, &reader, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let reader {
+                Self.registerCollations(on: reader)
+                sqlite3_busy_timeout(reader, 5000)
+                self.reader = reader
+            } else {
+                // Reads take the lock instead.
+                sqlite3_close_v2(reader)
+            }
+        }
         #if canImport(notify)
         if let name = changeNotification {
             var token: Int32 = 0
@@ -122,6 +140,7 @@ public final class RecordContainer: @unchecked Sendable {
         #if canImport(notify)
         if let notifyToken { notify_cancel(notifyToken) }
         #endif
+        sqlite3_close_v2(reader)
         sqlite3_close_v2(connection)
         if url == nil { try? FileManager.default.removeItem(at: assets) }
     }
@@ -177,8 +196,20 @@ extension RecordContainer {
     /// The result of `body`, with no other locked work on the container running at the same time.
     func locked<T, Failure: Error>(_ body: () throws(Failure) -> T) throws(Failure) -> T {
         lock.lock()
-        defer { lock.unlock() }
+        let threadDictionary = Thread.current.threadDictionary
+        let depth = threadDictionary[lockKey] as? Int ?? 0
+        threadDictionary[lockKey] = depth + 1
+        defer {
+            threadDictionary[lockKey] = depth == 0 ? nil : depth
+            lock.unlock()
+        }
         return try body()
+    }
+
+    /// Whether this thread holds the lock, as inside a transaction, whose reads must see its
+    /// own writes on the writing connection.
+    var holdsLock: Bool {
+        (Thread.current.threadDictionary[lockKey] as? Int ?? 0) > 0
     }
 
     /// The result of `body`, run as one SQLite transaction: every write in it commits

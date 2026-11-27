@@ -17,6 +17,7 @@ extension RecordContext {
     /// let notes = try context.fetch(page)
     /// ```
     public func fetch<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> [Record] {
+        _ = revision
         guard descriptor.includePendingChanges else { return try container.fetch(descriptor, in: zone) }
         let (excluded, pending) = try pendingChanges(descriptor)
         // No edit matches, so the database does all of it.
@@ -37,6 +38,7 @@ extension RecordContext {
     /// let unread = try context.fetchCount(RecordDescriptor<Note>(predicate: #Predicate { !$0.isRead }))
     /// ```
     public func fetchCount<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> Int {
+        _ = revision
         guard descriptor.includePendingChanges else { return try container.fetchCount(descriptor, in: zone) }
         let (excluded, pending) = try pendingChanges(descriptor)
         var all = descriptor

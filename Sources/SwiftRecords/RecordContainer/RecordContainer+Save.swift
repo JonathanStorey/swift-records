@@ -33,65 +33,47 @@ extension RecordContainer {
         )
         """
 
-    /// Saves `record` as this device's version: `ours`, waiting to upload.
+    /// Saves `record` as this device's version in the row `id`: `ours`, waiting to upload.
     ///
-    /// The row's id comes from the value at `id`, by ``recordName(for:type:)``, and `zone`,
-    /// so the same record saved to another zone is another row. A new id adds a row. An
-    /// existing one replaces `ours`, clears `isDeleted` and `error`, and keeps
-    /// `base`, `theirs`, `metadata` and the zone, in one statement. Each `@Asset` file is
-    /// copied into the container, so the row keeps it however the original changes. Asserts that a record
-    /// saved to ``Zone/public`` has no `@Encrypted` values, which the public database rejects.
+    /// A new row is added. An existing one replaces `ours`, clears `isDeleted` and `error`,
+    /// and keeps `base`, `theirs` and `metadata`, in one statement. The row's name is checked
+    /// against CloudKit's 255 characters. Each `@Asset` file is copied into the container, so
+    /// the row keeps it however the original changes. Asserts that a record saved to
+    /// ``Zone/public`` has no `@Encrypted` values, which the public database rejects.
     ///
-    /// Each reference with no zone is placed in `zone`, and one in another zone throws,
-    /// since CloudKit follows a reference only within its record's zone. Each
+    /// Each reference with no zone is placed in the row's zone, and one in another zone
+    /// throws, since CloudKit follows a reference only within its record's zone. Each
     /// `@References(inverse:)` list is left out of the record and saved as ``Relationship``
     /// records instead, in the same transaction, as ``relationshipChanges(_:of:type:zone:)``
     /// describes.
     ///
     /// ```swift
-    /// try container.save(our: page, id: \.slug, zone: "Pages")
+    /// try container.save(our: page, at: RecordContainer.RowID(Page.self, id: page.slug, zone: "Pages"))
     /// ```
-    func save<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
-        let type = Self.recordType(of: Record.self)
-        let rowID: RowID
-        do {
-            rowID = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
-        } catch {
-            throw RecordError(error, type: type)
-        }
-        try save(our: record, at: rowID)
-    }
-
-    /// Saves `record` as this device's version in the row `id`, as
-    /// ``save(our:id:zone:)`` describes, for a caller that already has the row. The row's
-    /// name is checked against CloudKit's 255 characters here.
     func save<Record: Encodable>(our record: Record, at id: RowID) throws(RecordError) {
         let type = Self.recordType(of: Record.self), zone = id.zone
         assert(zone != .public || !Mirror(reflecting: record).properties.contains { $0.value is any EncryptedValue },
                "The public database cannot store @Encrypted values, so \(Record.self) cannot be saved to Zone.public.")
         guard id.name.utf8.count <= 255 else { throw .nameTooLong(name: id.name) }
-        do {
-            var json = try JSONRepresentation(record)
-            let lists = try json.removeRelationshipLists()
-            let ours = try Self.text(portable(storingAssets(of: record, in: json.placingReferences(in: zone), id: id), id: id))
-            let changes = try relationshipChanges(lists, of: id.name, type: type, zone: zone)
-            let relationshipType = Self.recordType(of: Relationship.self)
-            let saved = try changes.saved.map { relationship in
-                (id: RowID(name: relationship.id, zone: zone), ours: try Self.text(JSONRepresentation(relationship).placingReferences(in: zone)))
+        // Locked from the first read, so the relationships compared are the ones replaced.
+        try locked { () throws(RecordError) in
+            do {
+                var json = try JSONRepresentation(record)
+                let lists = try json.removeRelationshipLists()
+                let ours = try Self.text(portable(storingAssets(of: record, in: json.placingReferences(in: zone), id: id), id: id))
+                let changes = try relationshipChanges(lists, of: id.name, type: type, zone: zone)
+                let saved = try changes.saved.map { relationship in
+                    (id: RowID(name: relationship.id, zone: zone), ours: try Self.text(JSONRepresentation(relationship).placingReferences(in: zone)))
+                }
+                try transaction { () throws(DatabaseError) in
+                    try write(ours: ours, id: id, type: type)
+                    for relationship in saved { try write(ours: relationship.ours, id: relationship.id, type: Self.relationshipType) }
+                    for relationship in changes.deleted { try delete(id: RowID(name: relationship.id, zone: zone)) }
+                }
+            } catch {
+                throw RecordError(error, type: type)
             }
-            try transaction { () throws(DatabaseError) in
-                try write(ours: ours, id: id, type: type)
-                for relationship in saved { try write(ours: relationship.ours, id: relationship.id, type: relationshipType) }
-                for relationship in changes.deleted { try delete(id: RowID(name: relationship.id, zone: zone)) }
-            }
-        } catch {
-            throw RecordError(error, type: type)
         }
-    }
-
-    /// Saves an `Identifiable` `record` as this device's version, identified by its `id`.
-    func save<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
-        try save(our: record, id: \.id, zone: zone)
     }
 
     /// Saves the server's version of the record `id` in `zone`, with its system fields as `metadata`.
@@ -112,42 +94,23 @@ extension RecordContainer {
         }
     }
 
-    /// Deletes `record` in `zone` on this device, identified by the value at `id`, as
-    /// ``delete(id:)`` describes, together with every ``Relationship`` it is a side of, in
-    /// one transaction. A copy of the record in another zone stays.
-    ///
-    /// ```swift
-    /// try container.delete(our: page, id: \.slug, zone: "Pages")
-    /// ```
-    func delete<Record: Encodable, ID: Encodable>(our record: Record, id: KeyPath<Record, ID>, zone: Zone) throws(RecordError) {
-        let type = Self.recordType(of: Record.self)
-        let rowID: RowID
-        do {
-            rowID = RowID(name: try Self.recordName(for: record[keyPath: id], type: type), zone: zone)
-        } catch {
-            throw RecordError(error, type: type)
-        }
-        try delete(rowID, type: type)
-    }
-
-    /// Deletes the row `id` of a record of type `type`, as ``delete(our:id:zone:)`` describes,
-    /// for a caller that already has the row.
+    /// Deletes the row `id` of a record of type `type` on this device, as ``delete(id:)``
+    /// describes, together with every ``Relationship`` it is a side of, in one transaction. A
+    /// copy of the record in another zone stays.
     func delete(_ id: RowID, type: String) throws(RecordError) {
         let zone = id.zone
-        do {
-            let relationships = type == Self.recordType(of: Relationship.self) ? [] : try relationships(of: id.name, type: type, in: zone)
-            try transaction { () throws(DatabaseError) in
-                try delete(id: id)
-                for relationship in relationships { try delete(id: RowID(name: relationship.id, zone: zone)) }
+        // Locked from the first read, so every relationship deleted is one there now.
+        try locked { () throws(RecordError) in
+            do {
+                let relationships = type == Self.relationshipType ? [] : try relationships(of: id.name, type: type, in: zone)
+                try transaction { () throws(DatabaseError) in
+                    try delete(id: id)
+                    for relationship in relationships { try delete(id: RowID(name: relationship.id, zone: zone)) }
+                }
+            } catch {
+                throw RecordError(error, type: type)
             }
-        } catch {
-            throw RecordError(error, type: type)
         }
-    }
-
-    /// Deletes an `Identifiable` `record` in `zone` on this device, identified by its `id`.
-    func delete<Record: Encodable & Identifiable>(our record: Record, zone: Zone) throws(RecordError) where Record.ID: Encodable {
-        try delete(our: record, id: \.id, zone: zone)
     }
 
     /// Deletes the record `id` on this device.
@@ -158,13 +121,14 @@ extension RecordContainer {
     /// before the delete uploads undoes it.
     func delete(id: RowID) throws(DatabaseError) {
         try transaction { () throws(DatabaseError) in
-            guard var row = try row(id: id) else { return }
-            guard row.metadata != nil || row.base != nil else { return try remove(id: id, type: row.type) }
+            guard let previous = try row(id: id) else { return }
+            guard previous.metadata != nil || previous.base != nil else { return try remove(id: id, type: previous.type) }
+            var row = previous
             row.isDeleted = true
             row.ours = .none
             row.theirs = .none
             row.error = nil
-            try write(row)
+            try write(row, replacing: previous)
         }
     }
 
@@ -177,22 +141,23 @@ extension RecordContainer {
         try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             guard let row = try row(id: id) else { return }
             guard let ours = row.ours, !row.isDeleted else { return try remove(id: id, type: row.type) }
-            try write(Row(id: id.name, zone: row.zone, type: row.type, ours: ours))
+            try write(Row(id: id.name, zone: row.zone, type: row.type, ours: ours), replacing: row)
         }
     }
 
     /// Removes every row on this device, and the engine's state, sending nothing, as when the
     /// iCloud account signs out or changes. Unlike ``delete(id:)``, nothing is deleted on the server.
     func clear() throws(DatabaseError) {
-        try transaction { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             try run("SELECT id, zone, owner, type FROM record") { (statement) throws(DatabaseError) in
                 guard let name = statement.text(at: 0) else { return }
                 log(.deleted(RowID(name: name, zone: Zone(statement.text(at: 1) ?? "", owner: statement.text(at: 2) ?? "")), type: statement.text(at: 3) ?? ""))
             }
             try run("DELETE FROM record")
             try run("DELETE FROM engine_state")
-            try? FileManager.default.removeItem(at: assets)
         }
+        // Only once the rows are gone for good, so a failed commit keeps its files.
+        try? FileManager.default.removeItem(at: assets)
     }
 
     /// Removes every row in `zone` on this device, sending nothing, as when the zone was
@@ -204,7 +169,7 @@ extension RecordContainer {
     /// this device's changes or else the server's last version, becomes `ours`, and the rest
     /// is forgotten. A record waiting to upload its delete is removed.
     func clear(in zone: Zone, resending: Bool = false) throws(DatabaseError) {
-        try transaction { () throws(DatabaseError) in
+        try transaction(author: Self.syncAuthor) { () throws(DatabaseError) in
             var ids: [(id: RowID, type: String)] = []
             try run("SELECT id, type FROM record WHERE zone = ? AND owner = ?", zone.name, zone.owner) { (statement) throws(DatabaseError) in
                 if let name = statement.text(at: 0) { ids.append((RowID(name: name, zone: zone), statement.text(at: 1) ?? "")) }
@@ -214,7 +179,7 @@ extension RecordContainer {
                     try remove(id: id, type: type)
                     continue
                 }
-                try write(Row(id: id.name, zone: row.zone, type: row.type, ours: content))
+                try write(Row(id: id.name, zone: row.zone, type: row.type, ours: content), replacing: row)
             }
         }
     }
@@ -231,10 +196,12 @@ extension RecordContainer {
             return data
         }
         set {
-            if let newValue {
-                try? run("INSERT OR REPLACE INTO engine_state (id, data) VALUES (0, ?)", newValue)
-            } else {
-                try? run("DELETE FROM engine_state")
+            locked {
+                if let newValue {
+                    try? run("INSERT OR REPLACE INTO engine_state (id, data) VALUES (0, ?)", newValue)
+                } else {
+                    try? run("DELETE FROM engine_state")
+                }
             }
         }
     }
@@ -249,7 +216,7 @@ extension RecordContainer {
     /// Keeps `schema` as the one the record type `name` was last registered with.
     func store(_ schema: JSONSchema, named name: String) {
         guard let data = try? JSONEncoder().encode(schema) else { return }
-        try? run("INSERT OR REPLACE INTO record_schema (name, schema) VALUES (?, ?)", name, String(decoding: data, as: UTF8.self))
+        locked { try? run("INSERT OR REPLACE INTO record_schema (name, schema) VALUES (?, ?)", name, String(decoding: data, as: UTF8.self)) }
     }
 
     /// Every zone that holds a row, for making sure each exists before its records upload.
@@ -290,7 +257,7 @@ extension RecordContainer {
             let existing = try row(id: id)
             guard var row = existing ?? new else { return }
             change(&row)
-            try write(row, isNew: existing == nil)
+            try write(row, replacing: existing, isBookkeeping: true)
         }
     }
 
@@ -308,33 +275,36 @@ extension RecordContainer {
     /// let drafts = try container.fetch(Note.self, in: "Notes", predicate: #Predicate { $0.isDraft }, order: [SortDescriptor(\.title)])
     /// ```
     func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
-        try fetch(type, in: zone, where: predicate.flatMap(Self.filter(for:)), predicate: predicate, order: order)
+        let values = try fetch(type, in: zone, where: predicate.flatMap(Self.filter(for:)), predicate: predicate)
+        return order.isEmpty ? values : values.sorted(using: order)
     }
 
     /// The saved value of every `T` in `zone` whose row `filter` keeps and `predicate`
-    /// accepts, sorted by `order`. `filter` only narrows the rows that decode, so it must
-    /// keep every row that `predicate` accepts.
-    func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, order: [SortDescriptor<T>] = []) throws -> [T] {
-        var values: [T] = []
-        var failure: (any Error)?
+    /// accepts, in the order of `order`, an `ORDER BY` clause and its values, skipping the
+    /// first `offset` matches and stopping after `limit`. `filter` only narrows the rows that
+    /// decode, so it must keep every row that `predicate` accepts.
+    ///
+    /// Rows arrive in order and are decoded one at a time, so decoding stops once the offset
+    /// and limit are filled. Every other fetch reads through here, or, when SQLite does all
+    /// of the work, through the same ``select(where:orderBy:)`` and ``value(of:json:in:lists:)``.
+    func fetch<T: Decodable>(_ type: T.Type, in zone: Zone, where filter: SQLFilter?, predicate: Predicate<T>? = nil, orderBy order: SQLOrder? = nil, offset: Int = 0, limit: Int? = nil) throws -> [T] {
         let recordType = Self.recordType(of: type)
-        let lists = type == Relationship.self ? [:] : try relationshipLists(in: zone, type: recordType, where: filter)
-        try run("""
-            SELECT id, COALESCE(ours, base) FROM record
-            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter?.clause ?? "1")
-            """, values: [recordType, zone.name, zone.owner] + (filter?.values ?? [])) { (statement) throws(DatabaseError) in
-            guard failure == nil,
-                  let name = statement.text(at: 0),
-                  let json = (try? statement.json(at: 1))??.relating(lists[name]),
-                  let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(type) else { return }
+        let lists = recordType == Self.relationshipType ? [:] : try relationshipLists(in: zone, type: recordType, where: filter)
+        var found: [T] = [], skipped = 0, failure: (any Error)?
+        try run(select(where: filter, orderBy: order), values: [recordType, zone.name, zone.owner] + (filter?.values ?? []) + (order?.values ?? [])) { (statement) throws(DatabaseError) in
+            guard failure == nil, found.count < limit ?? .max,
+                  let name = statement.text(at: 0), let json = (try? statement.json(at: 1)) ?? nil,
+                  let value: T = value(of: name, json: json, in: zone, lists: lists) else { return }
             do {
-                if try predicate?.evaluate(value) ?? true { values.append(value) }
+                guard try predicate?.evaluate(value) ?? true else { return }
             } catch {
                 failure = error
+                return
             }
+            if skipped < offset { skipped += 1 } else { found.append(value) }
         }
         if let failure { throw failure }
-        return order.isEmpty ? values : values.sorted(using: order)
+        return found
     }
 
     /// The saved records `descriptor` describes in `zone`, leaving out the rows named in
@@ -351,55 +321,28 @@ extension RecordContainer {
     /// Ties are broken by record name in SQL, so the order is the same every time. A row that
     /// does not decode is skipped, so a limited fetch can return fewer than its limit.
     func fetch<T: Codable>(_ descriptor: RecordDescriptor<T>, in zone: Zone, excluding excluded: [String] = []) throws -> [T] {
-        let recordType = Self.recordType(of: T.self)
         let predicate = descriptor.predicate
         let filter = Self.filter(for: predicate, excluding: excluded)
-        let isExact = filter.isExact
         let offset = descriptor.offset, limit = descriptor.limit
-        let order = descriptor.sortBy.isEmpty ? (clause: "", values: []) : Self.orderBy(descriptor.sortBy)
-        guard let order else {
+        guard let order = descriptor.sortBy.isEmpty ? (clause: "", values: []) : Self.orderBy(descriptor.sortBy) else {
             // No SQL sort: every match, sorted in Swift.
-            let all = try fetch(T.self, in: zone, where: filter, predicate: predicate, order: descriptor.sortBy)
+            let all = try fetch(T.self, in: zone, where: filter, predicate: predicate).sorted(using: descriptor.sortBy)
             return Array(all.dropFirst(offset).prefix(limit ?? .max))
         }
-        let sql = """
-            SELECT id, COALESCE(ours, base) FROM record
-            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)
-            ORDER BY \(order.clause.isEmpty ? "" : order.clause + ", ")id
-            """
-        let bound: [Any?] = [recordType, zone.name, zone.owner] + filter.values + order.values
+        guard filter.isExact else {
+            return try fetch(T.self, in: zone, where: filter, predicate: predicate, orderBy: order, offset: offset, limit: limit)
+        }
+        // SQLite does all of it, so only the rows returned are read, with only their lists.
+        let recordType = Self.recordType(of: T.self)
         var rows: [(name: String, json: JSONRepresentation)] = []
-        if isExact {
-            // SQLite does all of it, so only the rows returned are read.
-            try run(sql + " LIMIT ? OFFSET ?", values: bound + [limit ?? -1, offset]) { (statement) throws(DatabaseError) in
-                guard let name = statement.text(at: 0), let json = (try? statement.json(at: 1)) ?? nil else { return }
-                rows.append((name, json))
-            }
-            let names = JSONRepresentation.array(rows.map { .string($0.name) }).description
-            let lists = recordType == Self.recordType(of: Relationship.self) ? [:]
-                : try relationshipLists(in: zone, type: recordType, where: ("id IN (SELECT value FROM json_each(?))", [names], true))
-            return rows.compactMap { row in
-                try? resolved(row.json.relating(lists[row.name]), id: RowID(name: row.name, zone: zone)).decode(T.self)
-            }
+        try run(select(where: filter, orderBy: order) + " LIMIT ? OFFSET ?", values: [recordType, zone.name, zone.owner] + filter.values + order.values + [limit ?? -1, offset]) { (statement) throws(DatabaseError) in
+            guard let name = statement.text(at: 0), let json = (try? statement.json(at: 1)) ?? nil else { return }
+            rows.append((name, json))
         }
-        // Rows arrive in order, so decoding stops once the offset and limit are filled.
-        let lists = try relationshipLists(in: zone, type: recordType, where: filter)
-        var found: [T] = [], skipped = 0, failure: (any Error)?
-        try run(sql, values: bound) { (statement) throws(DatabaseError) in
-            guard failure == nil, found.count < limit ?? .max,
-                  let name = statement.text(at: 0),
-                  let json = (try? statement.json(at: 1))??.relating(lists[name]),
-                  let value = try? resolved(json, id: RowID(name: name, zone: zone)).decode(T.self) else { return }
-            do {
-                guard try predicate?.evaluate(value) ?? true else { return }
-            } catch {
-                failure = error
-                return
-            }
-            if skipped < offset { skipped += 1 } else { found.append(value) }
-        }
-        if let failure { throw failure }
-        return found
+        let names = JSONRepresentation.array(rows.map { .string($0.name) }).description
+        let lists = recordType == Self.relationshipType ? [:]
+            : try relationshipLists(in: zone, type: recordType, where: ("id IN (SELECT value FROM json_each(?))", [names], true))
+        return rows.compactMap { value(of: $0.name, json: $0.json, in: zone, lists: lists) }
     }
 
     /// How many records `fetch(_:in:excluding:)` would return, counted by SQLite when the
@@ -411,10 +354,7 @@ extension RecordContainer {
             return descriptor.count(ofPageIn: try fetch(T.self, in: zone, where: filter, predicate: descriptor.predicate).count)
         }
         var count = 0
-        try run("""
-            SELECT COUNT(*) FROM record
-            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter.clause)
-            """, values: [Self.recordType(of: T.self), zone.name, zone.owner] + filter.values) { (statement) throws(DatabaseError) in
+        try run("SELECT COUNT(*) FROM (\(select(where: filter)))", values: [Self.recordType(of: T.self), zone.name, zone.owner] + filter.values) { (statement) throws(DatabaseError) in
             count = Int(sqlite3_column_int64(statement, 0))
         }
         return descriptor.count(ofPageIn: count)
@@ -432,6 +372,23 @@ extension RecordContainer {
         return filter
     }
 
+    /// The query for each live row's name and saved value, of one type in one zone, that
+    /// `filter` keeps, in the order of `order` and then by name. Its values are the type, the
+    /// zone's name and owner, then `filter`'s and `order`'s.
+    private func select(where filter: SQLFilter?, orderBy order: SQLOrder? = nil) -> String {
+        let sort = order.map { "\n ORDER BY " + ($0.clause.isEmpty ? "" : $0.clause + ", ") + "id" } ?? ""
+        return """
+            SELECT id, COALESCE(ours, base) FROM record
+            WHERE type = ? AND zone = ? AND owner = ? AND is_deleted = 0 AND \(filter?.clause ?? "1")
+            """ + sort
+    }
+
+    /// The saved value `json` of the row `name` in `zone` as `T`, with its relationship lists
+    /// from `lists` and its asset paths resolved, or `nil` when it does not decode.
+    private func value<T: Decodable>(of name: String, json: JSONRepresentation, in zone: Zone, lists: [String: [String: RelationshipList]]) -> T? {
+        try? resolved(json.relating(lists[name]), id: RowID(name: name, zone: zone)).decode(T.self)
+    }
+
     /// The saved value of the row `id` as `type`, its `ours ?? base` with its relationship
     /// lists filled, or `nil` when there is no such row, it is deleted, or it does not decode.
     func fetch<T: Decodable>(_ type: T.Type, id: RowID) throws -> T? {
@@ -442,15 +399,9 @@ extension RecordContainer {
     /// commits to the file, or 0 when it cannot be read.
     func currentDataVersion() -> Int64 {
         var version: Int64 = 0
-        try? run("PRAGMA data_version") { (statement) throws(DatabaseError) in version = sqlite3_column_int64(statement, 0) }
+        // On the writing connection, where only another process's commit moves it.
+        try? run("PRAGMA data_version", on: connection) { (statement) throws(DatabaseError) in version = sqlite3_column_int64(statement, 0) }
         return version
-    }
-
-    /// Whether the container has a row for `id`.
-    func contains(_ id: RowID) throws(DatabaseError) -> Bool {
-        var found = false
-        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner) { _ in found = true }
-        return found
     }
 
     /// The row for `id`, or `nil` when the container has none.
@@ -489,17 +440,22 @@ private extension RecordContainer {
 
     /// Removes the row for `id`, a record of the record type `type`.
     func remove(id: RowID, type: String) throws(DatabaseError) {
-        let relationship = type == Self.recordType(of: Relationship.self) ? try row(id: id).flatMap { $0.ours ?? $0.base } : nil
+        let relationship = type == Self.relationshipType ? try row(id: id)?.content : nil
         log(.deleted(id, type: type), relating: relationship)
         try run("DELETE FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner)
         sweepAssets(id: id)
     }
 
-    /// Writes every column of `row`, replacing any row with the same id, which `isNew` says
-    /// there is none of. A row marked deleted is logged as deleted.
-    func write(_ row: Row, isNew: Bool = false) throws(DatabaseError) {
-        let relationship = row.type == Self.recordType(of: Relationship.self) ? row.ours ?? row.base ?? row.theirs : nil
-        log(row.isDeleted ? .deleted(row.rowID, type: row.type) : isNew ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type), relating: relationship)
+    /// Writes every column of `row`, replacing `previous`, the row with the same id, if any.
+    ///
+    /// The write is logged by its kind. Sync bookkeeping, a write of only `metadata`, `sent`,
+    /// `theirs` or `error`, is not, unless it changed what a fetch reads, since no reader
+    /// sees it, and every upload would otherwise refresh every view.
+    func write(_ row: Row, replacing previous: Row?, isBookkeeping: Bool = false) throws(DatabaseError) {
+        if !isBookkeeping || previous?.visible != row.visible {
+            let change: RecordTransaction.Change = row.isDeleted ? .deleted(row.rowID, type: row.type) : previous == nil ? .inserted(row.rowID, type: row.type) : .updated(row.rowID, type: row.type)
+            log(change, relating: row.type == Self.relationshipType ? row.content : nil)
+        }
         let text = { (json: JSONRepresentation?) throws(DatabaseError) -> String? in
             try json.map { (json) throws(DatabaseError) in try Self.text(self.portable(json, id: row.rowID)) }
         }
@@ -517,8 +473,24 @@ private extension RecordContainer {
         try run(sql, values: values, each: body)
     }
 
-    /// Prepares `sql`, binds `values` in order, and steps through it, passing each result row to `body`.
+    /// Prepares `sql`, binds `values` in order, and steps through it, passing each result row
+    /// to `body`: on the read-only connection outside the lock, so it reads the last commit
+    /// without waiting, or else on the writing connection under the lock, as every write and
+    /// every read inside a transaction must.
     func run(_ sql: String, values: [Any?], each body: (OpaquePointer) throws(DatabaseError) -> Void) throws(DatabaseError) {
+        if !holdsLock, let reader { return try run(sql, values: values, on: reader, each: body) }
+        try locked { () throws(DatabaseError) in try run(sql, values: values, on: connection, each: body) }
+    }
+
+    /// Prepares `sql` on `connection`, binds `values` in order, and steps through it, passing
+    /// each result row to `body`.
+    func run(_ sql: String, _ values: Any?..., on connection: OpaquePointer, each body: (OpaquePointer) throws(DatabaseError) -> Void = { _ in }) throws(DatabaseError) {
+        try run(sql, values: values, on: connection, each: body)
+    }
+
+    /// Prepares `sql` on `connection`, binds `values` in order, and steps through it, passing
+    /// each result row to `body`.
+    func run(_ sql: String, values: [Any?], on connection: OpaquePointer, each body: (OpaquePointer) throws(DatabaseError) -> Void) throws(DatabaseError) {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw DatabaseError(code: sqlite3_errcode(connection), connection: connection)
@@ -575,8 +547,10 @@ private extension RecordContainer {
     /// Writes `ours` as the row `id`'s version, adding the row when it is new, in one
     /// statement, and logs the change.
     func write(ours: String, id: RowID, type: String) throws(DatabaseError) {
-        let relationship = type == Self.recordType(of: Relationship.self) ? try? JSONDecoder().decode(JSONRepresentation.self, from: Data(ours.utf8)) : nil
-        log(try contains(id) ? .updated(id, type: type) : .inserted(id, type: type), relating: relationship)
+        var exists = false
+        try run("SELECT 1 FROM record WHERE id = ? AND zone = ? AND owner = ?", id.name, id.zone.name, id.zone.owner) { _ in exists = true }
+        let relationship = type == Self.relationshipType ? try? JSONDecoder().decode(JSONRepresentation.self, from: Data(ours.utf8)) : nil
+        log(exists ? .updated(id, type: type) : .inserted(id, type: type), relating: relationship)
         try run("""
             INSERT INTO record (id, zone, owner, type, ours) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (id, zone, owner) DO UPDATE SET type = excluded.type, ours = excluded.ours, is_deleted = 0, error = NULL
