@@ -47,6 +47,21 @@ extension RecordContext {
         return descriptor.count(ofPageIn: try container.fetchCount(all, in: zone, excluding: excluded) + pending.count)
     }
 
+    /// The records `references` lists, in its order, as ``record(_:id:)`` returns each one:
+    /// its open edit, or else its saved value. A target that is deleted, or has not arrived
+    /// yet, is left out.
+    ///
+    /// A field list and a relationship list read the same way, since a fetched record's
+    /// relationship lists come back filled. Every target lives in its holder's zone, which
+    /// for a record read through this context is ``zone``.
+    ///
+    /// ```swift
+    /// let tags = context.fetch(note.$tags)
+    /// ```
+    public func fetch<Record: Codable & Identifiable>(_ references: References<Record>) -> [Record] {
+        references.wrappedValue.compactMap { record(Record.self, id: $0) }
+    }
+
     /// The names of the rows of `Record` open in ``zone``, which the database's part leaves
     /// out, and the open edits that `descriptor`'s predicate matches.
     private func pendingChanges<Record: Codable>(_ descriptor: RecordDescriptor<Record>) throws -> (excluded: [String], pending: [Record]) {

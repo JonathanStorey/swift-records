@@ -277,6 +277,47 @@ Opening a file throws a `DatabaseError` whose `description` says what SQLite
 reported. On Linux, install SQLite's headers first
 (`apt-get install libsqlite3-dev`).
 
+## SwiftUI
+
+`recordContainer(_:)` puts a container's `mainContext` in the environment,
+as `modelContainer(_:)` does in SwiftData, and `@Records` lists records
+through it, as `@Query` does. A list takes a `RecordDescriptor`, or a
+reference list's projected value, which lists its targets in order whether
+it is a field list or a relationship list.
+
+```swift
+@main struct NotesApp: App {
+    let container = try! RecordContainer(for: Note.self, Tag.self)
+
+    var body: some Scene {
+        WindowGroup { NoteList() }
+            .recordContainer(container)
+    }
+}
+
+struct NoteList: View {
+    @Records(RecordDescriptor(sortBy: [SortDescriptor(\.modified, order: .reverse)])) var notes: [Note]
+
+    var body: some View {
+        List(notes) { note in TagRow(tags: note.$tags) }
+    }
+}
+
+struct TagRow: View {
+    @Records var tags: [Tag]
+
+    init(tags: References<Tag>) {
+        _tags = Records(tags)
+    }
+
+    var body: some View { Text(tags.map(\.name).joined(separator: ", ")) }
+}
+```
+
+The lists include the context's unsaved edits and observe it, so a view
+redraws on every insert, edit, delete and save. Outside SwiftUI,
+`context.fetch(note.$tags)` reads a reference list the same way.
+
 ## Requirements
 
 - Swift 6.0 or later
