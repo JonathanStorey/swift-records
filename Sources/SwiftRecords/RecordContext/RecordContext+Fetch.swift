@@ -72,13 +72,14 @@ extension RecordContext {
     ///
     /// A field list and a relationship list read the same way, since a fetched record's
     /// relationship lists come back filled. Every target lives in its holder's zone, which
-    /// for a record read through this context is ``zone``.
+    /// the list carries once its holder is saved. A list built in code reads ``zone``.
     ///
     /// ```swift
     /// let tags = context.fetch(note.$tags)
     /// ```
     public func fetch<Record: Codable & Identifiable>(_ references: References<Record>) -> [Record] {
-        references.wrappedValue.compactMap { record(Record.self, id: $0) }
+        let zone = references.zone ?? self.zone
+        return references.wrappedValue.compactMap { record(Record.self, id: $0, in: zone) }
     }
 
     /// The names of the rows of `Record` open in `zone`, which the database's part leaves

@@ -112,4 +112,15 @@ private struct Photo: Codable, Identifiable {
         #expect(try context.fetch(descriptor).map(\.caption) == ["home"], "The context's own zone is unchanged.")
         #expect(try context.fetchCount(descriptor) == 1)
     }
+
+    @Test func aListReadsInItsHoldersZone() throws {
+        let photos = [Photo(caption: "a"), Photo(caption: "b")]
+        for photo in photos { try container.save(our: photo, zone: "Shared") }
+        let ids = photos.map(\.id)
+        try container.save(our: Album(name: "Away", photos: ids, covers: ids), zone: "Shared")
+        let context = RecordContext(container)
+        let album = try #require(try context.fetch(RecordDescriptor<Album>(), in: "Shared").first)
+        #expect(context.fetch(album.$covers).map(\.caption) == ["a", "b"], "A field list reads in the album's zone, not the context's.")
+        #expect(context.fetch(album.$photos).map(\.caption) == ["a", "b"], "So does a relationship list.")
+    }
 }
